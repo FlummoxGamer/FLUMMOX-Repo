@@ -1,25 +1,19 @@
-// Root level build.gradle.kts - FINAL WORKING VERSION
+// Root level build.gradle.kts - defines global versions.
 
-// 1. Define where to find the *plugins* using the reliable buildscript method
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-        maven("https://jitpack.io")
-    }
-    dependencies {
-        // FINAL FIX: Changing version to 'master-SNAPSHOT' to bypass 401 resolution error
-        classpath("com.github.Lagradost:CloudStream-3:master-SNAPSHOT") 
-        classpath(kotlin("gradle-plugin", version = "1.9.24"))
-        classpath("com.android.tools.build:gradle:8.5.1")
-    }
+plugins {
+    // Standard Android and Kotlin plugins
+    id("com.android.application") version "8.5.1" apply false
+    id("com.android.library") version "8.5.1" apply false
+    kotlin("android") version "1.9.24" apply false
+    
+    // CloudStream provider plugin
+    id("com.lagradost.cloudstream3.provider") version "4.0.0" apply false
 }
-
-// 2. Define the repositories for *dependencies* (libraries like material, okhttp)
+// This section defines repositories for dependencies (libraries used by the code).
+// Must be placed below the plugins block.
 allprojects {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
     }
 }
