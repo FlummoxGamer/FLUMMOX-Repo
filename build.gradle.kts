@@ -1,14 +1,22 @@
-// Root level build.gradle.kts
+// Root level build.gradle.kts - FINAL FIX: Using buildscript to force plugin resolution
 
-plugins {
-    // Define the base versions for Android and Kotlin
-    id("com.android.application") version "8.5.1" apply false
-    id("com.android.library") version "8.5.1" apply false
-    kotlin("android") version "1.9.24" apply false
-    id("com.lagradost.cloudstream3.provider") version "1.4.2" apply false
+// 1. Define where to find the *plugins*
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        // CRITICAL FIX: The plugin must be found here via buildscript
+        maven("https://jitpack.io")
+    }
+    dependencies {
+        // Apply the CloudStream provider plugin as a dependency in the buildscript classpath
+        classpath("com.lagradost.cloudstream3:provider:1.4.2")
+        // Also required: the Kotlin Gradle plugin
+        classpath(kotlin("gradle-plugin", version = "1.9.24"))
+    }
 }
 
-// Repositories for *dependencies* (not plugins)
+// 2. Define the repositories for *dependencies*
 allprojects {
     repositories {
         google()
