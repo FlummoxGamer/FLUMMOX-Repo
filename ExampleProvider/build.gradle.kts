@@ -3,6 +3,5 @@ plugins {
 }
 
 dependencies {
-    // This is the CRITICAL line that downloads the necessary library
     implementation("com.lagacy:ext-api:master-SNAPSHOT")
 }
