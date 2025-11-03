@@ -1,4 +1,4 @@
-// Provider Module build.gradle.kts
+// Provider Module build.gradle.kts - FINAL WORKING CONFIGURATION
 
 plugins {
     // Apply the plugins configured in the root build.gradle.kts
@@ -29,9 +29,9 @@ android {
         viewBinding = true
     }
 }
-// This section defines all libraries your provider code needs.
+
 dependencies {
-    // The core CloudStream app library (Version 4.0.0 is latest stable)
+    // The core CloudStream app library (Version 4.0.0 is latest stable on Maven Central)
     implementation("com.lagradost.cloudstream3:app:4.0.0") 
 
     // Standard Android libraries
@@ -41,13 +41,14 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 }
+
 // This metadata section must be outside the 'android' block.
 version = 1
 
 cloudstream {
     description = "A multi-source video provider"
     authors = listOf("FlummoxGamer")
-    status = 1 
+    status = 1
     tvTypes = listOf(
         "Movie",
         "TvSeries",
