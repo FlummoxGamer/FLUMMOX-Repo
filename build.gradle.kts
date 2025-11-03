@@ -5,7 +5,7 @@ allprojects {
     }
 }
 
-// CRITICAL: Adding GitHub credentials for all projects
+// CRITICAL: This subprojects block is for DEPENDENCIES (like ext-api:master-SNAPSHOT)
 subprojects {
     repositories {
         maven {
