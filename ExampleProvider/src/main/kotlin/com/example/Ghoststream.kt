@@ -3,7 +3,7 @@ package com.example
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.extractors.*
-import org.jsoup.nodes.Element // Added required import for Jsoup
+import org.jsoup.nodes.Element // Added required import for Jsoup Element
 
 class GhoststreamProvider : MainAPI() {
     override var mainUrl = "https://example.com"
@@ -20,7 +20,7 @@ class GhoststreamProvider : MainAPI() {
         "movie4kto.net"
     )
 
-    // FIX: Correct signature for loadHomePage (overrides should now work after dependency fix)
+    // FIX: Correct signature for loadHomePage
     override suspend fun loadHomePage(page: Int, request: MainPageRequest): HomePageResponse {
         val items = ArrayList<HomePageList>()
 
@@ -54,7 +54,7 @@ class GhoststreamProvider : MainAPI() {
             val document = app.get(searchUrl).document
             // Placeholder parsing for demonstration
             document.select("div.result-item, article.post").take(5).mapNotNull { element ->
-                // FIX: Use newMovieSearchResponse helper
+                // FIX: Use newMovieSearchResponse helper (resolves deprecated constructor)
                 newMovieSearchResponse(
                     name = "Test from $source - $query",
                     url = "$source|https://example.com",
@@ -74,7 +74,7 @@ class GhoststreamProvider : MainAPI() {
         if (parts.size != 2) return null
 
         val title = "Movie from ${parts[0]}"
-        // Use newMovieLoadResponse helper
+        // FIX: Use newMovieLoadResponse helper
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.plot = "This is a test movie from ${parts[0]}"
         }
@@ -87,7 +87,7 @@ class GhoststreamProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        // FIX: Removed 'TwoEmbedExtractor' which was an unresolved reference
+        // Extractor list
         val extractors = listOf(
             StreamTape(),
             Mp4Upload(),
@@ -101,10 +101,12 @@ class GhoststreamProvider : MainAPI() {
 
         for (extractor in extractors) {
             try {
-                // FIX: Correct getUrl signature (using null for referer)
+                // FIX: Correct getUrl signature (passing all required parameters)
                 extractor.getUrl(url, null, subtitleCallback, callback)
                 return true
             } catch (e: Exception) {
+                // Log and continue to the next extractor
+                // println("Extractor ${extractor.name} failed: ${e.message}") 
                 continue
             }
         }
