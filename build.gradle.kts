@@ -9,8 +9,8 @@ buildscript {
         maven("https://jitpack.io")
     }
     dependencies {
-        // These are the actual plugin JARs placed on the classpath
-        classpath("com.lagradost.cloudstream3:provider:1.4.2")
+        // FIX: CHANGING ARTIFACT NAME TO THE CORRECT JITPACK COORDINATE
+        classpath("com.github.Lagradost:CloudStream-3:1.4.2")
         classpath(kotlin("gradle-plugin", version = "1.9.24"))
         classpath("com.android.tools.build:gradle:8.5.1")
     }
