@@ -2,11 +2,10 @@ pluginManagement {
     repositories {
         google()
         mavenCentral()
-        // CRITICAL: This is for the PLUGIN (com.lagacy.cloudstream.plugin)
-        // It needs the correct path suffix: /maven/cloudstream
+        // FIX: Use the correct GitHub Packages URL
         maven {
             name = "cloudstream"
-            url = uri("https://api.github.com/repos/recloudstream/cloudstream-3/packages/maven/cloudstream")
+            url = uri("https://maven.pkg.github.com/recloudstream/cloudstream")
             credentials {
                 username = System.getenv("GITHUB_ACTOR")
                 password = System.getenv("GITHUB_TOKEN")
@@ -20,6 +19,15 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // FIX: Add the dependency repository here too
+        maven {
+            name = "cloudstream"
+            url = uri("https://maven.pkg.github.com/recloudstream/cloudstream")
+            credentials {
+                username = System.getenv("GITHUB_ACTOR")
+                password = System.getenv("GITHUB_TOKEN")
+            }
+        }
     }
 }
 
