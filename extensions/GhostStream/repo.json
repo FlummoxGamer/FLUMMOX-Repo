@@ -1,0 +1,8 @@
+{
+  "name": "GhostStream",
+  "description": "Multi-source provider.",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/master/extensions/GhostStream/plugins.json"
+  ]
+}
