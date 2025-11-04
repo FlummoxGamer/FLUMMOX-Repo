@@ -20,15 +20,18 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       
-    - name: Build JAR files
-      run: ./gradlew :GhostStreamProvider:jar
+    - name: Build Fat JAR
+      run: ./gradlew :GhostStreamProvider:fatJar
+      
+    - name: List built files
+      run: find . -name "*.jar" -type f
       
     - name: Upload JAR to Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: v1.0.0
         files: |
-          GhostStreamProvider/build/libs/*.jar
+          GhostStreamProvider/build/libs/GhostStreamProvider-1.0.0.jar
         body: "GhostStream Extension JAR Release"
         draft: false
         prerelease: false
