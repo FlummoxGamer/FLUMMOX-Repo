@@ -29,12 +29,17 @@ java {
     targetCompatibility = JavaVersion.VERSION_1_8
 }
 
-// Add this to ensure JAR is built with dependencies (fat JAR)
-tasks.jar {
+// Create a fat JAR with all dependencies
+tasks.register<Jar>("fatJar") {
     archiveBaseName.set("GhostStreamProvider")
     archiveVersion.set("1.0.0")
     
-    // Include all dependencies in the JAR
-    from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+    from(sourceSets.main.get().output)
+    dependsOn(configurations.runtimeClasspath)
+    
+    from({
+        configurations.runtimeClasspath.get().filter { it.name.endsWith("jar") }.map { zipTree(it) }
+    })
+    
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
