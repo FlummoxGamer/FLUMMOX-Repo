@@ -1,35 +1,6 @@
 plugins {
-    id("com.android.application")
-    kotlin("android")
-}
-
-android {
-    compileSdk = 34
-    namespace = "com.flummox.ghoststream"
-
-    defaultConfig {
-        applicationId = "com.flummox.ghoststream"
-        minSdk = 21
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-        }
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
-
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
+    `java-library`
+    kotlin("jvm") version "1.9.0"
 }
 
 repositories {
@@ -46,6 +17,24 @@ repositories {
 
 dependencies {
     implementation("com.lagacy:ext-api:master-SNAPSHOT")
+    implementation(kotlin("stdlib-jdk8"))
+    
+    // Add these dependencies for HTTP requests and HTML parsing
     implementation("com.squareup.okhttp3:okhttp:4.11.0")
     implementation("org.jsoup:jsoup:1.16.1")
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+// Add this to ensure JAR is built with dependencies (fat JAR)
+tasks.jar {
+    archiveBaseName.set("GhostStreamProvider")
+    archiveVersion.set("1.0.0")
+    
+    // Include all dependencies in the JAR
+    from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
