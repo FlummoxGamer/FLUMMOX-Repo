@@ -18,6 +18,10 @@ repositories {
 dependencies {
     implementation("com.lagacy:ext-api:master-SNAPSHOT")
     implementation(kotlin("stdlib-jdk8"))
+    
+    // Add these dependencies for HTTP requests and HTML parsing
+    implementation("com.squareup.okhttp3:okhttp:4.11.0")
+    implementation("org.jsoup:jsoup:1.16.1")
 }
 
 java {
