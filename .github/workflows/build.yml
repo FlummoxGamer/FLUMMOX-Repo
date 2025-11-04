@@ -1,4 +1,4 @@
-name: Build and Release
+name: Build and Release JAR
 
 on:
   push:
@@ -17,16 +17,21 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Build
-      run: chmod +x gradlew && ./gradlew build
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
       
-    - name: Create Release with all JARs
+    - name: Build JAR files
+      run: ./gradlew :GhostStreamProvider:jar
+      
+    - name: List built JAR files
+      run: find . -name "*.jar" -type f
+      
+    - name: Upload JAR to Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: v1.0.0
         files: |
-          **/build/libs/*.jar
-          **/build/outputs/*.jar
-        body: "GhostStream Extension Release"
+          GhostStreamProvider/build/libs/*.jar
+        body: "GhostStream Extension JAR Release"
         draft: false
         prerelease: false
