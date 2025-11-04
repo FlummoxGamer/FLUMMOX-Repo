@@ -1,8 +1,0 @@
-{
-  "name": "GhostStream Repo",
-  "description": "Multi-source provider with AllMovieLand and more.",
-  "manifestVersion": 1,
-  "pluginLists": [
-    "https://raw.githubusercontent.com/Flummox/FLUMMOX-Repo/master/plugins.json"
-  ]
-}
