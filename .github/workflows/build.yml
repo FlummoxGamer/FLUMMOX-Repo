@@ -1,4 +1,4 @@
-name: Build CloudStream Extension
+name: Build and Release
 
 on:
   push:
@@ -17,25 +17,16 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Build
+      run: chmod +x gradlew && ./gradlew build
       
-    - name: Build Extension
-      run: ./gradlew :GhostStreamProvider:build
-      
-    - name: Find and Upload JAR
-      run: |
-        # Find the JAR file
-        JAR_FILE=$(find . -name "*.jar" -path "*/GhostStreamProvider/*" | grep -v test | head -1)
-        echo "Found JAR: $JAR_FILE"
-        
-        # Upload using the actual file path
-        if [ -n "$JAR_FILE" ] && [ -f "$JAR_FILE" ]; then
-          echo "Uploading JAR file: $JAR_FILE"
-          # Use upload-artifact with the specific file
-          gh release create v1.0.0 "$JAR_FILE" --title "GhostStream v1.0.0" --notes "Automatic release" || true
-        else
-          echo "No JAR file found!"
-          find . -name "*.jar" | head -10
-          exit 1
-        fi
+    - name: Create Release with all JARs
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v1.0.0
+        files: |
+          **/build/libs/*.jar
+          **/build/outputs/*.jar
+        body: "GhostStream Extension Release"
+        draft: false
+        prerelease: false
