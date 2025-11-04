@@ -43,3 +43,9 @@ tasks.register<Jar>("fatJar") {
     
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
+tasks.register<Jar>("fatJar") {
+    archiveClassifier.set("all")
+    from(configurations.runtimeClasspath.get().map { if (it.isDirectory()) it else zipTree(it) })
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    with(tasks.jar.get())
+}
