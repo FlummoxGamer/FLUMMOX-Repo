@@ -1,4 +1,3 @@
-// Simple root build configuration
 allprojects {
     repositories {
         mavenCentral()
@@ -6,5 +5,5 @@ allprojects {
 }
 
 tasks.register("clean", Delete::class) {
-    delete(rootProject.buildDir)
+    delete(layout.buildDirectory)
 }
