@@ -1,4 +1,4 @@
-name: Build
+name: Build GhostStream Provider
 
 on:
   push:
@@ -17,5 +17,16 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Build
-      run: chmod +x gradlew && ./gradlew build
+    - name: Build GhostStream Provider
+      run: |
+        chmod +x gradlew
+        ./gradlew :GhostStreamProvider:build
+        
+    - name: List Built Files
+      run: |
+        echo "=== Looking for JAR files ==="
+        find . -name "*.jar" -type f
+        echo "=== GhostStreamProvider build directory ==="
+        ls -la GhostStreamProvider/build/ || echo "No build directory"
+        echo "=== Checking libs folder ==="
+        ls -la GhostStreamProvider/build/libs/ || echo "No libs directory"
