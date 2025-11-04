@@ -1,4 +1,4 @@
-name: Build GhostStream Provider
+name: Diagnose Build
 
 on:
   push:
@@ -17,16 +17,34 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Build GhostStream Provider
+    - name: List All Tasks
       run: |
         chmod +x gradlew
-        ./gradlew :GhostStreamProvider:build
+        ./gradlew tasks --all
         
-    - name: List Built Files
+    - name: Check Project Structure
       run: |
-        echo "=== Looking for JAR files ==="
+        echo "=== Project Structure ==="
+        find . -name "*.kt" -type f
+        echo "=== Source Files ==="
+        find GhostStreamProvider/src -type f
+        echo "=== Settings ==="
+        cat settings.gradle.kts || echo "No settings file"
+        
+    - name: Try Different Build Commands
+      run: |
+        echo "=== Try assemble ==="
+        ./gradlew :GhostStreamProvider:assemble || echo "assemble failed"
+        echo "=== Try jar ==="
+        ./gradlew :GhostStreamProvider:jar || echo "jar failed"
+        echo "=== Try compileJava ==="
+        ./gradlew :GhostStreamProvider:compileJava || echo "compileJava failed"
+        echo "=== Try compileKotlin ==="
+        ./gradlew :GhostStreamProvider:compileKotlin || echo "compileKotlin failed"
+        
+    - name: List Results
+      run: |
+        echo "=== Final JAR search ==="
         find . -name "*.jar" -type f
-        echo "=== GhostStreamProvider build directory ==="
-        ls -la GhostStreamProvider/build/ || echo "No build directory"
-        echo "=== Checking libs folder ==="
-        ls -la GhostStreamProvider/build/libs/ || echo "No libs directory"
+        echo "=== Build directories ==="
+        find . -name "build" -type d | head -10
