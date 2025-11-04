@@ -1,0 +1,12 @@
+[
+  {
+    "name": "GhostStream",
+    "versionName": "1.0.0",
+    "versionCode": 1,
+    "packageName": "com.flummox.ghoststream",
+    "apkUrl": "https://github.com/FlummoxGamer/FLUMMOX-Repo/releases/download/latest/GhostStreamProvider-release.apk",
+    "description": "Multi-source provider.",
+    "minSupportVersionCode": 1,
+    "maxSupportVersionCode": 999
+  }
+]
