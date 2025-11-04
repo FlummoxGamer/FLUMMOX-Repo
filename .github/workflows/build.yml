@@ -1,34 +1,38 @@
-name: Debug Project Structure
+name: Build GhostStream JAR
 
 on:
   push:
     branches: [ main, master ]
 
 jobs:
-  debug:
+  build:
     runs-on: ubuntu-latest
     
     steps:
     - uses: actions/checkout@v4
     
-    - name: Check Project Setup
-      run: |
-        echo "=== Complete File Structure ==="
-        find . -type f -name "*.kt" -o -name "*.java" -o -name "build.gradle.kts" -o -name "settings.gradle.kts" | head -30
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
         
-        echo "=== GhostStreamProvider Source Files ==="
-        find GhostStreamProvider/src -type f 2>/dev/null | head -20 || echo "No src directory"
-        
-        echo "=== Settings.gradle.kts ==="
-        cat settings.gradle.kts
-        
-        echo "=== GhostStreamProvider build.gradle.kts ==="
-        cat GhostStreamProvider/build.gradle.kts
-        
-        echo "=== Root build.gradle.kts ==="
-        cat build.gradle.kts
-        
-    - name: Check Gradle Projects
+    - name: Build JAR
       run: |
         chmod +x gradlew
-        ./gradlew projects --console=plain
+        ./gradlew :GhostStreamProvider:jar
+        
+    - name: List Built Files
+      run: |
+        echo "=== Looking for JAR files ==="
+        find . -name "*.jar" -type f
+        echo "=== GhostStreamProvider build directory ==="
+        ls -la GhostStreamProvider/build/ || echo "No build directory"
+        echo "=== Checking libs folder ==="
+        ls -la GhostStreamProvider/build/libs/ || echo "No libs directory"
+        
+    - name: Upload JAR Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: GhostStream-JAR
+        path: GhostStreamProvider/build/libs/*.jar
