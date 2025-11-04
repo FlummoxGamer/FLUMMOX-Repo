@@ -23,9 +23,6 @@ jobs:
     - name: Build JAR files
       run: ./gradlew :GhostStreamProvider:jar
       
-    - name: List built JAR files
-      run: find . -name "*.jar" -type f
-      
     - name: Upload JAR to Release
       uses: softprops/action-gh-release@v1
       with:
