@@ -1,4 +1,4 @@
-name: Build and Release APK
+name: Build CloudStream Extension
 
 on:
   push:
@@ -17,26 +17,20 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-        
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       
-    - name: Build APK
-      run: ./gradlew :GhostStreamProvider:assembleRelease
+    - name: Build Extension
+      run: ./gradlew :GhostStreamProvider:build
+      
+    - name: Find JAR file
+      run: |
+        find . -name "*.jar" -path "*/GhostStreamProvider/*" | grep -v test | head -1
+        JAR_FILE=$(find . -name "*.jar" -path "*/GhostStreamProvider/*" | grep -v test | head -1)
+        echo "JAR_FILE=$JAR_FILE" >> $GITHUB_ENV
         
-    - name: Upload APK Artifact
+    - name: Upload JAR Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: GhostStream-APK
-        path: GhostStreamProvider/build/outputs/apk/release/*.apk
-        
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v1.0.0
-        files: GhostStreamProvider/build/outputs/apk/release/*.apk
-        body: "Automatic release of GhostStream Provider"
-        draft: false
-        prerelease: false
+        name: GhostStream-Extension
+        path: ${{ env.JAR_FILE }}
