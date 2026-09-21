@@ -3,7 +3,8 @@ import os
 
 version = int(os.environ.get("NEW_VERSION", "100"))
 branch = os.environ.get("OUTPUT_BRANCH", "builds")
-base = f"https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/{branch}"
+repo = os.environ.get("GITHUB_REPOSITORY", "FlummoxGamer/FLUMMOX-Repo")
+base = f"https://raw.githubusercontent.com/{repo}/{branch}"
 
 with open("builds/plugins.json") as f:
     data = json.load(f)

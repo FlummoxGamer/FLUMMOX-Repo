@@ -101,30 +101,42 @@ val raw: List<AioMeta> = if (isStreaming) {
 
     // ── search ──
     override suspend fun search(query: String): List<SearchResponse>? {
-        val key = BuildConfig.TMDB_API_KEY
-        if (key.isBlank()) {
-            BCLog.e("TMDB key missing — falling back to Aiometa search")
-            return searchViaAiometa(query)
-        }
-        return searchViaTmdb(query, key)
+    val key = BuildConfig.TMDB_API_KEY
+    BCLog.d("TMDB key diag: len=${key.length} head=${key.take(6)} tail=${key.takeLast(4)}")
+    if (key.isBlank()) {
+        BCLog.e("TMDB key missing at runtime")
+        return emptyList()
+    }
+    return searchViaTmdb(query, key)
     }
 
     private suspend fun searchViaTmdb(query: String, key: String): List<SearchResponse>? {
-        val out = mutableListOf<SearchResponse>()
-        try {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val url = "https://api.themoviedb.org/3/search/multi" +
-                "?api_key=$key&language=en-US&query=$encoded&page=1&include_adult=false"
-            val json = app.get(url).text
-            val parsed = tryParseJson<TmdbSearchResponse>(json)
-            parsed?.results?.forEach { item ->
-                item.toSearchResponse()?.let { out.add(it) }
-            }
-        } catch (e: Exception) {
-            BCLog.e("TMDB search failed: ${e.message}")
+    val out = mutableListOf<SearchResponse>()
+    try {
+        val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+        val url = "https://api.themoviedb.org/3/search/multi" +
+            "?api_key=$key&language=en-US&query=$encoded&page=1&include_adult=false"
+        val res = app.get(url)
+        val json = res.text
+        BCLog.d("TMDB HTTP ${res.code}, body ${json.length} chars")
+        if (res.code != 200) {
+            BCLog.e("TMDB non-200: ${json.take(500)}")
+            return out
         }
-        BCLog.d("TMDB search '$query': ${out.size} results")
-        return out
+        val parsed = tryParseJson<TmdbSearchResponse>(json)
+        if (parsed == null) {
+            BCLog.e("TMDB parse null. head: ${json.take(300)}")
+        } else {
+            BCLog.d("TMDB parsed results=${parsed.results?.size ?: 0}")
+        }
+        parsed?.results?.forEach { item ->
+            item.toSearchResponse()?.let { out.add(it) }
+        }
+    } catch (e: Exception) {
+        BCLog.e("TMDB search failed: ${e.message}")
+    }
+    BCLog.d("TMDB search '$query': ${out.size} results")
+    return out
     }
 
     private suspend fun searchViaAiometa(query: String): List<SearchResponse>? {
@@ -410,9 +422,34 @@ val raw: List<AioMeta> = if (isStreaming) {
                                          }
                                        callback.invoke(link)
                                        emittedCount.incrementAndGet()
-                                       HostHealth.recordSuccess("febbox.local")
+                                           HostHealth.recordSuccess("febbox.local")
+                                      }
+                                      "MLSBD" -> {
+                                     // MLSBD already resolved to a direct stream URL from player.php
+                                     // or a direct R2 download URL — emit it, don't try to resolve.
+                                     val linkType = when {
+                                         m.url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
+                                         m.url.contains(".mpd", true) -> ExtractorLinkType.DASH
+                                         else -> ExtractorLinkType.VIDEO
+                                    }
+                                    val display = "$emoji${m.quality} •${m.mirror}"
+                                    val ua = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 " +
+                                        "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                                    BCLog.d("MLSBD link: $display")
+                                    BCLog.d("MLSBD url: ${m.url}")
+                                    callback.invoke(
+                                        newExtractorLink("MLSBD", display, m.url, linkType) {
+                                            this.referer = "https://new.multicloudlinks.com/"
+                                            this.headers = mapOf(
+                                                "User-Agent" to ua,
+                                                "Referer" to "https://new.multicloudlinks.com/"
+                                            )
+                                        }
+                                   )
+                                   emittedCount.incrementAndGet()
+                                   HostHealth.recordSuccess(host)
                                    }
-                                   else -> {
+                                    else -> {
                                     val finalUrl = resolveWrapper(m.url)
                                     if (finalUrl == null) {
                                         BCLog.d("unresolved: ${m.mirror}")

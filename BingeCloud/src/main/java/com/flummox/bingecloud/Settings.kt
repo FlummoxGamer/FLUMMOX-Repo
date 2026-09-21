@@ -1413,7 +1413,8 @@ private class NightCloudsView(context: Context) : View(context) {
         run {
             val all = listOf(
                 isSrcVm(), isSrcMd(), isSrcHdh(),
-                isSrcMovieBox(), isSrcAnikoto(), isSrcShowBox(), isSrcMlsbd()
+                isSrcMovieBox(), isSrcAnikoto(), isSrcShowBox()
+               // ── MLSBD REVIVE ── add `, isSrcMlsbd()` back to include in the count
              )
              val on = all.count { it }
              val total = all.size
@@ -1427,7 +1428,8 @@ private class NightCloudsView(context: Context) : View(context) {
             c.body.addView(toggleRow(ctx, "MovieBox", "Native API — no login", isSrcMovieBox()) { setKey(K_SRC_MOVIEBOX, it) })
             c.body.addView(toggleRow(ctx, "AniKoto", "Anime only — sub/dub", isSrcAnikoto()) { setKey(K_SRC_ANIKOTO, it) })
             c.body.addView(toggleRow(ctx, "ShowBox", "FebBox — movies & series", isSrcShowBox()) { setKey(K_SRC_SHOWBOX, it) })
-            c.body.addView(toggleRow(ctx, "MLSBD", "Bangla movies & series", isSrcMlsbd()) { setKey(K_SRC_MLSBD, it) })
+           // ── MLSBD REVIVE ── uncomment below to re-enable
+           // c.body.addView(toggleRow(ctx, "MLSBD", "Bangla movies & series", isSrcMlsbd()) { setKey(K_SRC_MLSBD, it) })
             body.addView(c.root)
         }
 

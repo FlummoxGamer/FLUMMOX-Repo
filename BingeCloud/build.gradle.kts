@@ -30,11 +30,14 @@ kotlin {
 
 cloudstream {
     description = "TV Series, Movies, Anime"
-    authors = listOf("FlummoxGamer")
+    authors = listOf("FLUMMOX")
     status = 1
     tvTypes = listOf("Movies","TV Series","Anime")
     language = "en"
     iconUrl = "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeCloud/icon.png"
+    // Read from gradle.properties → single source of truth.
+    // Bump `bingecloud_version` there; CI reads it and passes to patch_plugins.py.
+    version = (project.findProperty("bingecloud_version") as? String)?.toIntOrNull() ?: 1
 }
 
 dependencies {

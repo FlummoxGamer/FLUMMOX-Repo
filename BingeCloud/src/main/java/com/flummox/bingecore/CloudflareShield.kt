@@ -9,9 +9,13 @@ import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 
 object CloudflareShield {
 
-    val GROUPS: Map<String, List<String>> = mapOf(
-        "MLSBD" to listOf("mlsbd.co")
-    )
+    // ── MLSBD REVIVE ── uncomment to re-enable the MLSBD pill in Settings
+    // val GROUPS: Map<String, List<String>> = mapOf(
+    //     "MLSBD" to listOf("mlsbd.co")
+    // )
+    // Empty while MLSBD is disabled. Add entries here for any new
+    // CF-protected source: "Name" to listOf("domain.com")
+    val GROUPS: Map<String, List<String>> = emptyMap()
 
     private const val K_CF_EXPIRY_PREFIX = "bingecloud_cf_expiry_"
 

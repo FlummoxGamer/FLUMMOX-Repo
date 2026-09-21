@@ -1,9 +1,11 @@
 package com.flummox.bingecloud
 
+import android.app.Activity
 import android.content.Context
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.network.WebViewResolver
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URI
@@ -13,6 +15,8 @@ object BingeCloudCtx {
     var context: Context? = null
 }
 
+// Must match CfSolverDialog.CF_UA and MlsbdApi.MLSBD_UA exactly —
+// cf_clearance is bound to the UA that solved it.
 private const val CF_UA =
     "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -28,76 +32,105 @@ private val CF_INDICATORS = listOf(
     "challenges.cloudflare.com"
 )
 
-// ── challenge detection ──
-private fun isChallenge(html: String): Boolean {
+internal fun isCfChallenge(html: String): Boolean {
     val lower = html.lowercase()
     return CF_INDICATORS.any { lower.contains(it) }
+}
+
+// ── locate current foreground activity ──
+internal fun currentActivity(): Activity? {
+    // Option 1: CommonActivity.INSTANCE (Kotlin object) or .getActivity()
+    try {
+        val cls = Class.forName("com.lagradost.cloudstream3.CommonActivity")
+        val instanceField = cls.getDeclaredField("INSTANCE").apply { isAccessible = true }
+        val instance = instanceField.get(null)
+        if (instance is Activity) return instance
+        try {
+            val m = cls.getMethod("getActivity")
+            val a = m.invoke(instance)
+            if (a is Activity) return a
+        } catch (_: Throwable) {}
+    } catch (_: Throwable) {}
+
+    // Option 2: unwrap BingeCloudCtx.context through ContextWrapper chain
+    var ctx: Context? = BingeCloudCtx.context
+    var depth = 0
+    while (ctx != null && depth < 12) {
+        if (ctx is Activity) return ctx
+        ctx = (ctx as? android.content.ContextWrapper)?.baseContext
+        depth++
+    }
+    return null
 }
 
 // ── main CF-aware GET ──
 suspend fun cloudflareGet(url: String, referer: String? = null): String? {
     val startMs = System.currentTimeMillis()
-    val domain = try { java.net.URI(url).host ?: "" } catch (_: Exception) { "" }
+    val domain = try { URI(url).host ?: "" } catch (_: Exception) { "" }
 
-    // ── 1. try stored per-domain cookie ──
-    val storedCookie = if (domain.isNotEmpty()) Settings.getCookieForDomain(domain) else null
-    if (!storedCookie.isNullOrBlank()) {
-        try {
-            val res = app.get(
-                url,
-                referer = referer,
-                headers = mapOf("User-Agent" to CF_UA, "Cookie" to storedCookie)
-            )
-            if (res.code in 200..299) {
-                val text = res.text
-                if (!isChallenge(text)) {
-                    BCLog.d("[CF] stored cookie worked for $domain (${System.currentTimeMillis() - startMs}ms)")
-                    return text
-                }
-            }
-        } catch (_: Exception) {}
-    }
-
-    // ── 2. fast plain HTTP GET ──
+    // ── 1. stored per-domain cookie ──
+val storedCookie = if (domain.isNotEmpty()) Settings.getCookieForDomain(domain) else null
+if (!storedCookie.isNullOrBlank()) {
     try {
         val res = app.get(
-            url,
-            referer = referer,
-            headers = mapOf("User-Agent" to CF_UA)
+            url, referer = referer,
+            headers = mapOf("User-Agent" to CF_UA, "Cookie" to storedCookie)
         )
-        if (res.code in 200..299) {
-            val text = res.text
-            if (!isChallenge(text)) {
-                BCLog.d("[CF] plain GET ok for $domain (${System.currentTimeMillis() - startMs}ms)")
-                return text
+        if (res.code in 200..299 && !isCfChallenge(res.text)) {
+            BCLog.d("[CF] stored cookie worked for $domain (${System.currentTimeMillis() - startMs}ms)")
+            return res.text
+        }
+        BCLog.d("[CF] stored cookie rejected for $domain (HTTP ${res.code}, cf=${isCfChallenge(res.text)})")
+    } catch (e: Exception) {
+        BCLog.d("[CF] stored cookie threw for $domain: ${e.message}")
+    }
+} else {
+    BCLog.d("[CF] no stored cookie for $domain")
+}
+
+    // ── 2. plain GET ──
+    var shouldSolve = false
+    try {
+        val res = app.get(url, referer = referer, headers = mapOf("User-Agent" to CF_UA))
+        if (res.code in 200..299 && !isCfChallenge(res.text)) {
+           BCLog.d("[CF] plain GET ok for $domain (${System.currentTimeMillis() - startMs}ms)")
+           return res.text
+        }
+        BCLog.d("[CF] plain GET returned ${res.code} for $domain")
+       // Only solve on genuine CF signals — not on 500 / 404 / etc.
+       shouldSolve = res.code == 403 || res.code == 503 || isCfChallenge(res.text)
+   } catch (e: Exception) {
+       BCLog.d("[CF] plain GET threw for $domain: ${e.message}")
+       // Network errors, OOM guards, TLS failures — not CF. Do not solve.
+       shouldSolve = false
+   }
+
+   if (!shouldSolve) {
+      BCLog.d("[CF] not a CF challenge for $domain — skipping solver")
+      return null
+   }
+
+    // ── 3. interactive solver ──
+    return try {
+        val activity = currentActivity()
+        if (activity == null) {
+            BCLog.d("[CF] no activity for solver ($domain)")
+            return null
+        }
+        BCLog.d("[CF] invoking solver for $domain")
+        val result = CfSolverDialog.resolve(activity, url)
+        if (result != null && result.html.isNotBlank()) {
+            if (result.cookie.isNotBlank() && domain.isNotEmpty()) {
+                Settings.saveCookieForDomain(domain, result.cookie)
             }
-            BCLog.d("[CF] challenge detected on $domain — starting WebView (${System.currentTimeMillis() - startMs}ms)")
+            BCLog.d("[CF] solver ok for $domain (${System.currentTimeMillis() - startMs}ms)")
+            result.html
         } else {
-            BCLog.d("[CF] plain GET returned ${res.code} for $domain")
+            BCLog.d("[CF] solver returned null for $domain")
+            null
         }
     } catch (e: Exception) {
-        BCLog.d("[CF] plain GET threw for $domain: ${e.message}")
-    }
-
-    // ── 3. WebView fallback (SLOW — this is the 5-20s killer) ──
-    val wvStart = System.currentTimeMillis()
-    val cookies = resolveWithWebView(url)
-    val wvDuration = System.currentTimeMillis() - wvStart
-    if (cookies.isNullOrBlank()) {
-        BCLog.e("[CF] WebView returned no cookies for $domain (took ${wvDuration}ms)")
-        return null
-    }
-    BCLog.d("[CF] WebView resolved for $domain in ${wvDuration}ms (cookie len=${cookies.length})")
-
-    return try {
-        val res = app.get(
-            url,
-            referer = referer,
-            headers = mapOf("User-Agent" to CF_UA, "Cookie" to cookies)
-        )
-        res.text
-    } catch (e: Exception) {
-        BCLog.e("[CF] post-WebView GET failed for $domain: ${e.message}")
+        BCLog.e("[CF] solver failed for $domain: ${e.message}")
         null
     }
 }
@@ -105,45 +138,4 @@ suspend fun cloudflareGet(url: String, referer: String? = null): String? {
 suspend fun cloudflareGetDoc(url: String, referer: String? = null): Document? {
     val html = cloudflareGet(url, referer) ?: return null
     return Jsoup.parse(html, url)
-}
-
-// ── WebView-based cookie acquisition ──
-private suspend fun resolveWithWebView(url: String): String? {
-    return try {
-        val host = try {
-            URI(url).host ?: ""
-        } catch (e: Exception) {
-            ""
-        }
-        val interceptRegex = if (host.isNotEmpty())
-            Regex(".*${Regex.escape(host)}.*")
-        else
-            Regex(".*")
-
-        val resolver = WebViewResolver(
-            interceptUrl = interceptRegex,
-            additionalUrls = listOf(
-                Regex(".*challenges\\.cloudflare\\.com.*"),
-                Regex(".*cdn-cgi/challenge-platform.*")
-            ),
-            userAgent = CF_UA,
-            useOkhttp = false,
-            timeout = 20_000L
-        )
-
-        val (finalRequest, additional) = resolver.resolveUsingWebView(url)
-        var cookies = finalRequest?.header("Cookie")
-            ?: additional.firstOrNull()?.header("Cookie")
-
-        // ── fallback: read directly from WebView CookieManager ──
-        if (cookies.isNullOrBlank()) {
-            cookies = CookieManager.getInstance().getCookie(url)
-        }
-
-        BCLog.d("[CF] WebView cookie len=${cookies?.length ?: 0}")
-        cookies
-    } catch (e: Exception) {
-        BCLog.e("[CF] WebViewResolver failed: ${e.message}")
-        null
-    }
 }

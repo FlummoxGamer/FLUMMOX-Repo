@@ -94,8 +94,13 @@ fun titleMatches(a: String, b: String): Boolean {
         if (tb.size == 1) return sa.startsWith(sb)
         val queryInCandidate = common.size.toFloat() / ta.size
         val candidateInQuery = common.size.toFloat() / tb.size
-        return queryInCandidate >= 0.6f && candidateInQuery >= 0.6f
-}
+       // OR, not AND. If the query is fully contained in the candidate
+       // (typical MLSBD case — search title + massive qualifier tail),
+       // it's a match regardless of how noisy the candidate is.
+       // Same the other direction.
+       return queryInCandidate >= 0.7f || candidateInQuery >= 0.7f
+  
+       }
 
 private val SEASON_MATCH_ALL_TOKENS = listOf(
     "complete series", "all seasons", "season complete", "complete season"
@@ -766,16 +771,19 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
         } catch (e: Exception) { BCLog.e("ShowBox task failed: ${e.message}"); emptyList() }
     } ?: run { BCLog.d("ShowBox timeout"); emptyList() }
 })
-if (Settings.isSrcMlsbd()) jobs.add(async {
-    kotlinx.coroutines.withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
-        try {
-            com.flummox.bingecore.SpeedBooster.deduped("mlsbd:${q.cacheKey()}") {
-                mlsbdExtractRaw(q)
-            }
-        } catch (e: Exception) { BCLog.e("MLSBD task failed: ${e.message}"); emptyList() }
-    } ?: run { BCLog.d("MLSBD timeout"); emptyList() }
-})
-
+// ── MLSBD REVIVE ── uncomment the block below to re-enable.
+// Reason disabled: see MlsbdApi.kt header. Bonghd wrapper now
+// redirects to homepage for external agents.
+//
+// if (Settings.isSrcMlsbd()) jobs.add(async {
+//     kotlinx.coroutines.withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
+//         try {
+//             com.flummox.bingecore.SpeedBooster.deduped("mlsbd:${q.cacheKey()}") {
+//                 mlsbdExtractRaw(q)
+//             }
+//         } catch (e: Exception) { BCLog.e("MLSBD task failed: ${e.message}"); emptyList() }
+//     } ?: run { BCLog.d("MLSBD timeout"); emptyList() }
+// })
         if (jobs.isEmpty()) return@coroutineScope emptyList()
         val all = jobs.awaitAll().filterNotNull().flatten()
         val vm = all.count { it.source == "VM" }
