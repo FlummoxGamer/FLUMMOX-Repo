@@ -1,8 +1,8 @@
 {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeCloud/icon.png",
-    "fileHash": "sha256-47136769ed5231de71748b1c64537ca3a018c2c301128027a51d9b92e0da1968",
+    "fileHash": "sha256-9445d7c83bfe84a5bd55bfe2e60ff97ddc2b2c3d10eb5c52ef8dea5413f5e9de",
     "apiVersion": 1,
-    "fileSize": 263698,
+    "fileSize": 264263,
     "status": 1,
     "language": "en",
     "authors": [
@@ -13,7 +13,7 @@
         "TV Series",
         "Anime"
     ],
-    "version": 210,
+    "version": 212,
     "internalName": "BingeCloud",
     "description": "TV Series, Movies, Anime",
     "url": "",
