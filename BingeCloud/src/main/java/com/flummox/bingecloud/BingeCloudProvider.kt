@@ -102,7 +102,7 @@ val raw: List<AioMeta> = if (isStreaming) {
     // ── search ──
     override suspend fun search(query: String): List<SearchResponse>? {
     val key = BuildConfig.TMDB_API_KEY
-    BCLog.d("TMDB key diag: len=${key.length} head=${key.take(6)} tail=${key.takeLast(4)}")
+    BCLog.v("TMDB key diag: len=${key.length} head=${key.take(6)} tail=${key.takeLast(4)}")
     if (key.isBlank()) {
         BCLog.e("TMDB key missing at runtime")
         return emptyList()

@@ -179,11 +179,33 @@ data class MBStream(
     val captions: List<Pair<String, String>> = emptyList()
 )
 
-private fun extractPolicyResource(signCookie: String?): String? {
+    private fun extractPolicyResource(signCookie: String?): String? {
     if (signCookie.isNullOrBlank()) return null
+
+    // ── New format (2026): Edge-Cache-Cookie=urlprefix=<b64url>:sign=<md5>:t=<unix> ──
+    val urlPrefixMatch = Regex("""urlprefix=([A-Za-z0-9_\-]+)""").find(signCookie)
+    if (urlPrefixMatch != null) {
+        val b64 = urlPrefixMatch.groupValues[1]
+        val normalized = b64.replace('-', '+').replace('_', '/')
+        val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+        return try {
+            val decoded = String(Base64.decode(padded, Base64.DEFAULT)).trim()
+            if (!decoded.startsWith("http")) null
+            else {
+                val trimmed = decoded.trimEnd('*', '/')
+                val finalUrl = if (trimmed.endsWith(".mpd", true)) trimmed else "$trimmed/index.mpd"
+                BCLog.d("extractPolicyResource new-format → $finalUrl")
+                finalUrl
+            }
+        } catch (e: Exception) {
+            BCLog.e("extractPolicyResource (urlprefix): ${e.message}"); null
+        }
+    }
+
+    // ── Old format: CloudFront-Policy=<b64url JSON>; CloudFront-Signature=...; ... ──
     val match = Regex("CloudFront-Policy=([^;]+)").find(signCookie) ?: return null
     val policyRaw = match.groupValues[1]
-
+    
     var decoded: String? = null
     val urlSafe = policyRaw.replace('-', '+').replace('~', '/').replace('_', '=')
     val paddedUrlSafe = if (urlSafe.length % 4 > 0) urlSafe + "=".repeat(4 - urlSafe.length % 4) else urlSafe
@@ -316,8 +338,10 @@ val out = mutableListOf<MBStream>()
         if (dur <= 0) dur = o.optLong("durationMs", 0L).let { if (it > 0) it / 1000 else 0 }
 
         val signCookie = o.optString("signCookie").ifBlank { null }
+        val rawSafe = signCookie?.replace("Cookie", "C00kie")?.replace("cookie", "c00kie") ?: "NULL"
+        BCLog.v("MB signCookie len=${signCookie?.length ?: 0} raw=$rawSafe")
         val realUrl = extractPolicyResource(signCookie) ?: url
-
+        
         val urlHead = realUrl.take(120)
         BCLog.d("MB raw [$audioLabel] dur=${dur}s fmt=${o.optString("format")} codec=${o.optString("codecName")} size=${o.optString("size")} realUrl=$urlHead")
 
