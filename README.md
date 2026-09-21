@@ -12,7 +12,7 @@ A CloudStream plugin repository hosting extensions for streaming Movies, TV Seri
 
 1. Open CloudStream
 2. Go to **Settings → Extensions → Add Repository**
-3. Type the shortcode: `flummoxrepo`
+3. Type the shortcode: `flummox`
    (or paste the full URL: https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/builds/repo.json)
 4. Tap **Add**
 5. Find **BingeCloud** in the list and tap **Install**
