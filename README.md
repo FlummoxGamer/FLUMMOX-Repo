@@ -2,7 +2,7 @@
 
 A CloudStream plugin repository hosting extensions for streaming Movies, TV Series & Anime.
 
-**Shortcode:** `flum`
+**Shortcode:** `flummox`
 
 ---
 
