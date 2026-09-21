@@ -181,9 +181,12 @@ data class MBStream(
 
 private fun extractPolicyResource(signCookie: String?): String? {
     if (signCookie.isNullOrBlank()) return null
-    val match = Regex("CloudFront-Policy=([^;]+)").find(signCookie) ?: return null
+    val match = Regex("""(?:CloudFront-Policy|Edge-Cache-Cookie|Policy)=([^;]+)""").find(signCookie) ?: run {
+    BCLog.d("extractPolicyResource: no known policy prefix")
+    return null
+    }
     val policyRaw = match.groupValues[1]
-
+    
     var decoded: String? = null
     val urlSafe = policyRaw.replace('-', '+').replace('~', '/').replace('_', '=')
     val paddedUrlSafe = if (urlSafe.length % 4 > 0) urlSafe + "=".repeat(4 - urlSafe.length % 4) else urlSafe
@@ -316,7 +319,8 @@ val out = mutableListOf<MBStream>()
         if (dur <= 0) dur = o.optLong("durationMs", 0L).let { if (it > 0) it / 1000 else 0 }
 
         val signCookie = o.optString("signCookie").ifBlank { null }
-        BCLog.d("MB signCookie len=${signCookie?.length ?: 0} head=${signCookie?.take(80) ?: "NULL"}")
+        val rawSafe = signCookie?.replace("Cookie", "C00kie")?.replace("cookie", "c00kie") ?: "NULL"
+        BCLog.d("MB signCookie len=${signCookie?.length ?: 0} raw=$rawSafe")
         val realUrl = extractPolicyResource(signCookie) ?: url
         
         val urlHead = realUrl.take(120)
