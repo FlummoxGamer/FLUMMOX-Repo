@@ -316,8 +316,9 @@ val out = mutableListOf<MBStream>()
         if (dur <= 0) dur = o.optLong("durationMs", 0L).let { if (it > 0) it / 1000 else 0 }
 
         val signCookie = o.optString("signCookie").ifBlank { null }
+        BCLog.d("MB signCookie len=${signCookie?.length ?: 0} head=${signCookie?.take(80) ?: "NULL"}")
         val realUrl = extractPolicyResource(signCookie) ?: url
-
+        
         val urlHead = realUrl.take(120)
         BCLog.d("MB raw [$audioLabel] dur=${dur}s fmt=${o.optString("format")} codec=${o.optString("codecName")} size=${o.optString("size")} realUrl=$urlHead")
 
