@@ -1,5 +1,7 @@
 package com.flummox.bingecloud
 
+import kotlinx.coroutines.launch
+import com.flummox.bingecore.CloudflareShield
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.Dialog
@@ -74,6 +76,7 @@ object Settings {
     const val K_SRC_MOVIEBOX = "bingecloud_src_moviebox"
     const val K_SRC_ANIKOTO = "bingecloud_src_anikoto"
     const val K_SRC_SHOWBOX = "bingecloud_src_showbox"
+    const val K_SRC_MLSBD = "bingecloud_src_mlsbd"
     const val K_QUALITY = "bingecloud_quality"
     const val K_PREFILTER = "bingecloud_prefilter"
     const val K_PREFETCH = "bingecloud_prefetch"
@@ -120,7 +123,7 @@ object Settings {
     // ── Trending ──
     RowSpec(K_ROW_TRENDING_MOVIES, "movie", "tmdb.trending", "Trending Movies", "Day", "TMDB • Today"),
     RowSpec(K_ROW_TRENDING_SERIES, "series", "tmdb.trending", "Trending Series", "Day", "TMDB • Today"),
-    
+
     // ── Streaming platforms ──
     RowSpec(K_ROW_STREAM_NETFLIX, "movie", "tmdb.provider.8", "Netflix", null, "Netflix"),
     RowSpec(K_ROW_STREAM_PRIME, "movie", "tmdb.provider.9", "Prime Video", null, "Prime Video"),
@@ -376,6 +379,7 @@ private val DEFAULT_ON_ROWS = setOf(
     fun isSrcMovieBox(): Boolean = getKey<Boolean>(K_SRC_MOVIEBOX) ?: true
     fun isSrcAnikoto(): Boolean = getKey<Boolean>(K_SRC_ANIKOTO) ?: true
     fun isSrcShowBox(): Boolean = getKey<Boolean>(K_SRC_SHOWBOX) ?: true
+    fun isSrcMlsbd(): Boolean = getKey<Boolean>(K_SRC_MLSBD) ?: true
     // ══════════════════════════════════════════════════════════
     // ── COLORS ──
     // ══════════════════════════════════════════════════════════
@@ -458,7 +462,7 @@ private fun arrowButtonBg(ctx: Context): RippleDrawable = withRipple(
     }
 )
 
-    // ═══════════════════════════════════════hb═══════════════════
+    // ══════════════════════════════════════════════════════════
     // ── SHOOTING STARS ──
     // ══════════════════════════════════════════════════════════
     private class ShootingStarsView(context: Context) : View(context) {
@@ -619,7 +623,7 @@ private fun arrowButtonBg(ctx: Context): RippleDrawable = withRipple(
         postInvalidateOnAnimation()
     }
     }
-    
+
 // ══════════════════════════════════════════════════════════
 // ── NIGHT CLOUDS ──
 // Translucent soft clouds drifting right→left.
@@ -716,8 +720,6 @@ private class NightCloudsView(context: Context) : View(context) {
                     postInvalidateOnAnimation()
                 }
             }
-    
-                
 
     // ══════════════════════════════════════════════════════════
     // ── CARD BUILDER ──
@@ -1113,32 +1115,140 @@ private class NightCloudsView(context: Context) : View(context) {
             body.addView(c.root)
         }
 
-        // ── CLOUDFLARE BYPASS ──
+        // ── CLOUDFLARE SHIELD ──
         run {
-            val saved = getCfDomains()
             val c = buildCard(
-                ctx, "🛡️", "Cloudflare Bypass",
-                subtitle = if (saved.isEmpty()) "No domains configured"
-                else "${saved.size} domain(s)",
-                badge = if (saved.isNotEmpty()) "✓ ${saved.size}" else null,
-                badgeColor = GREEN
+                ctx, "🛡️", "Cloudflare Shield",
+                subtitle = "One-tap bypass for all protected sources"
             )
-            c.body.addView(labelBlock(ctx, "Protected sites",
-                "Open a WebView, solve the challenge, tap Save Cookies."))
-            if (saved.isEmpty()) {
-                c.body.addView(TextView(ctx).apply {
-                    text = "No domains saved yet. Add one below."
-                    setTextColor(SUBTEXT); textSize = 12f
-                    setPadding(dp(ctx, 14), dp(ctx, 8), dp(ctx, 14), dp(ctx, 8))
-                })
-            } else {
+
+            val pillHolder = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(ctx, 4), dp(ctx, 4), dp(ctx, 4), dp(ctx, 10))
+            }
+
+            fun renderPills() {
+                pillHolder.removeAllViews()
+                for ((sourceName, _) in CloudflareShield.GROUPS) {
+                    val st = CloudflareShield.statusOf(sourceName)
+                    val row = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        background = bg(ROW, 12, ctx)
+                        setPadding(dp(ctx, 14), dp(ctx, 12), dp(ctx, 14), dp(ctx, 12))
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { bottomMargin = dp(ctx, 6) }
+                    }
+                    row.addView(TextView(ctx).apply {
+                        text = when (st.state) {
+                            CloudflareShield.State.PROTECTED -> "🟢"
+                            CloudflareShield.State.PARTIAL -> "🟡"
+                            CloudflareShield.State.WORKING -> "🔄"
+                            else -> "🔴"
+                        }
+                        textSize = 16f
+                        setPadding(0, 0, dp(ctx, 10), 0)
+                    })
+                    val col = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    col.addView(TextView(ctx).apply {
+                        text = sourceName
+                        setTextColor(TEXT)
+                        textSize = 14f
+                        setTypeface(typeface, Typeface.BOLD)
+                    })
+                    val sub = when (st.state) {
+                        CloudflareShield.State.PROTECTED -> {
+                            val hours = if (st.earliestExpiryMs > 0) {
+                                ((st.earliestExpiryMs - System.currentTimeMillis()) / 3_600_000L).coerceAtLeast(0)
+                            } else -1L
+                            if (hours >= 0) "All protected · expires in ${hours}h"
+                            else "All protected"
+                        }
+                        CloudflareShield.State.PARTIAL -> "Some cookies expired"
+                        CloudflareShield.State.WORKING -> "Bypassing…"
+                        else -> "Not protected"
+                    }
+                    col.addView(TextView(ctx).apply {
+                        text = sub
+                        setTextColor(SUBTEXT)
+                        textSize = 11f
+                        setPadding(0, dp(ctx, 2), 0, 0)
+                    })
+                    row.addView(col)
+                    row.addView(TextView(ctx).apply {
+                        text = "${st.freshCount} / ${st.totalCount}"
+                        setTextColor(ACCENT_STRONG)
+                        textSize = 13f
+                    })
+                    pillHolder.addView(row)
+                }
+            }
+            renderPills()
+            c.body.addView(pillHolder)
+
+            // primary — Bypass / Refresh
+            c.body.addView(actionRow(
+                ctx,
+                "Bypass all protected sources",
+                "Opens one window, solves each site in order",
+                "Bypass"
+            ) {
+                val src = CloudflareShield.GROUPS.keys.firstOrNull() ?: return@actionRow
+                val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+                scope.launch {
+                    val ok = CloudflareShield.bypassGroup(ctx, src) { cur, total, dm ->
+                        Toast.makeText(ctx, "Bypassing $cur/$total: $dm", Toast.LENGTH_SHORT).show()
+                    }
+                    val total = CloudflareShield.GROUPS[src]?.size ?: 0
+                    Toast.makeText(
+                        ctx,
+                        if (ok == total) "✓ All protected" else "Protected $ok / $total",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    dialog.dismiss()
+                    showSettingsDialog(ctx, onSaved)
+                }
+            })
+
+            // clear all
+            c.body.addView(actionRow(
+                ctx,
+                "Clear all cookies",
+                "Removes every saved Cloudflare cookie",
+                "Clear", buttonColor = RED
+            ) {
+                AlertDialog.Builder(ctx)
+                    .setTitle("Clear all CF cookies?")
+                    .setMessage("You will need to bypass again next time.")
+                    .setPositiveButton("Clear") { _, _ ->
+                        for ((_, domains) in CloudflareShield.GROUPS) {
+                            for (dm in domains) CloudflareShield.clearCookieAndExpiry(dm)
+                        }
+                        Toast.makeText(ctx, "All cookies cleared", Toast.LENGTH_SHORT).show()
+                        dialog.dismiss()
+                        showSettingsDialog(ctx, onSaved)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            })
+
+            // saved domains list
+            val saved = getCfDomains()
+            if (saved.isNotEmpty()) {
+                c.body.addView(labelBlock(ctx, "Saved domains",
+                    "Tap ↻ to refresh, ✕ to clear one"))
                 for (domain in saved) {
                     val has = getCookieForDomain(domain) != null
                     c.body.addView(domainRow(
                         ctx, domain, has,
                         onOpen = { openCfWebView(ctx, "https://$domain", domain) },
                         onClear = {
-                            clearCookieForDomain(domain)
+                            CloudflareShield.clearCookieAndExpiry(domain)
                             Toast.makeText(ctx, "Cleared $domain", Toast.LENGTH_SHORT).show()
                             dialog.dismiss()
                             showSettingsDialog(ctx, onSaved)
@@ -1146,84 +1256,180 @@ private class NightCloudsView(context: Context) : View(context) {
                     ))
                 }
             }
+
+            // add custom domain
             c.body.addView(actionRow(
-                ctx, "Add custom domain", "Open any URL to solve CF",
+                ctx, "Add custom domain", "Enter a domain to protect",
                 "Add"
-            ) { openCfWebView(ctx, "https://www.febbox.com", "febbox.com") })
+            ) {
+                val input = EditText(ctx).apply {
+                    setTextColor(TEXT)
+                    setHintTextColor(SUBTEXT)
+                    hint = "example.com"
+                    textSize = 14f
+                    background = bg(INPUT, 8, ctx)
+                    setPadding(dp(ctx, 14), dp(ctx, 12), dp(ctx, 14), dp(ctx, 12))
+                    inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                }
+                val wrap = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = cardBg(ctx)
+                    setPadding(dp(ctx, 22), dp(ctx, 22), dp(ctx, 22), dp(ctx, 16))
+                }
+                wrap.addView(TextView(ctx).apply {
+                    text = "Add domain"
+                    setTextColor(TEXT)
+                    textSize = 17f
+                    setTypeface(typeface, Typeface.BOLD)
+                })
+                wrap.addView(TextView(ctx).apply {
+                    text = "Enter the domain without https:// — e.g. example.com"
+                    setTextColor(SUBTEXT)
+                    textSize = 13f
+                    setPadding(0, dp(ctx, 12), 0, dp(ctx, 12))
+                })
+                wrap.addView(input, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ))
+                val inputDlg = AlertDialog.Builder(ctx).create()
+                val btnRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.END
+                    setPadding(0, dp(ctx, 20), 0, 0)
+                }
+                btnRow.addView(Button(ctx).apply {
+                    text = "Cancel"
+                    textSize = 14f
+                    setTextColor(TEXT)
+                    background = bg(ROW, 14, ctx)
+                    isAllCaps = false
+                    setPadding(dp(ctx, 20), dp(ctx, 10), dp(ctx, 20), dp(ctx, 10))
+                    minHeight = 0; minWidth = 0
+                    setOnClickListener { inputDlg.dismiss() }
+                })
+                btnRow.addView(Button(ctx).apply {
+                    text = "Save"
+                    textSize = 14f
+                    setTextColor(0xFF0A0D14.toInt())
+                    background = saveButtonBg(ctx)
+                    isAllCaps = false
+                    setPadding(dp(ctx, 20), dp(ctx, 10), dp(ctx, 20), dp(ctx, 10))
+                    minHeight = 0; minWidth = 0
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { leftMargin = dp(ctx, 8) }
+                    setOnClickListener {
+                        val raw = input.text?.toString()?.trim().orEmpty()
+                            .removePrefix("https://").removePrefix("http://")
+                            .substringBefore("/").lowercase()
+                        if (raw.isBlank() || !raw.contains(".")) {
+                            Toast.makeText(ctx, "Invalid domain", Toast.LENGTH_SHORT).show()
+                            return@setOnClickListener
+                        }
+                        inputDlg.dismiss()
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+    try {
+        val html = cloudflareGet("https://$raw", referer = "https://$raw")
+        if (html != null) {
+            val cookie = CookieManager.getInstance().getCookie("https://$raw")
+            if (!cookie.isNullOrBlank()) {
+                saveCookieForDomain(raw, cookie)
+                Toast.makeText(ctx, "✓ Saved for $raw", Toast.LENGTH_SHORT).show()
+            }
+        }
+    } catch (_: Exception) {}
+}
+                    }
+                })
+                wrap.addView(btnRow)
+                inputDlg.setView(wrap)
+                inputDlg.window?.setBackgroundDrawable(cardBg(ctx))
+                inputDlg.show()
+            })
+
             body.addView(c.root)
         }
 
         // ── FEBBOX ACCOUNT ──
-run {
-    val has = getFebBoxToken().isNotBlank()
-    val c = buildCard(
-        ctx, "🔑", "FebBox Account",
-        subtitle = if (has) "Signed in" else "Not signed in",
-        badge = if (has) "✓ Active" else "○ None",
-        badgeColor = if (has) GREEN else SUBTEXT
-    )
-    c.body.addView(labelBlock(
-        ctx,
-        if (has) "You're signed in"
-        else "Sign in to unlock ShowBox/FebBox sources",
-        if (has) "Session saved — nothing else to do."
-        else "Sign in via WebView, or paste a cookie from febbox.com."
-    ))
-    c.body.addView(actionRow(
-        ctx, "Sign in / Refresh", "Opens febbox.com login",
-        if (has) "Re-login" else "Sign in"
-    ) {
-        openFebBoxLogin(ctx) {
-            onSaved()
-            dialog.dismiss()
-            showSettingsDialog(ctx, onSaved)
+        run {
+            val has = getFebBoxToken().isNotBlank()
+            val c = buildCard(
+                ctx, "🔑", "FebBox Account",
+                subtitle = if (has) "Signed in" else "Not signed in",
+                badge = if (has) "✓ Active" else "○ None",
+                badgeColor = if (has) GREEN else SUBTEXT
+            )
+            c.body.addView(labelBlock(
+                ctx,
+                if (has) "You're signed in"
+                else "Sign in to unlock ShowBox/FebBox sources",
+                if (has) "Session saved — nothing else to do."
+                else "Sign in via WebView, or paste a cookie from febbox.com."
+            ))
+            c.body.addView(actionRow(
+                ctx, "Sign in / Refresh", "Opens febbox.com login",
+                if (has) "Re-login" else "Sign in"
+            ) {
+                openFebBoxLogin(ctx) {
+                    onSaved()
+                    dialog.dismiss()
+                    showSettingsDialog(ctx, onSaved)
+                }
+            })
+            c.body.addView(actionRow(
+                ctx, "Paste token", "Manually paste cookie from febbox.com",
+                "Paste"
+            ) {
+                showPasteTokenDialog(ctx) {
+                    onSaved()
+                    dialog.dismiss()
+                    showSettingsDialog(ctx, onSaved)
+                }
+            })
+            if (has) {
+                c.body.addView(actionRow(
+                    ctx, "Copy token", "Copy saved session to clipboard",
+                    "Copy"
+                ) {
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("FebBox Token", getFebBoxToken()))
+                    Toast.makeText(ctx, "Token copied", Toast.LENGTH_SHORT).show()
+                })
+                c.body.addView(actionRow(
+                    ctx, "Sign out", "Removes saved session",
+                    "Sign out", buttonColor = RED
+                ) {
+                    clearFebBoxToken()
+                    Toast.makeText(ctx, "Signed out", Toast.LENGTH_SHORT).show()
+                    dialog.dismiss()
+                    showSettingsDialog(ctx, onSaved)
+                })
+            }
+            body.addView(c.root)
         }
-    })
-    c.body.addView(actionRow(
-        ctx, "Paste token", "Manually paste cookie from febbox.com",
-        "Paste"
-    ) {
-        showPasteTokenDialog(ctx) {
-            onSaved()
-            dialog.dismiss()
-            showSettingsDialog(ctx, onSaved)
-        }
-    })
-    if (has) {
-        c.body.addView(actionRow(
-            ctx, "Copy token", "Copy saved session to clipboard",
-            "Copy"
-        ) {
-            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("FebBox Token", getFebBoxToken()))
-            Toast.makeText(ctx, "Token copied", Toast.LENGTH_SHORT).show()
-        })
-        c.body.addView(actionRow(
-            ctx, "Sign out", "Removes saved session",
-            "Sign out", buttonColor = RED
-        ) {
-            clearFebBoxToken()
-            Toast.makeText(ctx, "Signed out", Toast.LENGTH_SHORT).show()
-            dialog.dismiss()
-            showSettingsDialog(ctx, onSaved)
-        })
-    }
-    body.addView(c.root)
-}
 
         // ── SOURCES ──
         run {
-            val on = listOf(isSrcVm(), isSrcMd(), isSrcHdh(), isSrcMovieBox(), isSrcAnikoto(), isSrcShowBox()).count { it }
-            val c = buildCard(
-                ctx, "📡", "Sources", "$on of 6 enabled",
-                badge = "$on/6"
-            )
+            val all = listOf(
+                isSrcVm(), isSrcMd(), isSrcHdh(),
+                isSrcMovieBox(), isSrcAnikoto(), isSrcShowBox()
+               // ── MLSBD REVIVE ── add `, isSrcMlsbd()` back to include in the count
+             )
+             val on = all.count { it }
+             val total = all.size
+             val c = buildCard(
+                 ctx, "📡", "Sources", "$on of $total enabled",
+                 badge = "$on/$total"
+             )
             c.body.addView(toggleRow(ctx, "VegaMovies", null, isSrcVm()) { setKey(K_SRC_VM, it) })
             c.body.addView(toggleRow(ctx, "MoviesDrive", null, isSrcMd()) { setKey(K_SRC_MD, it) })
             c.body.addView(toggleRow(ctx, "HDhub4u", null, isSrcHdh()) { setKey(K_SRC_HDH, it) })
             c.body.addView(toggleRow(ctx, "MovieBox", "Native API — no login", isSrcMovieBox()) { setKey(K_SRC_MOVIEBOX, it) })
             c.body.addView(toggleRow(ctx, "AniKoto", "Anime only — sub/dub", isSrcAnikoto()) { setKey(K_SRC_ANIKOTO, it) })
             c.body.addView(toggleRow(ctx, "ShowBox", "FebBox — movies & series", isSrcShowBox()) { setKey(K_SRC_SHOWBOX, it) })
+           // ── MLSBD REVIVE ── uncomment below to re-enable
+           // c.body.addView(toggleRow(ctx, "MLSBD", "Bangla movies & series", isSrcMlsbd()) { setKey(K_SRC_MLSBD, it) })
             body.addView(c.root)
         }
 
@@ -1426,7 +1632,7 @@ run {
                     ))
                 }
             }
-            
+
                renderList()
                c.body.addView(actionRow(
                    ctx, "Reset home", "Restore default rows, order and toggles",

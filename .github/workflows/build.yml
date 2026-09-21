@@ -31,6 +31,18 @@ jobs:
             echo "branch=builds" >> $GITHUB_OUTPUT
           fi
 
+      - name: Read version from gradle.properties
+        id: ver
+        working-directory: src
+        run: |
+          V=$(grep -E '^bingecloud_version=' gradle.properties | cut -d= -f2 | tr -d ' ')
+          if [ -z "$V" ]; then
+            echo "bingecloud_version missing from gradle.properties"
+            exit 1
+          fi
+          echo "version=$V" >> $GITHUB_OUTPUT
+          echo "Building version $V"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.out.outputs.branch }}
@@ -63,12 +75,14 @@ jobs:
         working-directory: src
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          NEW_VERSION: ${{ steps.ver.outputs.version }}
         run: gradle make --no-daemon --no-configuration-cache --no-build-cache
 
       - name: Generate plugins.json
         working-directory: src
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          NEW_VERSION: ${{ steps.ver.outputs.version }}
         run: gradle makePluginsJson --no-daemon --no-configuration-cache --no-build-cache
 
       - name: Copy artifacts to builds
@@ -84,7 +98,7 @@ jobs:
 
       - name: Patch plugins.json URL and bump version
         env:
-          NEW_VERSION: 210
+          NEW_VERSION: ${{ steps.ver.outputs.version }}
           OUTPUT_BRANCH: ${{ steps.out.outputs.branch }}
         run: python3 src/scripts/patch_plugins.py
 

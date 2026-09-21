@@ -109,6 +109,7 @@ suspend fun aioSearch(query: String, type: String): List<AioMeta> {
         emptyList()
     }
 }
+
 // ── TMDB Discover (streaming-platform catalogs) ──
 data class TmdbDiscoverItem(
     val id: Int? = null,
@@ -179,4 +180,3 @@ private fun TmdbDiscoverItem.toAioMeta(tmdbType: String): AioMeta? {
         year = yearStr
     )
 }
-
