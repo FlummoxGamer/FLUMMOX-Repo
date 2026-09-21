@@ -1,13 +1,13 @@
 [
   {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeCloud/icon.png",
-    "fileHash": "sha256-e3ac7ac82d64893b2936b709d003fe894e956a0a4c8970028df88a583ede2c18",
+    "fileHash": "sha256-47136769ed5231de71748b1c64537ca3a018c2c301128027a51d9b92e0da1968",
     "apiVersion": 1,
-    "fileSize": 245916,
+    "fileSize": 263698,
     "status": 1,
     "language": "en",
     "authors": [
-      "FlummoxGamer"
+      "FLUMMOX"
     ],
     "tvTypes": [
       "Movies",
