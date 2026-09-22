@@ -31,7 +31,7 @@ private val LANG_ISO3 = mapOf(
     "zh" to "zho", "ml" to "mal", "kn" to "kan"
 )
 
-private const val ENRICH_CAP = 10
+private const val ENRICH_CAP = 30
 
 object TvdbAuth {
     private var memoryToken: String? = null
