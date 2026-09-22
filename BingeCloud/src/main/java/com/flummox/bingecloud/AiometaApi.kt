@@ -2,6 +2,9 @@ package com.flummox.bingecloud
 
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
 
 const val AIOMETA_BASE = "https://aiometadata.elfhosted.com/stremio/9197a4a9-2f5b-4911-845e-8704c520bdf7"
@@ -241,40 +244,56 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
             }
         }
 
-        val videos = mutableListOf<AioVideo>()
+        // Fetch every season in parallel. Sequential was 20 round trips;
+        // parallel is 20 concurrent, wall-clock ~300ms regardless of count.
+        // TMDB's 50 req/s budget is plenty for one title.
+        var videos = emptyList<AioVideo>()
         if (isSeries) {
             val seasons = obj.optJSONArray("seasons")
             if (seasons != null) {
-                val cap = minOf(seasons.length(), 10)
-                for (i in 0 until cap) {
+                val seasonNums = mutableListOf<Int>()
+                for (i in 0 until seasons.length()) {
                     val s = seasons.optJSONObject(i) ?: continue
                     val sNum = s.optInt("season_number", 0)
-                    if (sNum <= 0) continue
-                    try {
-                        val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$sNum?api_key=$key&language=en-US"
-                        val seasonObj = org.json.JSONObject(app.get(seasonUrl).text)
-                        val eps = seasonObj.optJSONArray("episodes") ?: continue
-                        for (j in 0 until eps.length()) {
-                            val e = eps.optJSONObject(j) ?: continue
-                            val eNum = e.optInt("episode_number", 0)
-                            if (eNum <= 0) continue
-                            val stillPath = e.optString("still_path").takeIf { it.isNotBlank() && it != "null" }
-                            videos.add(AioVideo(
-                                id = "tmdb:$tmdbId:$sNum:$eNum",
-                                title = e.optString("name").takeIf { it.isNotBlank() },
-                                season = sNum,
-                                episode = eNum,
-                                thumbnail = stillPath?.let { "https://image.tmdb.org/t/p/w300$it" },
-                                overview = e.optString("overview").takeIf { it.isNotBlank() },
-                                released = e.optString("air_date").takeIf { it.isNotBlank() },
-                                available = true
-                            ))
-                        }
-                    } catch (e: Exception) {
-                        BCLog.e("TMDB season $sNum fetch failed: ${e.message}")
-                    }
+                    if (sNum > 0) seasonNums.add(sNum)
                 }
-            }
+
+                val seasonResults: List<List<AioVideo>> = coroutineScope {
+                    seasonNums.map { sNum ->
+                        async {
+                            try {
+                                 val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$sNum?api_key=$key&language=en-US"
+                                 val seasonObj = org.json.JSONObject(app.get(seasonUrl).text)
+                                 val eps = seasonObj.optJSONArray("episodes") ?: return@async emptyList()
+                                 val out = mutableListOf<AioVideo>()
+                                 for (j in 0 until eps.length()) {
+                                     val e = eps.optJSONObject(j) ?: continue
+                                     val eNum = e.optInt("episode_number", 0)
+                                     if (eNum <= 0) continue
+                                     val stillPath = e.optString("still_path").takeIf { it.isNotBlank() && it != "null" }
+                                     out.add(AioVideo(
+                                         id = "tmdb:$tmdbId:$sNum:$eNum",
+                                         title = e.optString("name").takeIf { it.isNotBlank() },
+                                         season = sNum,
+                                         episode = eNum,
+                                         thumbnail = stillPath?.let { "https://image.tmdb.org/t/p/w300$it" },
+                                         overview = e.optString("overview").takeIf { it.isNotBlank() },
+                                         released = e.optString("air_date").takeIf { it.isNotBlank() },
+                                         available = true
+                                     ))
+                                  }
+                                  out
+                              } catch (e: kotlinx.coroutines.CancellationException) {
+                                  throw e
+                              } catch (e: Exception) {
+                                  BCLog.e("TMDB season $sNum fetch failed: ${e.message}")
+                                  emptyList()
+                              }
+                         }
+                     }.awaitAll()
+                 }
+                 videos = seasonResults.flatten()
+             }
         }
 
         val poster = obj.optString("poster_path").takeIf { it.isNotBlank() && it != "null" }
