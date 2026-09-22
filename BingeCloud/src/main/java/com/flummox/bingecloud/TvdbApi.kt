@@ -119,16 +119,17 @@ private suspend fun tvdbFetch(
             val id = o.optInt("id", 0).takeIf { it > 0 } ?: continue
             val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
 
-            // Soap filter — TVDB tags Soap as a genre
+            // Genre blacklist: drops non-content rows. Keeps all
+            // scripted/film content untouched.
             val genres = o.optJSONArray("genres")
-            var isSoap = false
+            var blocked = false
             if (genres != null) {
                 for (j in 0 until genres.length()) {
-                    val g = genres.optJSONObject(j)?.optString("name")?.lowercase()
-                    if (g == "soap") { isSoap = true; break }
+                    val g = genres.optJSONObject(j)?.optString("name")?.lowercase()?.trim()
+                    if (g in TVDB_BLOCKED_GENRES) { blocked = true; break }
                 }
             }
-            if (isSoap) continue
+            if (blocked) continue
 
             // Poster — TVDB returns `image` as a path or full URL
             val imageRaw = o.optString("image").takeIf { it.isNotBlank() && it != "null" }
@@ -155,11 +156,20 @@ private suspend fun tvdbFetch(
     }
 }
 
+              // Genre names that never represent main content. Case-insensitive.
+              // Drops music videos, reality shows, talk shows, news, award shows,
+              // and game shows. Does NOT touch Drama/Comedy/Action/Romance/etc.
+              private val TVDB_BLOCKED_GENRES = setOf(
+              "soap", "reality", "talk show", "talk", "news",
+              "game show", "music", "musical", "variety", "award show"
+          )
+
 suspend fun tvdbDiscover(
     type: String,
     langCode: String?,
     limit: Int = 30
 ): List<AioMeta> {
+
     val token = TvdbAuth.getToken() ?: return emptyList()
     val country = langCode?.let { COUNTRY_ISO3[it] }
     val nativeLang = langCode?.let { LANG_ISO3[it] } ?: "eng"
