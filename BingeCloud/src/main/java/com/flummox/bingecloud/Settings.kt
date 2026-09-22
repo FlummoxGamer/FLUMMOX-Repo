@@ -85,8 +85,6 @@ object Settings {
     const val K_ROW_TRENDING_SERIES = "bingecloud_row_trending_series"
     const val K_ROW_TVDB_MOVIES = "bingecloud_row_tvdb_movies"
     const val K_ROW_TVDB_SERIES = "bingecloud_row_tvdb_series"
-    const val K_ROW_TVDB_GENRES_MOVIES = "bingecloud_row_tvdb_genres_movies"
-    const val K_ROW_TVDB_GENRES_SERIES = "bingecloud_row_tvdb_genres_series"
     const val K_ROW_TOP_ANIME = "bingecloud_row_top_anime"
     const val K_ROW_AIRING_ANIME = "bingecloud_row_airing_anime"
     const val K_ROW_UPCOMING_ANIME = "bingecloud_row_upcoming_anime"
@@ -157,10 +155,8 @@ object Settings {
     RowSpec(K_ROW_ANIME_SCHEDULE, "anime", "mal.schedule", "Airing Schedule", "Monday", "MAL"),
 
     // ── TVDB ──
-    RowSpec(K_ROW_TVDB_MOVIES, "movie", "tvdb.trending", "TVDB Trending Movies", "genre=Action", "TVDB"),
-    RowSpec(K_ROW_TVDB_SERIES, "series", "tvdb.trending", "TVDB Trending Series", "genre=Action", "TVDB"),
-    RowSpec(K_ROW_TVDB_GENRES_MOVIES, "movie", "tvdb.genres", "TVDB Genre Movies", "genre=Action", "TVDB"),
-    RowSpec(K_ROW_TVDB_GENRES_SERIES, "series", "tvdb.genres", "TVDB Genre Series", "genre=Action", "TVDB"),
+    RowSpec(K_ROW_TVDB_MOVIES, "movie", "tvdb.trending", "TVDB Trending Movies", null, "TVDB"),
+    RowSpec(K_ROW_TVDB_SERIES, "series", "tvdb.trending", "TVDB Trending Series", null, "TVDB"),
 
     // ── Best Anime of decade ──
     RowSpec(K_ROW_BEST_2020S, "anime", "mal.20sDecade", "Best Anime of 2020s", "genre=Action", "MAL"),
