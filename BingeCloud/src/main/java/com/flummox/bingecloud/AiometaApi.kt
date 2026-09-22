@@ -347,6 +347,29 @@ suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): L
             emptyList()
         }
    }
+    // Clean Hindi series — TMDB direct with non-content genres excluded.
+    // 10766=Soap, 10764=Reality, 10767=Talk, 10763=News.
+suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return emptyList()
+    val page = (skip / 20).coerceAtLeast(0) + 1
+    val url = "https://api.themoviedb.org/3/discover/tv" +
+        "?api_key=$key" +
+        "&with_original_language=hi" +
+        "&without_genres=10766,10764,10767,10763" +
+        "&sort_by=popularity.desc" +
+        "&vote_count.gte=5" +
+        "&page=$page"
+    return try {
+        val json = app.get(url).text
+        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta("tv") } ?: emptyList()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("TMDB Hindi series failed: ${e.message}")
+        emptyList()
+    }
+}
 
 private fun TmdbDiscoverItem.toAioMeta(tmdbType: String): AioMeta? {
     val itemId = id ?: return null
