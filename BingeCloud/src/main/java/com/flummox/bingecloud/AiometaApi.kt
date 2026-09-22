@@ -137,13 +137,24 @@ private suspend fun tmdbDiscover(
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
     val page = (skip / 20).coerceAtLeast(0) + 1
+
+    // Recency window: only titles released in the last 180 days.
+    // Combined with popularity.desc, gives "new + popular on X"
+    // instead of "all-time popular on X". Catalog refreshes as
+    // new titles drop.
+    val since = java.time.LocalDate.now().minusDays(180).toString()
+    val dateParam = if (tmdbType == "movie") "primary_release_date.gte" else "first_air_date.gte"
+
     val url = "https://api.themoviedb.org/3/discover/$tmdbType" +
         "?api_key=$key" +
         "&with_watch_providers=$providerId" +
         "&watch_region=$region" +
         "&sort_by=popularity.desc" +
+        "&$dateParam=$since" +
+        "&vote_count.gte=10" +
         "&page=$page"
-    return try {
+
+    val result = try {
         val json = app.get(url).text
         val parsed = tryParseJson<TmdbDiscoverResponse>(json)
         parsed?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
@@ -151,6 +162,25 @@ private suspend fun tmdbDiscover(
         BCLog.e("TMDB discover failed: ${e.message}")
         emptyList()
     }
+
+    // Fallback: if the recency window returned nothing (sparse
+    // Indian providers), retry without the date filter so the row
+    // isn't empty.
+    if (result.isEmpty()) {
+        val fallbackUrl = "https://api.themoviedb.org/3/discover/$tmdbType" +
+            "?api_key=$key" +
+            "&with_watch_providers=$providerId" +
+            "&watch_region=$region" +
+            "&sort_by=popularity.desc" +
+            "&page=$page"
+        return try {
+            val json = app.get(fallbackUrl).text
+            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+    return result
 }
 
 suspend fun tmdbDiscoverMerged(providerId: Int, skip: Int): List<AioMeta> {
