@@ -5,6 +5,8 @@ import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.URLEncoder
 
 const val AIOMETA_BASE = "https://aiometadata.elfhosted.com/stremio/9197a4a9-2f5b-4911-845e-8704c520bdf7"
@@ -228,7 +230,7 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
 
     return try {
         val detailUrl = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?api_key=$key&language=en-US"
-        val obj = org.json.JSONObject(app.get(detailUrl).text)
+        val obj = JSONObject(app.get(detailUrl).text)
 
         val name = obj.optString("title").ifBlank { obj.optString("name") }.takeIf { it.isNotBlank() }
             ?: return null
@@ -260,7 +262,7 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
                         async {
                             try {
                                 val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$sNum?api_key=$key&language=en-US"
-                                val seasonObj = org.json.JSONObject(app.get(seasonUrl).text)
+                                val seasonObj = JSONObject(app.get(seasonUrl).text)
                                 val eps = seasonObj.optJSONArray("episodes") ?: return@async emptyList()
                                 val out = mutableListOf<AioVideo>()
                                 for (j in 0 until eps.length()) {
@@ -343,31 +345,99 @@ suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): L
     }
 }
 
-// ── Clean Hindi Series — no soaps, no reality, no talk, no news ──
-// Non-content genre IDs: 10766=Soap, 10764=Reality, 10767=Talk, 10763=News
-// Providers: 122=JioHotstar, 232=ZEE5, 237=SonyLIV, 220=JioCinema
+// ── Clean Hindi Series — daily rotation ──
+// Premium genres required (Mystery/Crime/Sci-Fi/Action/War).
+// Soaps never carry these tags so they can't slip through.
+// 60-item pool fetched once per day, shuffled with day-seed, cached
+// 24h. Same order all day, new order every day.
 suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
-    val page = (skip / 20).coerceAtLeast(0) + 1
-    val url = "https://api.themoviedb.org/3/discover/tv" +
-        "?api_key=$key" +
-        "&with_original_language=hi" +
-        "&with_watch_providers=122%7C232%7C237%7C220" +
-        "&watch_region=IN" +
-        "&without_genres=10766,10764,10767,10763" +
-        "&sort_by=popularity.desc" +
-        "&vote_count.gte=5" +
-        "&page=$page"
-    return try {
-        val json = app.get(url).text
-        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta("tv") } ?: emptyList()
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        BCLog.e("TMDB Hindi series failed: ${e.message}")
-        emptyList()
+
+    val today = java.time.LocalDate.now().toString()
+    val cacheKey = "hindiPool:$today"
+
+    val cached = BCCache.get(cacheKey, 24 * 60 * 60 * 1000L)
+    val pool: List<AioMeta> = if (cached != null) {
+        try {
+            val arr = JSONArray(cached)
+            val out = mutableListOf<AioMeta>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").takeIf { it.isNotBlank() } ?: continue
+                val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+                out.add(
+                    AioMeta(
+                        id = id,
+                        name = name,
+                        type = "series",
+                        poster = o.optString("poster").takeIf { it.isNotBlank() },
+                        releaseInfo = o.optString("year").takeIf { it.isNotBlank() },
+                        year = o.optString("year").takeIf { it.isNotBlank() }
+                    )
+                )
+            }
+            out
+        } catch (_: Exception) {
+            emptyList()
+        }
+    } else {
+        val fetched = fetchHindiPool(key)
+        try {
+            val arr = JSONArray()
+            for (m in fetched) {
+                arr.put(
+                    JSONObject().apply {
+                        put("id", m.id ?: "")
+                        put("name", m.name ?: "")
+                        put("poster", m.poster ?: "")
+                        put("year", m.year ?: "")
+                    }
+                )
+            }
+            BCCache.put(cacheKey, arr.toString())
+        } catch (_: Exception) {}
+        fetched
     }
+
+    val start = skip
+    if (start >= pool.size) return emptyList()
+    val end = (skip + 20).coerceAtMost(pool.size)
+    return pool.subList(start, end)
+}
+
+private suspend fun fetchHindiPool(key: String): List<AioMeta> {
+    val since = java.time.LocalDate.now().minusYears(3).toString()
+    val pages = listOf(1, 2, 3)
+    val all = mutableListOf<AioMeta>()
+    coroutineScope {
+        pages.map { p ->
+            async {
+                try {
+                    val url = "https://api.themoviedb.org/3/discover/tv" +
+                        "?api_key=$key" +
+                        "&with_original_language=hi" +
+                        "&with_watch_providers=122%7C232%7C237%7C220" +
+                        "&watch_region=IN" +
+                        "&with_genres=9648%7C80%7C10765%7C10759%7C10768" +
+                        "&without_genres=10766,10764,10767,10763" +
+                        "&first_air_date.gte=$since" +
+                        "&sort_by=first_air_date.desc" +
+                        "&vote_count.gte=5" +
+                        "&page=$p"
+                    val json = app.get(url).text
+                    tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta("tv") }
+                        ?: emptyList()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    emptyList()
+                }
+            }
+        }.awaitAll().forEach { all.addAll(it) }
+    }
+    val seed = java.time.LocalDate.now().toEpochDay()
+    return all.distinctBy { it.id }.shuffled(java.util.Random(seed))
 }
 
 private fun TmdbDiscoverItem.toAioMeta(tmdbType: String): AioMeta? {
