@@ -54,12 +54,14 @@ data class AioMeta(
 data class AioMetaResponse(val meta: AioMeta? = null)
 data class AioCatalogResponse(val metas: List<AioMeta>? = null)
 
-// ── endpoints ──
+// ── Aiometa endpoints ──
 suspend fun aioFetchMeta(type: String, id: String): AioMeta? {
     return try {
         val url = "$AIOMETA_BASE/meta/$type/$id.json"
         val json = app.get(url).text
         tryParseJson<AioMetaResponse>(json)?.meta
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
         null
     }
@@ -74,8 +76,6 @@ suspend fun aioFetchCatalog(
     return try {
         val extras = StringBuilder()
         if (!param.isNullOrBlank()) {
-            // ── if value looks like "key=val", split and encode the value side ──
-            // ── if bare value, fall back to legacy genre= param ──
             val eq = param.indexOf('=')
             if (eq > 0) {
                 val key = param.substring(0, eq).trim()
@@ -92,6 +92,8 @@ suspend fun aioFetchCatalog(
         val url = "$AIOMETA_BASE/catalog/$type/$catalogId/$extras.json"
         val json = app.get(url).text
         tryParseJson<AioCatalogResponse>(json)?.metas ?: emptyList()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
         emptyList()
     }
@@ -108,12 +110,14 @@ suspend fun aioSearch(query: String, type: String): List<AioMeta> {
         val url = "$AIOMETA_BASE/catalog/$type/$catalogId/search=$encoded.json"
         val json = app.get(url).text
         tryParseJson<AioCatalogResponse>(json)?.metas ?: emptyList()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
         emptyList()
     }
 }
 
-// ── TMDB Discover (streaming-platform catalogs) ──
+// ── TMDB models ──
 data class TmdbDiscoverItem(
     val id: Int? = null,
     val title: String? = null,
@@ -123,7 +127,8 @@ data class TmdbDiscoverItem(
     val release_date: String? = null,
     val first_air_date: String? = null,
     val vote_average: Double? = null,
-    val overview: String? = null
+    val overview: String? = null,
+    val genre_ids: List<Int>? = null
 )
 
 data class TmdbDiscoverResponse(
@@ -134,17 +139,17 @@ data class TmdbDiscoverResponse(
 
 private val INDIAN_ONLY_PROVIDERS = setOf(122, 220, 237, 232)
 
+// ── TMDB discover ──
 private suspend fun tmdbDiscover(
-    tmdbType: String, providerId: Int, region: String, skip: Int
+    tmdbType: String,
+    providerId: Int,
+    region: String,
+    skip: Int
 ): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
     val page = (skip / 20).coerceAtLeast(0) + 1
 
-    // Recency window: only titles released in the last 180 days.
-    // Combined with popularity.desc, gives "new + popular on X"
-    // instead of "all-time popular on X". Catalog refreshes as
-    // new titles drop.
     val since = java.time.LocalDate.now().minusDays(180).toString()
     val dateParam = if (tmdbType == "movie") "primary_release_date.gte" else "first_air_date.gte"
 
@@ -158,19 +163,15 @@ private suspend fun tmdbDiscover(
         "&page=$page"
 
     val result = try {
-    val json = app.get(url).text
-    val parsed = tryParseJson<TmdbDiscoverResponse>(json)
-    parsed?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-} catch (e: kotlinx.coroutines.CancellationException) {
-    throw e
-} catch (e: Exception) {
-    BCLog.e("TMDB discover failed: ${e.message}")
-    emptyList()
+        val json = app.get(url).text
+        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("TMDB discover failed: ${e.message}")
+        emptyList()
     }
 
-    // Fallback: if the recency window returned nothing (sparse
-    // Indian providers), retry without the date filter so the row
-    // isn't empty.
     if (result.isEmpty()) {
         val fallbackUrl = "https://api.themoviedb.org/3/discover/$tmdbType" +
             "?api_key=$key" +
@@ -178,17 +179,17 @@ private suspend fun tmdbDiscover(
             "&watch_region=$region" +
             "&sort_by=popularity.desc" +
             "&page=$page"
-              return try {
-              val json = app.get(fallbackUrl).text
-                tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-              } catch (e: kotlinx.coroutines.CancellationException) {
-                  throw e
-              } catch (e: Exception) {
-                  BCLog.e("TMDB discover failed: ${e.message}")
-                  emptyList()
-               }
-       }
-               return result
+        return try {
+            val json = app.get(fallbackUrl).text
+            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BCLog.e("TMDB discover failed: ${e.message}")
+            emptyList()
+        }
+    }
+    return result
 }
 
 suspend fun tmdbDiscoverMerged(providerId: Int, skip: Int): List<AioMeta> {
@@ -201,27 +202,24 @@ suspend fun tmdbDiscoverMerged(providerId: Int, skip: Int): List<AioMeta> {
     return all.distinctBy { it.id }
 }
 
-// ── TMDB direct: trending fallback ──
-// Used when Aiometa's tmdb.trending catalog fails.
+// ── TMDB trending fallback ──
 suspend fun tmdbTrendingDirect(tmdbType: String): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
     val type = if (tmdbType == "tv") "tv" else "movie"
     val url = "https://api.themoviedb.org/3/trending/$type/day?api_key=$key&language=en-US"
-        return try {
-            val json = app.get(url).text
-            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-             BCLog.e("TMDB trending direct failed: ${e.message}")
-             emptyList()
-        }
-   }
+    return try {
+        val json = app.get(url).text
+        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("TMDB trending direct failed: ${e.message}")
+        emptyList()
+    }
+}
 
-// ── TMDB direct: full meta fallback ──
-// Used when Aiometa can't resolve a tmdb:xxx ID at load time.
-// Builds an AioMeta with videos populated from TMDB seasons.
+// ── TMDB full meta fallback for inside page ──
 suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return null
@@ -246,9 +244,6 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
             }
         }
 
-        // Fetch every season in parallel. Sequential was 20 round trips;
-        // parallel is 20 concurrent, wall-clock ~300ms regardless of count.
-        // TMDB's 50 req/s budget is plenty for one title.
         var videos = emptyList<AioVideo>()
         if (isSeries) {
             val seasons = obj.optJSONArray("seasons")
@@ -264,38 +259,38 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
                     seasonNums.map { sNum ->
                         async {
                             try {
-                                 val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$sNum?api_key=$key&language=en-US"
-                                 val seasonObj = org.json.JSONObject(app.get(seasonUrl).text)
-                                 val eps = seasonObj.optJSONArray("episodes") ?: return@async emptyList()
-                                 val out = mutableListOf<AioVideo>()
-                                 for (j in 0 until eps.length()) {
-                                     val e = eps.optJSONObject(j) ?: continue
-                                     val eNum = e.optInt("episode_number", 0)
-                                     if (eNum <= 0) continue
-                                     val stillPath = e.optString("still_path").takeIf { it.isNotBlank() && it != "null" }
-                                     out.add(AioVideo(
-                                         id = "tmdb:$tmdbId:$sNum:$eNum",
-                                         title = e.optString("name").takeIf { it.isNotBlank() },
-                                         season = sNum,
-                                         episode = eNum,
-                                         thumbnail = stillPath?.let { "https://image.tmdb.org/t/p/w300$it" },
-                                         overview = e.optString("overview").takeIf { it.isNotBlank() },
-                                         released = e.optString("air_date").takeIf { it.isNotBlank() },
-                                         available = true
-                                     ))
-                                  }
-                                  out
-                              } catch (e: kotlinx.coroutines.CancellationException) {
-                                  throw e
-                              } catch (e: Exception) {
-                                  BCLog.e("TMDB season $sNum fetch failed: ${e.message}")
-                                  emptyList()
-                              }
-                         }
-                     }.awaitAll()
-                 }
-                 videos = seasonResults.flatten()
-             }
+                                val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$sNum?api_key=$key&language=en-US"
+                                val seasonObj = org.json.JSONObject(app.get(seasonUrl).text)
+                                val eps = seasonObj.optJSONArray("episodes") ?: return@async emptyList()
+                                val out = mutableListOf<AioVideo>()
+                                for (j in 0 until eps.length()) {
+                                    val e = eps.optJSONObject(j) ?: continue
+                                    val eNum = e.optInt("episode_number", 0)
+                                    if (eNum <= 0) continue
+                                    val stillPath = e.optString("still_path").takeIf { it.isNotBlank() && it != "null" }
+                                    out.add(AioVideo(
+                                        id = "tmdb:$tmdbId:$sNum:$eNum",
+                                        title = e.optString("name").takeIf { it.isNotBlank() },
+                                        season = sNum,
+                                        episode = eNum,
+                                        thumbnail = stillPath?.let { "https://image.tmdb.org/t/p/w300$it" },
+                                        overview = e.optString("overview").takeIf { it.isNotBlank() },
+                                        released = e.optString("air_date").takeIf { it.isNotBlank() },
+                                        available = true
+                                    ))
+                                }
+                                out
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                BCLog.e("TMDB season $sNum fetch failed: ${e.message}")
+                                emptyList()
+                            }
+                        }
+                    }.awaitAll()
+                }
+                videos = seasonResults.flatten()
+            }
         }
 
         val poster = obj.optString("poster_path").takeIf { it.isNotBlank() && it != "null" }
@@ -319,15 +314,15 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
             imdb_id = obj.optString("imdb_id").takeIf { it.isNotBlank() && it != "null" },
             videos = videos.takeIf { it.isNotEmpty() }
         )
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BCLog.e("TMDB direct meta failed: ${e.message}")
-            null
-        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("TMDB direct meta failed: ${e.message}")
+        null
     }
-// Language-based TMDB discover. Used by Hindi / Bangla rows as a
-// silent fallback if JustWatch returns nothing.
+}
+
+// ── TMDB language discover (fallback for Hindi/Bangla) ──
 suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
@@ -337,20 +332,20 @@ suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): L
         "&with_original_language=$lang" +
         "&sort_by=popularity.desc" +
         "&page=$page"
-        return try {
-            val json = app.get(url).text
-            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BCLog.e("TMDB lang-discover failed: ${e.message}")
-            emptyList()
-        }
-   }
-    // Clean Hindi series — TMDB direct with non-content genres excluded
-// and Indian streaming platforms only. Excludes soaps, reality,
-// talk shows, news (TMDB genre IDs 10766, 10764, 10767, 10763).
-// Providers: 122=JioHotstar, 232=ZEE5, 237=SonyLIV, 220=JioCinema.
+    return try {
+        val json = app.get(url).text
+        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("TMDB lang-discover failed: ${e.message}")
+        emptyList()
+    }
+}
+
+// ── Clean Hindi Series — no soaps, no reality, no talk, no news ──
+// Non-content genre IDs: 10766=Soap, 10764=Reality, 10767=Talk, 10763=News
+// Providers: 122=JioHotstar, 232=ZEE5, 237=SonyLIV, 220=JioCinema
 suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
@@ -374,10 +369,6 @@ suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
         emptyList()
     }
 }
-
-// Language-based TMDB discover. Used by Hindi / Bangla rows as a
-// silent fallback if JustWatch returns nothing.
-suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): List<AioMeta> {
 
 private fun TmdbDiscoverItem.toAioMeta(tmdbType: String): AioMeta? {
     val itemId = id ?: return null
