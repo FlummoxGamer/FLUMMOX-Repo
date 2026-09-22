@@ -203,6 +203,40 @@ private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
     return routeLanguage("series", "bn", page)
 }
 
+     // Validate TVDB Hindi series against TMDB genre data. Drops anything
+// TMDB tags as Soap (10766), Reality (10764), Talk (10767), News
+// (10763). Converts survivors to tmdb: IDs for inside-page load.
+private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = coroutineScope {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return@coroutineScope emptyList()
+
+    items.map { item ->
+        async {
+            val name = item.name?.substringBefore(" (")?.trim()
+            if (name.isNullOrBlank()) return@async null
+            try {
+                val encoded = URLEncoder.encode(name, "UTF-8")
+                val url = "https://api.themoviedb.org/3/search/tv?api_key=$key&query=$encoded&language=en-US"
+                val json = app.get(url).text
+                val parsed = tryParseJson<TmdbDiscoverResponse>(json)
+                val hit = parsed?.results?.firstOrNull() ?: return@async null
+                val id = hit.id ?: return@async null
+                val blocked = hit.genre_ids?.any { it in listOf(10766, 10764, 10767, 10763) } ?: false
+                if (blocked) {
+                    BCLog.d("Hindi drop (genre): $name")
+                    null
+                } else {
+                    item.copy(id = "tmdb:$id")
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }.awaitAll().filterNotNull()
+}
+
      private suspend fun routeLanguageTVDB(
     rowType: String,
     langCode: String,
@@ -210,14 +244,17 @@ private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
 ): List<AioMeta> {
     val tvdbType = if (rowType == "series" || rowType == "anime") "series" else "movies"
 
-    // Hindi SERIES: TMDB direct — provider-filtered + genre-excluded.
-    // TVDB's Drama tag is too coarse to separate soaps from scripted
-    // series. TMDB has distinct Soap/Reality/Talk/News genres.
-    if (langCode == "hi" && tvdbType == "series") {
-        val clean = tmdbHindiSeriesClean((page - 1) * 20)
-        if (clean.isNotEmpty()) return clean
-        // fall through to TVDB if TMDB returned nothing
-    }
+// Hindi SERIES: merge TMDB premium pool + TVDB Hindi, validate
+// TVDB entries against TMDB genre data. Soaps drop, everything
+// else stays. Dedupe by name.
+if (langCode == "hi" && tvdbType == "series") {
+    val tmdbClean = tmdbHindiSeriesClean((page - 1) * 20)
+    val tvdbRaw = tvdbDiscover("series", "hi", 40, listOf(12, 24, 14))
+    val validatedTvdb = validateHindiSeries(tvdbRaw)
+    val merged = (tmdbClean + validatedTvdb)
+        .distinctBy { it.name?.lowercase()?.substringBefore(" (") }
+    if (merged.isNotEmpty()) return merged
+}
 
     // TVDB genre IDs (from /v4/genres?type=series):
     //   12 Drama, 24 Thriller, 28 Romance, 14 Crime, 19 Action,
