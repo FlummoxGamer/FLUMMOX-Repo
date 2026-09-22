@@ -87,7 +87,8 @@ private data class TvdbRow(
     val id: Int,
     val name: String,
     val poster: String?,
-    val year: String?
+    val year: String?,
+    val genres: List<String>
 )
 
 private suspend fun tvdbFetch(
@@ -114,40 +115,44 @@ private suspend fun tvdbFetch(
         }
 
         val out = mutableListOf<TvdbRow>()
-        for (i in 0 until data.length()) {
-            val o = data.optJSONObject(i) ?: continue
-            val id = o.optInt("id", 0).takeIf { it > 0 } ?: continue
-            val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+for (i in 0 until data.length()) {
+    val o = data.optJSONObject(i) ?: continue
+    val id = o.optInt("id", 0).takeIf { it > 0 } ?: continue
+    val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
 
-            // Genre blacklist: drops non-content rows. Keeps all
-            // scripted/film content untouched.
-            val genres = o.optJSONArray("genres")
-            var blocked = false
-            if (genres != null) {
-                for (j in 0 until genres.length()) {
-                    val g = genres.optJSONObject(j)?.optString("name")?.lowercase()?.trim()
-                    if (g in TVDB_BLOCKED_GENRES) { blocked = true; break }
-                }
-            }
-            if (blocked) continue
-
-            // Poster — TVDB returns `image` as a path or full URL
-            val imageRaw = o.optString("image").takeIf { it.isNotBlank() && it != "null" }
-            val poster = imageRaw?.let {
-                when {
-                    it.startsWith("http") -> it
-                    it.startsWith("//") -> "https:$it"
-                    else -> "https://artworks.thetvdb.com$it"
-                }
-            }
-
-            val firstAired = o.optString("firstAired")
-            val year = firstAired.take(4)
-                .takeIf { it.length == 4 && it.all { c -> c.isDigit() } }
-
-            out.add(TvdbRow(id, name, poster, year))
+    // Collect genre names
+    val genresArr = o.optJSONArray("genres")
+    val genreNames = mutableListOf<String>()
+    if (genresArr != null) {
+        for (j in 0 until genresArr.length()) {
+            val g = genresArr.optJSONObject(j)?.optString("name")?.lowercase()?.trim()
+            if (!g.isNullOrBlank()) genreNames.add(g)
         }
-        out
+    }
+
+    // Hard blocklist — always rejected
+    if (genreNames.any { it in TVDB_BLOCKED_GENRES }) continue
+
+    // Language rows: require at least one content genre.
+    // Drops BTS/reality/idol content that has no scripted tag.
+    if (langCode != null && genreNames.none { it in TVDB_CONTENT_GENRES }) continue
+
+    val imageRaw = o.optString("image").takeIf { it.isNotBlank() && it != "null" }
+    val poster = imageRaw?.let {
+        when {
+            it.startsWith("http") -> it
+            it.startsWith("//") -> "https:$it"
+            else -> "https://artworks.thetvdb.com$it"
+        }
+    }
+
+    val firstAired = o.optString("firstAired")
+    val year = firstAired.take(4)
+        .takeIf { it.length == 4 && it.all { c -> c.isDigit() } }
+
+    out.add(TvdbRow(id, name, poster, year, genreNames))
+}
+out
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
@@ -156,13 +161,23 @@ private suspend fun tvdbFetch(
     }
 }
 
-              // Genre names that never represent main content. Case-insensitive.
-              // Drops music videos, reality shows, talk shows, news, award shows,
-              // and game shows. Does NOT touch Drama/Comedy/Action/Romance/etc.
-              private val TVDB_BLOCKED_GENRES = setOf(
-              "soap", "reality", "talk show", "talk", "news",
-              "game show", "music", "musical", "variety", "award show"
-          )
+// Hard blocklist — any of these disqualifies a title immediately.
+private val TVDB_BLOCKED_GENRES = setOf(
+    "soap", "reality", "talk show", "talk", "news",
+    "game show", "music", "musical", "variety", "award show",
+    "competition", "awards", "reality tv", "special interest"
+)
+
+// Genres that mark a title as scripted content. Language rows require
+// at least one of these, which drops K-pop idol content, behind-the-
+// scenes reels, and BTS-style productions that carry no scripted
+// genre tag.
+private val TVDB_CONTENT_GENRES = setOf(
+    "drama", "thriller", "crime", "mystery", "romance",
+    "science fiction", "sci-fi", "fantasy", "horror",
+    "action", "comedy", "adventure", "family", "history",
+    "war", "western", "suspense", "anime"
+)
 
 suspend fun tvdbDiscover(
     type: String,
