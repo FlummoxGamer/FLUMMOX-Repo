@@ -112,17 +112,20 @@ private suspend fun jwFetch(
             val tmdbId = content.optJSONObject("externalIds")
                 ?.optString("tmdbId")
                 ?.takeIf { it.isNotBlank() && it != "null" }
-            val jwId = node.optString("id").takeIf { it.isNotBlank() }
-            val finalId = when {
-                tmdbId != null -> "tmdb:$tmdbId"
-                jwId != null -> "jw:$jwId"
-                else -> continue
-            }
+           // Skip anything without a TMDB ID. JustWatch-only IDs
+           // (jw:xxx) can't be resolved by the metadata backend, and
+           // produce the "inside page error". Better to drop them.
+           val finalId = tmdbId?.let { "tmdb:$it" } ?: continue
 
-            val poster = content.optString("posterUrl")
-                .takeIf { it.isNotBlank() }
-                ?.let { if (it.startsWith("http")) it else "https://images.justwatch.com$it" }
-
+           val posterRaw = content.optString("posterUrl").takeIf { it.isNotBlank() }
+           val poster = posterRaw?.let {
+               when {
+                   it.startsWith("http") -> it
+                   it.startsWith("//") -> "https:$it"
+                   it.startsWith("/") -> "https://images.justwatch.com$it"
+                   else -> "https://images.justwatch.com/$it"
+              }
+           }
             val type = when (objType) {
                 "MOVIE" -> "movie"
                 "SHOW" -> "series"
