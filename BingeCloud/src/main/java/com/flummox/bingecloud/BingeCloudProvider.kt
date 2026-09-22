@@ -175,10 +175,54 @@ private suspend fun routeLanguage(
     langCode: String,
     page: Int
 ): List<AioMeta> {
-    val jwList = jwDiscoverByLanguage(langCode, jwTypeFor(rowType), 30)
+    var jwList = jwDiscoverByLanguage(langCode, jwTypeFor(rowType), 30)
+
+    // Bangla row: drop anything without a poster. Poster-less tiles
+    // look broken on the home screen.
+    if (langCode == "bn") {
+        jwList = jwList.filter { !it.poster.isNullOrBlank() }
+    }
+
+    // Hindi Series row: drop daily soaps. JustWatch doesn't tag them
+    // as Soap, so we detect via episode count. Soaps run 200+ eps;
+    // premium Hindi series top out around 80.
+    if (langCode == "hi" && rowType == "series") {
+        jwList = filterOutSoaps(jwList)
+    }
+
     if (jwList.isNotEmpty()) return jwList
     val tmdbType = if (rowType == "series") "tv" else "movie"
     return tmdbDiscoverByLanguage(tmdbType, langCode, (page - 1) * 20)
+}
+
+// Batch-check episode counts via TMDB. Cached per-ID for 30 min.
+// Runs in parallel so the row still loads fast.
+private suspend fun filterOutSoaps(items: List<AioMeta>): List<AioMeta> = coroutineScope {
+    items.map { item ->
+        async {
+            val id = item.id
+            if (id == null || !id.startsWith("tmdb:")) return@async item
+            val tmdbId = id.removePrefix("tmdb:")
+            val cacheKey = "soap:$tmdbId"
+            val cached = BCCache.get(cacheKey, 30 * 60 * 1000L)
+            val isSoap = if (cached != null) {
+                cached == "1"
+            } else {
+                try {
+                    val url = "https://api.themoviedb.org/3/tv/$tmdbId" +
+                        "?api_key=${BuildConfig.TMDB_API_KEY}&language=en-US"
+                    val obj = JSONObject(app.get(url).text)
+                    val eps = obj.optInt("number_of_episodes", 0)
+                    val result = eps > 200
+                    BCCache.put(cacheKey, if (result) "1" else "0")
+                    result
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            if (isSoap) null else item
+        }
+    }.awaitAll().filterNotNull()
 }
 
     // ── search ──
