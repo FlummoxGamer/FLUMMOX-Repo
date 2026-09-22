@@ -189,9 +189,10 @@ suspend fun tvdbDiscover(
         )
     }
 
-    BCLog.d("[TVDB] $type/${langCode ?: "all"} → ${out.size} (no poster: ${out.count { it.poster.isNullOrBlank() }})")
-    return out
-}
+        val firstNames = out.take(3).mapNotNull { it.name?.substringBefore(" (") }
+        BCLog.d("[TVDB] $type/${langCode ?: "all"} → ${out.size} (no poster: ${out.count { it.poster.isNullOrBlank() }}) sample=${firstNames.joinToString(" | ")}")
+        return out
+   }
 
 // Fill missing posters via Aiometa search. Runs in parallel, silent on failure.
 suspend fun tvdbFillPosters(items: List<AioMeta>): List<AioMeta> = coroutineScope {
