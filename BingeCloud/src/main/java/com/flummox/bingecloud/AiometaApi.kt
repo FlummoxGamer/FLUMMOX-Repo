@@ -193,6 +193,26 @@ suspend fun tmdbDiscoverMerged(providerId: Int, skip: Int): List<AioMeta> {
     return all.distinctBy { it.id }
 }
 
+// Language-based TMDB discover. Used by Hindi / Bangla rows as a
+// silent fallback if JustWatch returns nothing.
+suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): List<AioMeta> {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return emptyList()
+    val page = (skip / 20).coerceAtLeast(0) + 1
+    val url = "https://api.themoviedb.org/3/discover/$tmdbType" +
+        "?api_key=$key" +
+        "&with_original_language=$lang" +
+        "&sort_by=popularity.desc" +
+        "&page=$page"
+    return try {
+        val json = app.get(url).text
+        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+    } catch (e: Exception) {
+        BCLog.e("TMDB lang-discover failed: ${e.message}")
+        emptyList()
+    }
+}
+
 private fun TmdbDiscoverItem.toAioMeta(tmdbType: String): AioMeta? {
     val itemId = id ?: return null
     val itemName = title ?: name ?: return null
