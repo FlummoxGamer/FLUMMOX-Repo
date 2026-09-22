@@ -193,9 +193,11 @@ private suspend fun routeIndian(
 }
 
 // Bangla row: movies + series merged into one row.
+// Genre IDs: 12 Drama, 28 Romance, 15 Comedy
 private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
-    val series = tvdbDiscover("series", "bn", 20)
-    val movies = tvdbDiscover("movies", "bn", 20)
+    val genreIds = listOf(12, 28, 15)
+    val series = tvdbDiscover("series", "bn", 20, genreIds)
+    val movies = tvdbDiscover("movies", "bn", 20, genreIds)
     val merged = (series + movies).distinctBy { it.name?.lowercase() }
     if (merged.isNotEmpty()) return merged
     return routeLanguage("series", "bn", page)
@@ -206,18 +208,26 @@ private suspend fun routeLanguageTVDB(
     langCode: String,
     page: Int
 ): List<AioMeta> {
-    
-    // TVDB is now the primary source for language rows.
-    // It has real language filtering (ISO 639-3) and a proper Soap
-    // genre tag, so no client-side heuristic needed.
     val tvdbType = if (rowType == "series" || rowType == "anime") "series" else "movies"
-    val tvdbList = tvdbDiscover(tvdbType, langCode, 30)
+
+    // TVDB genre IDs (from /v4/genres?type=series):
+    //   12 Drama, 24 Thriller, 28 Romance, 14 Crime, 19 Action,
+    //   31 Mystery, 15 Comedy, 18 Adventure, 2 Sci-Fi, 22 Suspense
+    val genreIds = when (langCode) {
+        "ko" -> if (tvdbType == "series") listOf(12, 24, 28, 31)
+                else listOf(12, 24, 19, 14)
+        "hi" -> if (tvdbType == "series") listOf(12, 28, 15, 24)
+                else listOf(12, 15, 19, 28)
+        "bn" -> listOf(12, 28, 15)
+        else -> emptyList()
+    }
+
+    val tvdbList = tvdbDiscover(tvdbType, langCode, 30, genreIds)
     if (tvdbList.isNotEmpty()) return tvdbList
 
     BCLog.d("[TVDB] empty for $langCode/$tvdbType, falling back to JW + TMDB")
     return routeLanguage(rowType, langCode, page)
 }
-
     // Legacy fallback path — TMDB only. JustWatch's originalLanguages
     // param doesn't exist in their schema, so it was removed.
     private suspend fun routeLanguage(
