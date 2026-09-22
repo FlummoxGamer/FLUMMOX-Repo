@@ -203,6 +203,63 @@ private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
     return routeLanguage("series", "bn", page)
 }
 
+// One-time merge of TMDB premium pool + TVDB Hindi (validated via
+// TMDB genres). Cached 24h. Fixed order for the day, paginated by
+// the caller.
+private suspend fun getHindiMergedPool(): List<AioMeta> {
+    val today = java.time.LocalDate.now().toString()
+    val cacheKey = "hindiMergedPool:$today"
+
+    val cached = BCCache.get(cacheKey, 24 * 60 * 60 * 1000L)
+    if (cached != null) {
+        try {
+            val arr = org.json.JSONArray(cached)
+            val out = mutableListOf<AioMeta>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").takeIf { it.isNotBlank() } ?: continue
+                val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+                out.add(
+                    AioMeta(
+                        id = id,
+                        name = name,
+                        type = "series",
+                        poster = o.optString("poster").takeIf { it.isNotBlank() },
+                        releaseInfo = o.optString("year").takeIf { it.isNotBlank() },
+                        year = o.optString("year").takeIf { it.isNotBlank() }
+                    )
+                )
+            }
+            if (out.isNotEmpty()) return out
+        } catch (_: Exception) {}
+    }
+
+    val tmdb = tmdbHindiSeriesClean()
+    val tvdbRaw = tvdbDiscover("series", "hi", 60, listOf(12, 24, 14))
+    val validated = validateHindiSeries(tvdbRaw)
+    val merged = (tmdb + validated)
+        .distinctBy { it.name?.lowercase()?.substringBefore(" (") }
+        .shuffled(java.util.Random(java.time.LocalDate.now().toEpochDay()))
+
+    try {
+        val arr = org.json.JSONArray()
+        for (m in merged) {
+            arr.put(
+                org.json.JSONObject().apply {
+                    put("id", m.id ?: "")
+                    put("name", m.name ?: "")
+                    put("poster", m.poster ?: "")
+                    put("year", m.year ?: "")
+                }
+            )
+        }
+        BCCache.put(cacheKey, arr.toString())
+    } catch (_: Exception) {}
+
+    return merged
+}
+
+
      // Validate TVDB Hindi series against TMDB genre data. Drops anything
 // TMDB tags as Soap (10766), Reality (10764), Talk (10767), News
 // (10763). Converts survivors to tmdb: IDs for inside-page load.
@@ -244,17 +301,15 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
 ): List<AioMeta> {
     val tvdbType = if (rowType == "series" || rowType == "anime") "series" else "movies"
 
-// Hindi SERIES: merge TMDB premium pool + TVDB Hindi, validate
-// TVDB entries against TMDB genre data. Soaps drop, everything
-// else stays. Dedupe by name.
-if (langCode == "hi" && tvdbType == "series") {
-    val tmdbClean = tmdbHindiSeriesClean((page - 1) * 20)
-    val tvdbRaw = tvdbDiscover("series", "hi", 40, listOf(12, 24, 14))
-    val validatedTvdb = validateHindiSeries(tvdbRaw)
-    val merged = (tmdbClean + validatedTvdb)
-        .distinctBy { it.name?.lowercase()?.substringBefore(" (") }
-    if (merged.isNotEmpty()) return merged
-}
+     // Hindi SERIES: merged TMDB + TVDB pool, cached once per day,
+     // paginated by the caller. Prevents duplicate TVDB items across
+     // pages (each page used to refetch the same TVDB list).
+     if (langCode == "hi" && tvdbType == "series") {
+         val pool = getHindiMergedPool()
+         val start = (page - 1) * 20
+         if (start >= pool.size) return emptyList()
+         return pool.subList(start, (start + 20).coerceAtMost(pool.size))
+     }
 
     // TVDB genre IDs (from /v4/genres?type=series):
     //   12 Drama, 24 Thriller, 28 Romance, 14 Crime, 19 Action,
