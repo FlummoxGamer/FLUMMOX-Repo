@@ -193,6 +193,112 @@ suspend fun tmdbDiscoverMerged(providerId: Int, skip: Int): List<AioMeta> {
     return all.distinctBy { it.id }
 }
 
+// ── TMDB direct: trending fallback ──
+// Used when Aiometa's tmdb.trending catalog fails.
+suspend fun tmdbTrendingDirect(tmdbType: String): List<AioMeta> {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return emptyList()
+    val type = if (tmdbType == "tv") "tv" else "movie"
+    val url = "https://api.themoviedb.org/3/trending/$type/day?api_key=$key&language=en-US"
+    return try {
+        val json = app.get(url).text
+        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+    } catch (e: Exception) {
+        BCLog.e("TMDB trending direct failed: ${e.message}")
+        emptyList()
+    }
+}
+
+// ── TMDB direct: full meta fallback ──
+// Used when Aiometa can't resolve a tmdb:xxx ID at load time.
+// Builds an AioMeta with videos populated from TMDB seasons.
+suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return null
+    val isSeries = type.contains("series", true) || type.contains("anime", true)
+    val tmdbType = if (isSeries) "tv" else "movie"
+
+    return try {
+        val detailUrl = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?api_key=$key&language=en-US"
+        val obj = org.json.JSONObject(app.get(detailUrl).text)
+
+        val name = obj.optString("title").ifBlank { obj.optString("name") }.takeIf { it.isNotBlank() }
+            ?: return null
+        val dateStr = obj.optString("release_date").ifBlank { obj.optString("first_air_date") }
+        val yearStr = dateStr.take(4).takeIf { it.length == 4 }
+        val rating = obj.optDouble("vote_average", 0.0).takeIf { it > 0 }?.toString()
+
+        val genresArr = obj.optJSONArray("genres")
+        val genres = mutableListOf<String>()
+        if (genresArr != null) {
+            for (i in 0 until genresArr.length()) {
+                genresArr.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }?.let { genres.add(it) }
+            }
+        }
+
+        val videos = mutableListOf<AioVideo>()
+        if (isSeries) {
+            val seasons = obj.optJSONArray("seasons")
+            if (seasons != null) {
+                val cap = minOf(seasons.length(), 10)
+                for (i in 0 until cap) {
+                    val s = seasons.optJSONObject(i) ?: continue
+                    val sNum = s.optInt("season_number", 0)
+                    if (sNum <= 0) continue
+                    try {
+                        val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$sNum?api_key=$key&language=en-US"
+                        val seasonObj = org.json.JSONObject(app.get(seasonUrl).text)
+                        val eps = seasonObj.optJSONArray("episodes") ?: continue
+                        for (j in 0 until eps.length()) {
+                            val e = eps.optJSONObject(j) ?: continue
+                            val eNum = e.optInt("episode_number", 0)
+                            if (eNum <= 0) continue
+                            val stillPath = e.optString("still_path").takeIf { it.isNotBlank() && it != "null" }
+                            videos.add(AioVideo(
+                                id = "tmdb:$tmdbId:$sNum:$eNum",
+                                title = e.optString("name").takeIf { it.isNotBlank() },
+                                season = sNum,
+                                episode = eNum,
+                                thumbnail = stillPath?.let { "https://image.tmdb.org/t/p/w300$it" },
+                                overview = e.optString("overview").takeIf { it.isNotBlank() },
+                                released = e.optString("air_date").takeIf { it.isNotBlank() },
+                                available = true
+                            ))
+                        }
+                    } catch (e: Exception) {
+                        BCLog.e("TMDB season $sNum fetch failed: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        val poster = obj.optString("poster_path").takeIf { it.isNotBlank() && it != "null" }
+            ?.let { "https://image.tmdb.org/t/p/w500$it" }
+        val backdrop = obj.optString("backdrop_path").takeIf { it.isNotBlank() && it != "null" }
+            ?.let { "https://image.tmdb.org/t/p/original$it" }
+
+        BCLog.d("TMDB direct meta: $name (${videos.size} eps)")
+
+        AioMeta(
+            id = "tmdb:$tmdbId",
+            name = name,
+            type = if (isSeries) "series" else "movie",
+            description = obj.optString("overview").takeIf { it.isNotBlank() },
+            poster = poster,
+            background = backdrop,
+            genres = genres.takeIf { it.isNotEmpty() },
+            imdbRating = rating,
+            releaseInfo = yearStr,
+            year = yearStr,
+            imdb_id = obj.optString("imdb_id").takeIf { it.isNotBlank() && it != "null" },
+            videos = videos.takeIf { it.isNotEmpty() }
+        )
+    } catch (e: Exception) {
+        BCLog.e("TMDB direct meta failed: ${e.message}")
+        null
+    }
+}
+
 // Language-based TMDB discover. Used by Hindi / Bangla rows as a
 // silent fallback if JustWatch returns nothing.
 suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): List<AioMeta> {
