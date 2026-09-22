@@ -216,8 +216,11 @@ private suspend fun routeLanguageTVDB(
     val genreIds = when (langCode) {
         "ko" -> if (tvdbType == "series") listOf(12, 24, 28, 31)
                 else listOf(12, 24, 19, 14)
-        "hi" -> if (tvdbType == "series") listOf(12, 28, 15, 24)
-                else listOf(12, 15, 19, 28)
+        // Hindi series: dropped Comedy (15) — daily soaps tag it heavily.
+        // Kept Drama/Thriller/Crime which is what most web series carry.
+        // Hindi movies: Comedy is fine, soaps don't apply.
+        "hi" -> if (tvdbType == "series") listOf(12, 24, 14)
+        else listOf(12, 15, 19, 28)
         "bn" -> listOf(12, 28, 15)
         else -> emptyList()
     }
