@@ -134,7 +134,6 @@ object Settings {
     RowSpec(K_ROW_STREAM_MAX, "movie", "tmdb.provider.1899", "Max", null, "Max"),
     RowSpec(K_ROW_STREAM_APPLETV, "movie", "tmdb.provider.350", "Apple TV+", null, "Apple TV+"),
     RowSpec(K_ROW_STREAM_JIOHOTSTAR, "movie", "tmdb.provider.122", "JioHotstar", null, "JioHotstar"),
-    RowSpec(K_ROW_STREAM_JIOHOTSTAR, "movie", "tmdb.provider.122", "JioHotstar", null, "JioHotstar"),
     RowSpec(K_ROW_STREAM_SONYLIV, "movie", "tmdb.provider.237", "SonyLIV", null, "SonyLIV"),
     
     // ── Language ──
