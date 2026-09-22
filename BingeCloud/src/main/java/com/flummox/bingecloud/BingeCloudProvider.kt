@@ -56,9 +56,19 @@ private val HOME_BLOCKED_GENRES = setOf(
 )
 
 private fun AioMeta.isJunk(): Boolean {
-    val g = genres ?: return false
-    return g.any { it.lowercase().trim() in HOME_BLOCKED_GENRES }
-}
+    val g = genres
+    if (g != null && g.any { it.lowercase().trim() in HOME_BLOCKED_GENRES }) return true
+    // Title-based filter for daily soaps / reality / talk shows that
+    // JustWatch returns without genre metadata.
+    val n = name?.lowercase() ?: return false
+    if (n.contains("reality show") || n.contains("talk show") || n.contains("daily soap")) return true
+    // Common Indian daily-soap patterns: heavy "Kumkum", "Kundali",
+    // "Naagin", etc. Not exhaustive, but covers the biggest offenders.
+    val SOAP_HINTS = listOf("kumkum", "kundali", "naagin", "kumkum bhagya", "kundali bhagya",
+        "yeh rishta", "anupamaa", "ghum hai", "imlie", "yrkkh", "kahaani ghar")
+    if (SOAP_HINTS.any { n.contains(it) }) return true
+    return false
+ }
 
 open class BingeCloudProvider : MainAPI() {
     override var mainUrl = AIOMETA_BASE
@@ -112,6 +122,12 @@ private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): L
         // Language rows — JustWatch primary, TMDB direct fallback
         "tmdb.language"      -> routeLanguage(rowType, "hi", page)
         "justwatch.bengali"  -> routeLanguage(rowType, "bn", page)
+
+        // Trending rows — TMDB direct (avoids Aiometa's tmdb.trending)
+        "tmdb.trending" -> {
+            val tmdbType = if (rowType == "series") "tv" else "movie"
+            tmdbTrendingDirect(tmdbType)
+        }
 
         // Everything else (TVDB, MAL anime, etc.) — Aiometa catalog
         else -> aioFetchCatalog(rowType, catalogId, null, (page - 1) * 25)
@@ -253,21 +269,27 @@ private suspend fun routeLanguage(
         if (parts.size < 2) return null
         val type = parts[0]
         val metaId = parts[1]
-        val meta = aioFetchMeta(type, metaId) ?: return null
-        val name = meta.name ?: return null
+        var meta = aioFetchMeta(type, metaId)
+        if (meta == null && metaId.startsWith("tmdb:")) {
+            val id = metaId.removePrefix("tmdb:")
+            BCLog.d("Aiometa meta failed, TMDB direct fallback: $id")
+            meta = tmdbDetailMeta(type, id)
+        }
+        val finalMeta = meta ?: return null
+        val name = finalMeta.name ?: return null
         val tvType = when {
             type.contains("series", true) -> TvType.TvSeries
             type.contains("anime", true) -> TvType.Anime
             else -> TvType.Movie
         }
-        val yearInt = (meta.releaseInfo ?: meta.year)?.take(4)?.toIntOrNull()
-        val actors = meta.app_extras?.cast?.mapNotNull { c ->
+        val yearInt = (finalMeta.releaseInfo ?: finalMeta.year)?.take(4)?.toIntOrNull()
+        val actors = finalMeta.app_extras?.cast?.mapNotNull { c ->
             val n = c.name ?: return@mapNotNull null
             Actor(n, c.photo)
         } ?: emptyList()
-        val videos = meta.videos ?: emptyList()
-        val statusTag = computeStatusTag(meta, videos, tvType)
-        val desc = meta.description ?: ""
+        val videos = finalMeta.videos ?: emptyList()
+        val statusTag = computeStatusTag(finalMeta, videos, tvType)
+        val desc = finalMeta.description ?: ""
         val plot = if (statusTag.isNotBlank() && desc.isNotBlank()) "<b>$statusTag</b><br><br>$desc"
             else if (statusTag.isNotBlank()) "<b>$statusTag</b>" else desc
 
@@ -279,13 +301,13 @@ private suspend fun routeLanguage(
         if (Settings.isPrefetchEnabled() && !fromHomeBanner) {
             val prefetchQuery: StreamQuery? = when {
                 tvType == TvType.Movie && videos.isEmpty() ->
-                    StreamQuery(name, yearInt?.toString() ?: "", "movie", meta.imdb_id ?: "")
+                    StreamQuery(name, yearInt?.toString() ?: "", "movie", finalmeta.imdb_id ?: "")
                 videos.isNotEmpty() -> {
                     val first = videos.firstOrNull()
                     val s = first?.season
                     val e = first?.episode
                     if (s != null && e != null && s > 0)
-                        StreamQuery(name, yearInt?.toString() ?: "", "series", meta.imdb_id ?: "", s, e)
+                        StreamQuery(name, yearInt?.toString() ?: "", "series", finalmeta.imdb_id ?: "", s, e)
                     else null
                 }
                 else -> null
@@ -313,14 +335,14 @@ private suspend fun routeLanguage(
         }
 
         return if (tvType == TvType.Movie && videos.isEmpty()) {
-            val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", meta.imdb_id ?: "")
-            newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
-                this.posterUrl = meta.poster
-                this.backgroundPosterUrl = meta.background
-                this.plot = plot
-                this.year = yearInt
-                this.tags = meta.genres
-                this.score = Score.from10(meta.imdbRating)
+        val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
+        newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
+            this.posterUrl = finalMeta.poster
+            this.backgroundPosterUrl = finalMeta.background
+            this.plot = plot
+            this.year = yearInt
+            this.tags = finalMeta.genres
+            this.score = Score.from10(finalMeta.imdbRating)
                 if (actors.isNotEmpty()) addActors(actors)
             }
         } else {
@@ -329,7 +351,7 @@ private suspend fun routeLanguage(
                 val e = v.episode ?: return@mapIndexedNotNull null
                 val next = videos.getOrNull(idx + 1)
                 val q = StreamQuery(
-                    name, yearInt?.toString() ?: "", "series", meta.imdb_id ?: "",
+                    name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "",
                     s, e,
                     next?.season ?: 0, next?.episode ?: 0
                 )
@@ -337,18 +359,18 @@ private suspend fun routeLanguage(
                     this.name = v.title ?: "Episode $e"
                     this.season = s
                     this.episode = e
-                    this.posterUrl = v.thumbnail ?: meta.background
+                    this.posterUrl = v.thumbnail ?: finalMeta.background
                     this.description = v.overview
                 }
             }
             val responseType = if (tvType == TvType.Anime) TvType.Anime else TvType.TvSeries
             newTvSeriesLoadResponse(name, url, responseType, episodes) {
-                this.posterUrl = meta.poster
-                this.backgroundPosterUrl = meta.background
+                this.posterUrl = finalMeta.poster
+                this.backgroundPosterUrl = finalMeta.background
                 this.plot = plot
                 this.year = yearInt
-                this.tags = meta.genres
-                this.score = Score.from10(meta.imdbRating)
+                this.tags = finalMeta.genres
+                this.score = Score.from10(finalMeta.imdbRating)
                 if (actors.isNotEmpty()) addActors(actors)
             }
         }
