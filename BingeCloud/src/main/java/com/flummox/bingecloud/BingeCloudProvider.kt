@@ -337,15 +337,15 @@ private suspend fun routeLanguage(
         return if (tvType == TvType.Movie && videos.isEmpty()) {
         val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
         newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
-            this.posterUrl = finalMeta.poster
-            this.backgroundPosterUrl = finalMeta.background
-            this.plot = plot
-            this.year = yearInt
-            this.tags = finalMeta.genres
-            this.score = Score.from10(finalMeta.imdbRating)
-                if (actors.isNotEmpty()) addActors(actors)
-            }
-        } else {
+             this.posterUrl = finalMeta.poster
+             this.backgroundPosterUrl = finalMeta.background
+             this.plot = plot
+             this.year = yearInt
+             this.tags = finalMeta.genres
+             this.score = Score.from10(finalMeta.imdbRating)
+             if (actors.isNotEmpty()) addActors(actors)
+         }
+         } else {
             val episodes = videos.mapIndexedNotNull { idx, v ->
                 val s = v.season ?: return@mapIndexedNotNull null
                 val e = v.episode ?: return@mapIndexedNotNull null
@@ -370,8 +370,8 @@ private suspend fun routeLanguage(
                 this.plot = plot
                 this.year = yearInt
                 this.tags = finalMeta.genres
-                this.score = Score.from10(finalMeta.imdbRating)
-                if (actors.isNotEmpty()) addActors(actors)
+                this.posterUrl = v.thumbnail ?: finalMeta.background
+                this.description = v.overview
             }
         }
     }
