@@ -400,11 +400,9 @@ suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
         fetched
     }
 
-    val start = skip
-    if (start >= pool.size) return emptyList()
-    val end = (skip + 20).coerceAtMost(pool.size)
-    return pool.subList(start, end)
-}
+        // Return the full pool. Caller paginates.
+        return pool
+   }
 
 private suspend fun fetchHindiPool(key: String): List<AioMeta> {
     val since = java.time.LocalDate.now().minusYears(3).toString()
