@@ -158,8 +158,10 @@ if (genresArr != null) {
              )
         }
 
-        BCLog.d("[JW] ${objectType ?: "ALL"} filter=${filter.keys().asSequence().joinToString(",")} → ${out.size}")
+                BCLog.d("[JW] ${objectType ?: "ALL"} filter=${filter.keys().asSequence().joinToString(",")} → ${out.size}")
         out
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
         BCLog.e("[JW] fetch failed: ${e.message}")
         emptyList()
