@@ -203,16 +203,16 @@ private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
     return routeLanguage("series", "bn", page)
 }
 
-    private suspend fun routeLanguageTVDB(
+     private suspend fun routeLanguageTVDB(
     rowType: String,
     langCode: String,
     page: Int
 ): List<AioMeta> {
     val tvdbType = if (rowType == "series" || rowType == "anime") "series" else "movies"
 
-    // Hindi SERIES: TMDB direct with non-content genres excluded.
-    // TVDB tags everything as Drama, soaps slip through. TMDB has
-    // distinct Soap/Reality/Talk/News genres and can filter at query time.
+    // Hindi SERIES: TMDB direct — provider-filtered + genre-excluded.
+    // TVDB's Drama tag is too coarse to separate soaps from scripted
+    // series. TMDB has distinct Soap/Reality/Talk/News genres.
     if (langCode == "hi" && tvdbType == "series") {
         val clean = tmdbHindiSeriesClean((page - 1) * 20)
         if (clean.isNotEmpty()) return clean
@@ -225,7 +225,7 @@ private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
     val genreIds = when (langCode) {
         "ko" -> if (tvdbType == "series") listOf(12, 24, 28, 31)
                 else listOf(12, 24, 19, 14)
-        "hi" -> listOf(12, 15, 19, 28)   // movie path only now
+        "hi" -> listOf(12, 15, 19, 28)   // movie path only — series is handled above
         "bn" -> listOf(12, 28, 15)
         else -> emptyList()
     }
@@ -235,7 +235,7 @@ private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
 
     BCLog.d("[TVDB] empty for $langCode/$tvdbType, falling back to JW + TMDB")
     return routeLanguage(rowType, langCode, page)
-    }
+     }
 
 
     // Legacy fallback path — TMDB only. JustWatch's originalLanguages
