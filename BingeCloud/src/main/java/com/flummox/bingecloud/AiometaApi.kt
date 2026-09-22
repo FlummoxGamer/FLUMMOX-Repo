@@ -324,7 +324,7 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
     }
 }
 
-// ── TMDB language discover (fallback for Hindi/Bangla) ──
+// ── TMDB language discover (fallback for Bangla) ──
 suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
@@ -346,10 +346,10 @@ suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): L
 }
 
 // ── Clean Hindi Series — daily rotation ──
-// Premium genres required (Mystery/Crime/Sci-Fi/Action/War).
-// Soaps never carry these tags so they can't slip through.
-// 60-item pool fetched once per day, shuffled with day-seed, cached
-// 24h. Same order all day, new order every day.
+// Premium genres only. Soaps never carry these tags on TMDB.
+//   9648=Mystery, 80=Crime, 10765=Sci-Fi&Fantasy,
+//   10759=Action&Adventure, 10768=War&Politics.
+// 60-item pool fetched once per day, date-shuffled, cached 24h.
 suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
@@ -409,6 +409,9 @@ suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
 private suspend fun fetchHindiPool(key: String): List<AioMeta> {
     val since = java.time.LocalDate.now().minusYears(3).toString()
     val pages = listOf(1, 2, 3)
+
+    // Premium genres only. No provider filter — TMDB's provider data
+    // for Indian platforms is too sparse. Recency window keeps it fresh.
     val all = mutableListOf<AioMeta>()
     coroutineScope {
         pages.map { p ->
@@ -417,8 +420,6 @@ private suspend fun fetchHindiPool(key: String): List<AioMeta> {
                     val url = "https://api.themoviedb.org/3/discover/tv" +
                         "?api_key=$key" +
                         "&with_original_language=hi" +
-                        "&with_watch_providers=122%7C232%7C237%7C220" +
-                        "&watch_region=IN" +
                         "&with_genres=9648%7C80%7C10765%7C10759%7C10768" +
                         "&without_genres=10766,10764,10767,10763" +
                         "&first_air_date.gte=$since" +
