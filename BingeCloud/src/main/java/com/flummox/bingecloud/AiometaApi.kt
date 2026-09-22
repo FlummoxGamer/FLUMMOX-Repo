@@ -173,14 +173,17 @@ private suspend fun tmdbDiscover(
             "&watch_region=$region" +
             "&sort_by=popularity.desc" +
             "&page=$page"
-        return try {
-            val json = app.get(fallbackUrl).text
-            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-    return result
+              return try {
+                val json = app.get(url).text
+                tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+              } catch (e: kotlinx.coroutines.CancellationException) {
+                  throw e
+              } catch (e: Exception) {
+                  BCLog.e("TMDB discover failed: ${e.message}")
+                  emptyList()
+               }
+       }
+               return result
 }
 
 suspend fun tmdbDiscoverMerged(providerId: Int, skip: Int): List<AioMeta> {
@@ -200,14 +203,16 @@ suspend fun tmdbTrendingDirect(tmdbType: String): List<AioMeta> {
     if (key.isBlank()) return emptyList()
     val type = if (tmdbType == "tv") "tv" else "movie"
     val url = "https://api.themoviedb.org/3/trending/$type/day?api_key=$key&language=en-US"
-    return try {
-        val json = app.get(url).text
-        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-    } catch (e: Exception) {
-        BCLog.e("TMDB trending direct failed: ${e.message}")
-        emptyList()
-    }
-}
+        return try {
+            val json = app.get(url).text
+            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+             BCLog.e("TMDB trending direct failed: ${e.message}")
+             emptyList()
+        }
+   }
 
 // ── TMDB direct: full meta fallback ──
 // Used when Aiometa can't resolve a tmdb:xxx ID at load time.
@@ -293,12 +298,13 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
             imdb_id = obj.optString("imdb_id").takeIf { it.isNotBlank() && it != "null" },
             videos = videos.takeIf { it.isNotEmpty() }
         )
-    } catch (e: Exception) {
-        BCLog.e("TMDB direct meta failed: ${e.message}")
-        null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BCLog.e("TMDB direct meta failed: ${e.message}")
+            null
+        }
     }
-}
-
 // Language-based TMDB discover. Used by Hindi / Bangla rows as a
 // silent fallback if JustWatch returns nothing.
 suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): List<AioMeta> {
@@ -310,14 +316,16 @@ suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): L
         "&with_original_language=$lang" +
         "&sort_by=popularity.desc" +
         "&page=$page"
-    return try {
-        val json = app.get(url).text
-        tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-    } catch (e: Exception) {
-        BCLog.e("TMDB lang-discover failed: ${e.message}")
-        emptyList()
-    }
-}
+        return try {
+            val json = app.get(url).text
+            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BCLog.e("TMDB lang-discover failed: ${e.message}")
+            emptyList()
+        }
+   }
 
 private fun TmdbDiscoverItem.toAioMeta(tmdbType: String): AioMeta? {
     val itemId = id ?: return null
