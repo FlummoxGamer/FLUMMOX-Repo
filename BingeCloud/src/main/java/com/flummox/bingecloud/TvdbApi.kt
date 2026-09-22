@@ -1,12 +1,14 @@
 package com.flummox.bingecloud
 
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.URLEncoder
 
 // ═══════════════════════════════════════════════════════════════
 // ── TVDB v4 client ──
@@ -194,19 +196,61 @@ suspend fun tvdbDiscover(
         return out
    }
 
-// Fill missing posters via Aiometa search. Runs in parallel, silent on failure.
-suspend fun tvdbFillPosters(items: List<AioMeta>): List<AioMeta> = coroutineScope {
+// Enrich TVDB rows: swap tvdb: IDs for tmdb: IDs so the inside page
+// loads via Aiometa/TMDB, and fill missing posters. Runs in parallel,
+// each tile cached for 30 min. Silent on failure.
+suspend fun tvdbEnrich(items: List<AioMeta>): List<AioMeta> = coroutineScope {
     items.map { item ->
         async {
-            if (!item.poster.isNullOrBlank()) return@async item
-            val name = item.name ?: return@async item
-            val clean = name.substringBefore(" (").trim()
-            if (clean.isBlank()) return@async item
-            try {
-                val searchType = if (item.type == "movie") "movie" else "series"
-                val hit = aioSearch(clean, searchType).firstOrNull { !it.poster.isNullOrBlank() }
-                if (hit?.poster != null) item.copy(poster = hit.poster) else item
-            } catch (_: Exception) {
+            val name = item.name?.substringBefore(" (")?.trim()
+            if (name.isNullOrBlank()) return@async item
+
+            val searchType = if (item.type == "movie") "movie" else "series"
+            val cacheKey = "tvdbEnrich:${searchType}:${name.lowercase()}"
+            val cached = BCCache.get(cacheKey, 30 * 60 * 1000L)
+
+            var resolvedId: String? = null
+            var resolvedPoster: String? = item.poster
+
+            if (cached != null) {
+                val parts = cached.split("||", limit = 2)
+                resolvedId = parts.getOrNull(0)?.takeIf { it.isNotBlank() && it != "NONE" }
+                if (resolvedPoster.isNullOrBlank()) resolvedPoster = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+            } else {
+                try {
+                    val hit = aioSearch(name, searchType).firstOrNull { it.id?.startsWith("tmdb:") == true }
+                    if (hit != null) {
+                        resolvedId = hit.id
+                        if (resolvedPoster.isNullOrBlank()) resolvedPoster = hit.poster
+                    }
+                } catch (_: Exception) {}
+
+                if (resolvedId == null) {
+                    try {
+                        val key = BuildConfig.TMDB_API_KEY
+                        if (key.isNotBlank()) {
+                            val encoded = URLEncoder.encode(name, "UTF-8")
+                            val tmdbType = if (item.type == "movie") "movie" else "tv"
+                            val url = "https://api.themoviedb.org/3/search/$tmdbType?api_key=$key&query=$encoded&page=1"
+                            val json = app.get(url).text
+                            val parsed = tryParseJson<TmdbDiscoverResponse>(json)
+                            val hit = parsed?.results?.firstOrNull()
+                            if (hit?.id != null) {
+                                resolvedId = "tmdb:${hit.id}"
+                                if (resolvedPoster.isNullOrBlank()) {
+                                    resolvedPoster = hit.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                BCCache.put(cacheKey, "${resolvedId ?: "NONE"}||${resolvedPoster ?: ""}")
+            }
+
+            if (resolvedId != null) {
+                item.copy(id = resolvedId, poster = resolvedPoster ?: item.poster)
+            } else {
                 item
             }
         }
