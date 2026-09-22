@@ -27,7 +27,10 @@ query GetPopularTitles(${'$'}popularTitlesFilter: TitleFilter, ${'$'}country: Co
           title
           originalReleaseYear
           shortDescription
-          posterUrl
+          posterUrl(profile: S718)
+          genres {
+            shortName
+        }
           externalIds {
             tmdbId
           }
@@ -124,8 +127,17 @@ private suspend fun jwFetch(
                    it.startsWith("//") -> "https:$it"
                    it.startsWith("/") -> "https://images.justwatch.com$it"
                    else -> "https://images.justwatch.com/$it"
-              }
+               }
            }
+
+val genresArr = content.optJSONArray("genres")
+val genres = mutableListOf<String>()
+if (genresArr != null) {
+    for (j in 0 until genresArr.length()) {
+        val g = genresArr.optJSONObject(j)?.optString("shortName")?.takeIf { it.isNotBlank() }
+        if (g != null) genres.add(g)
+    }
+}
             val type = when (objType) {
                 "MOVIE" -> "movie"
                 "SHOW" -> "series"
@@ -139,10 +151,11 @@ private suspend fun jwFetch(
                     type = type,
                     description = content.optString("shortDescription").takeIf { it.isNotBlank() },
                     poster = poster,
+                    genres = genres.takeIf { it.isNotEmpty() },
                     releaseInfo = year?.toString(),
                     year = year?.toString()
-                )
-            )
+                 )
+             )
         }
 
         BCLog.d("[JW] ${objectType ?: "ALL"} filter=${filter.keys().asSequence().joinToString(",")} → ${out.size}")
