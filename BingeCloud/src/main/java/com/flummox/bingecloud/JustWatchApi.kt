@@ -97,7 +97,7 @@ private suspend fun jwFetch(
             ?: run {
                 val err = root.optJSONArray("errors")
                 if (err != null && err.length() > 0) {
-                    BCLog.e("[JW] graphql error: ${err.optJSONObject(0)?.optString("message")}")
+                BCLog.e("[JW] graphql error: ${err.optJSONObject(0)?.toString()?.take(600)}")
                 }
                 return emptyList()
             }
