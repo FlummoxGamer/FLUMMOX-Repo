@@ -17,11 +17,11 @@ import org.json.JSONObject
 private const val TVDB_ENDPOINT = "https://api4.thetvdb.com/v4"
 private val TVDB_JSON = "application/json; charset=utf-8".toMediaType()
 
-// Country code for TVDB's country filter (ISO 3166-1 alpha-2)
-private val COUNTRY_ISO2 = mapOf(
-    "hi" to "in", "bn" to "bd", "ko" to "kr",
-    "ta" to "in", "te" to "in", "ja" to "jp",
-    "zh" to "cn", "ml" to "in", "kn" to "in"
+// Country code for TVDB's country filter (ISO 3166-1 alpha-3)
+private val COUNTRY_ISO3 = mapOf(
+    "hi" to "ind", "bn" to "bgd", "ko" to "kor",
+    "ta" to "ind", "te" to "ind", "ja" to "jpn",
+    "zh" to "chn", "ml" to "ind", "kn" to "ind"
 )
 
 // 3-letter ISO 639-2 codes TVDB uses for title language
@@ -159,7 +159,7 @@ suspend fun tvdbDiscover(
     limit: Int = 30
 ): List<AioMeta> {
     val token = TvdbAuth.getToken() ?: return emptyList()
-    val country = langCode?.let { COUNTRY_ISO2[it] }
+    val country = langCode?.let { COUNTRY_ISO3[it] }
     val nativeLang = langCode?.let { LANG_ISO3[it] } ?: "eng"
 
     val englishList = tvdbFetch(type, country, "eng", token)
