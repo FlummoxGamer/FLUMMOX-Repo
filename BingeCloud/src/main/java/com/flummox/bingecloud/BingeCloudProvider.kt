@@ -301,13 +301,13 @@ private suspend fun routeLanguage(
         if (Settings.isPrefetchEnabled() && !fromHomeBanner) {
             val prefetchQuery: StreamQuery? = when {
                 tvType == TvType.Movie && videos.isEmpty() ->
-                    StreamQuery(name, yearInt?.toString() ?: "", "movie", finalmeta.imdb_id ?: "")
+                    StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
                 videos.isNotEmpty() -> {
                     val first = videos.firstOrNull()
                     val s = first?.season
                     val e = first?.episode
                     if (s != null && e != null && s > 0)
-                        StreamQuery(name, yearInt?.toString() ?: "", "series", finalmeta.imdb_id ?: "", s, e)
+                        StreamQuery(name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e)
                     else null
                 }
                 else -> null
@@ -370,8 +370,8 @@ private suspend fun routeLanguage(
                 this.plot = plot
                 this.year = yearInt
                 this.tags = finalMeta.genres
-                this.posterUrl = v.thumbnail ?: finalMeta.background
-                this.description = v.overview
+                this.score = Score.from10(finalMeta.imdbRating)
+                if (actors.isNotEmpty()) addActors(actors)
             }
         }
     }
