@@ -81,23 +81,83 @@ open class BingeCloudProvider : MainAPI() {
 )
 
     // ── home ──
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val parts = request.data.split(ROW_TAG)
-        if (parts.size < 2) return null
-        lastHomeRenderMs = System.currentTimeMillis()
-        val isStreaming = parts[1].startsWith("tmdb.provider.")
-val raw: List<AioMeta> = if (isStreaming) {
-    val providerId = parts[1].substringAfterLast(".").toIntOrNull() ?: 0
-    tmdbDiscoverMerged(providerId, (page - 1) * 20)
-} else {
-    aioFetchCatalog(parts[0], parts[1], parts.getOrNull(2), (page - 1) * 25)
+override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    val parts = request.data.split(ROW_TAG)
+    if (parts.size < 2) return null
+    lastHomeRenderMs = System.currentTimeMillis()
+    val rowType = parts[0]
+    val catalogId = parts[1]
+    val raw = resolveRow(rowType, catalogId, page)
+    val items = raw.filter { !it.isJunk() }.mapNotNull { it.toSearchResponse() }
+    return newHomePageResponse(request.name, items, hasNext = raw.size >= 20)
 }
-       val items = raw
-           .filter { !it.isJunk() }
-           .mapNotNull { it.toSearchResponse() }
-       val hasMore = if (isStreaming) raw.size >= 20 else raw.size >= 25
-       return newHomePageResponse(request.name, items, hasNext = hasMore)
-       }
+
+private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): List<AioMeta> {
+    return when (catalogId) {
+        // Western — Aiometa/TMDB base + JustWatch top-up on page 1
+        "tmdb.provider.8"    -> routeWestern(rowType, "nfx", 8, page)
+        "tmdb.provider.9"    -> routeWestern(rowType, "amazon-prime-video", 9, page)
+        "tmdb.provider.350"  -> routeWestern(rowType, "apple-tv-plus", 350, page)
+
+        // Western — TMDB direct (no IN presence on JustWatch)
+        "tmdb.provider.1899" -> tmdbDiscoverMerged(1899, (page - 1) * 20)
+        "tmdb.provider.337"  -> tmdbDiscoverMerged(337, (page - 1) * 20)
+
+        // Indian — JustWatch primary + TMDB fill
+        "tmdb.provider.122"  -> routeIndian(rowType, "jiohotstar", 122, page)
+        "tmdb.provider.220"  -> routeIndian(rowType, "jio-cinema", 220, page)
+        "tmdb.provider.237"  -> routeIndian(rowType, "sony-liv", 237, page)
+        "tmdb.provider.232"  -> routeIndian(rowType, "zee5", 232, page)
+
+        // Language rows — JustWatch primary, TMDB direct fallback
+        "tmdb.language"      -> routeLanguage(rowType, "hi", page)
+        "justwatch.bengali"  -> routeLanguage(rowType, "bn", page)
+
+        // Everything else (TVDB, MAL anime, etc.) — Aiometa catalog
+        else -> aioFetchCatalog(rowType, catalogId, null, (page - 1) * 25)
+    }
+}
+
+private fun jwTypeFor(rowType: String): String? = when (rowType) {
+    "movie" -> "MOVIE"
+    "series" -> "SHOW"
+    else -> null
+}
+
+private suspend fun routeWestern(
+    rowType: String,
+    jwSlug: String,
+    tmdbProviderId: Int,
+    page: Int
+): List<AioMeta> {
+    if (page > 1) return tmdbDiscoverMerged(tmdbProviderId, (page - 1) * 20)
+    val base = tmdbDiscoverMerged(tmdbProviderId, 0)
+    val jwList = jwDiscoverByProvider(jwSlug, jwTypeFor(rowType), 20)
+    return (base + jwList).distinctBy { it.id }
+}
+
+private suspend fun routeIndian(
+    rowType: String,
+    jwSlug: String,
+    tmdbProviderId: Int,
+    page: Int
+): List<AioMeta> {
+    val jwList = jwDiscoverByProvider(jwSlug, jwTypeFor(rowType), 30)
+    if (jwList.size >= 15) return jwList
+    val tmdbFill = tmdbDiscoverMerged(tmdbProviderId, (page - 1) * 20)
+    return (jwList + tmdbFill).distinctBy { it.id }
+}
+
+private suspend fun routeLanguage(
+    rowType: String,
+    langCode: String,
+    page: Int
+): List<AioMeta> {
+    val jwList = jwDiscoverByLanguage(langCode, jwTypeFor(rowType), 30)
+    if (jwList.isNotEmpty()) return jwList
+    val tmdbType = if (rowType == "series") "tv" else "movie"
+    return tmdbDiscoverByLanguage(tmdbType, langCode, (page - 1) * 20)
+}
 
     // ── search ──
     override suspend fun search(query: String): List<SearchResponse>? {
