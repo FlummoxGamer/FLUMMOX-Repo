@@ -101,6 +101,7 @@ object Settings {
     const val K_ROW_BEST_80S = "bingecloud_row_best_80s"
     const val K_ROW_HINDI_MOVIES = "bingecloud_row_hindi_movies"
     const val K_ROW_HINDI_SERIES = "bingecloud_row_hindi_series"
+    const val K_ROW_BANGLA = "bingecloud_row_bangla"
     const val K_ROW_ANIME_SCHEDULE = "bingecloud_row_anime_schedule"
 
 // ── Streaming platforms (one row per platform, mixed movie + series) ──
@@ -138,6 +139,7 @@ object Settings {
     // ── Indian ──
     RowSpec(K_ROW_HINDI_MOVIES, "movie", "tmdb.language", "Hindi Movies", "Hindi", "TMDB • Hindi"),
     RowSpec(K_ROW_HINDI_SERIES, "series", "tmdb.language", "Hindi Series", "Hindi", "TMDB • Hindi"),
+    RowSpec(K_ROW_BANGLA, "movie", "justwatch.bengali", "Bangla", null, "JustWatch • Bangla"),
 
     // ── Anime ──
     RowSpec(K_ROW_TOP_ANIME, "anime", "mal.top_anime", "Top Anime", null, "MAL"),
