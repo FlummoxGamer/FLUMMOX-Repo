@@ -11,6 +11,8 @@ android {
         minSdk = 21
         val tmdbKey = (System.getenv("TMDB_API_KEY") ?: "").trim()
         buildConfigField("String", "TMDB_API_KEY", "\"$tmdbKey\"")
+        val tvdbKey = (System.getenv("TVDB_API_KEY") ?: "").trim()
+        buildConfigField("String", "TVDB_API_KEY", "\"$tvdbKey\"")
         
     }
     buildFeatures {
