@@ -105,9 +105,9 @@ override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageR
     val catalogId = parts[1]
     var raw = resolveRow(rowType, catalogId, page)
 
-    // Fill missing posters from Aiometa (only for TVDB-sourced rows)
+    // TVDB-sourced rows: swap to tmdb: IDs + fill missing posters
     if (raw.any { it.id?.startsWith("tvdb:") == true }) {
-        raw = tvdbFillPosters(raw)
+        raw = tvdbEnrich(raw)
     }
 
     // Dedupe by normalized name, keep first occurrence
@@ -137,9 +137,9 @@ private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): L
         "tmdb.provider.237"  -> routeIndian(rowType, "sony-liv", 237, page)
         "tmdb.provider.232"  -> routeIndian(rowType, "zee5", 232, page)
 
-        // Language rows — TVDB primary, Aiometa/JW/TMDB cascade fallback
+        // Language rows — TVDB primary, TMDB cascade fallback
         "tmdb.language"      -> routeLanguageTVDB(rowType, "hi", page)
-        "justwatch.bengali"  -> routeLanguageTVDB(rowType, "bn", page)
+        "justwatch.bengali"  -> routeBanglaTVDB(page)
         "tvdb.korean.series" -> routeLanguageTVDB("series", "ko", page)
         "tvdb.korean.movies" -> routeLanguageTVDB("movie", "ko", page)
 
@@ -192,11 +192,21 @@ private suspend fun routeIndian(
     return (jwList + tmdbFill).distinctBy { it.id }
 }
 
+// Bangla row: movies + series merged into one row.
+private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
+    val series = tvdbDiscover("series", "bn", 20)
+    val movies = tvdbDiscover("movies", "bn", 20)
+    val merged = (series + movies).distinctBy { it.name?.lowercase() }
+    if (merged.isNotEmpty()) return merged
+    return routeLanguage("series", "bn", page)
+}
+
 private suspend fun routeLanguageTVDB(
     rowType: String,
     langCode: String,
     page: Int
 ): List<AioMeta> {
+    
     // TVDB is now the primary source for language rows.
     // It has real language filtering (ISO 639-3) and a proper Soap
     // genre tag, so no client-side heuristic needed.
