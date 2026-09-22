@@ -347,8 +347,10 @@ suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): L
             emptyList()
         }
    }
-    // Clean Hindi series — TMDB direct with non-content genres excluded.
-    // 10766=Soap, 10764=Reality, 10767=Talk, 10763=News.
+    // Clean Hindi series — TMDB direct with non-content genres excluded
+// and Indian streaming platforms only. Excludes soaps, reality,
+// talk shows, news (TMDB genre IDs 10766, 10764, 10767, 10763).
+// Providers: 122=JioHotstar, 232=ZEE5, 237=SonyLIV, 220=JioCinema.
 suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
     val key = BuildConfig.TMDB_API_KEY
     if (key.isBlank()) return emptyList()
@@ -356,6 +358,8 @@ suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
     val url = "https://api.themoviedb.org/3/discover/tv" +
         "?api_key=$key" +
         "&with_original_language=hi" +
+        "&with_watch_providers=122%7C232%7C237%7C220" +
+        "&watch_region=IN" +
         "&without_genres=10766,10764,10767,10763" +
         "&sort_by=popularity.desc" +
         "&vote_count.gte=5" +
@@ -370,6 +374,10 @@ suspend fun tmdbHindiSeriesClean(skip: Int = 0): List<AioMeta> {
         emptyList()
     }
 }
+
+// Language-based TMDB discover. Used by Hindi / Bangla rows as a
+// silent fallback if JustWatch returns nothing.
+suspend fun tmdbDiscoverByLanguage(tmdbType: String, lang: String, skip: Int): List<AioMeta> {
 
 private fun TmdbDiscoverItem.toAioMeta(tmdbType: String): AioMeta? {
     val itemId = id ?: return null
