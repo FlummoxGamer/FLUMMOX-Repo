@@ -1,21 +1,31 @@
 package com.flummox.bingecloud
 
 import com.lagradost.cloudstream3.app
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 // ═══════════════════════════════════════════════════════════════
 // ── TVDB v4 client ──
-// Auth token cached 25 days (token valid ~1 month).
-// Used for language-based discovery (Hindi, Bangla, Korean).
-// Soap genre filtered at source so we don't need episode heuristics.
+// Auth cached 25 days. Country-based filter for language rows.
+// Two calls per row (English + native title) so we get both.
 // ═══════════════════════════════════════════════════════════════
 
 private const val TVDB_ENDPOINT = "https://api4.thetvdb.com/v4"
 private val TVDB_JSON = "application/json; charset=utf-8".toMediaType()
 
-private val LANGUAGE_ISO3 = mapOf(
+// Country code for TVDB's country filter (ISO 3166-1 alpha-2)
+private val COUNTRY_ISO2 = mapOf(
+    "hi" to "in", "bn" to "bd", "ko" to "kr",
+    "ta" to "in", "te" to "in", "ja" to "jp",
+    "zh" to "cn", "ml" to "in", "kn" to "in"
+)
+
+// 3-letter ISO 639-2 codes TVDB uses for title language
+private val LANG_ISO3 = mapOf(
     "hi" to "hin", "bn" to "ben", "ko" to "kor",
     "ta" to "tam", "te" to "tel", "ja" to "jpn",
     "zh" to "zho", "ml" to "mal", "kn" to "kan"
@@ -61,7 +71,7 @@ object TvdbAuth {
                 Settings.saveTvdbToken(token, exp)
                 BCLog.d("[TVDB] auth ok")
             } else {
-                BCLog.e("[TVDB] login response no token: ${res.text.take(200)}")
+                BCLog.e("[TVDB] login no token: ${res.text.take(200)}")
             }
             token
         } catch (e: Exception) {
@@ -71,15 +81,22 @@ object TvdbAuth {
     }
 }
 
-suspend fun tvdbDiscover(
-    type: String,        // "series" | "movies"
-    langCode: String?,   // null = no language filter (trending)
-    limit: Int = 30
-): List<AioMeta> {
-    val token = TvdbAuth.getToken() ?: return emptyList()
+private data class TvdbRow(
+    val id: Int,
+    val name: String,
+    val poster: String?,
+    val year: String?
+)
+
+private suspend fun tvdbFetch(
+    type: String,
+    country: String?,
+    titleLang: String,
+    token: String
+): List<TvdbRow> {
     val path = if (type == "movies") "movies" else "series"
-    val langParam = langCode?.let { LANGUAGE_ISO3[it] }?.let { "&lang=$it" } ?: ""
-    val url = "$TVDB_ENDPOINT/$path/filter?sort=score&sortType=desc&page=0$langParam"
+    val countryParam = country?.let { "&country=$it" } ?: ""
+    val url = "$TVDB_ENDPOINT/$path/filter?sort=score&sortType=desc&page=0$countryParam&lang=$titleLang"
 
     return try {
         val res = app.get(
@@ -89,19 +106,18 @@ suspend fun tvdbDiscover(
                 "Accept" to "application/json"
             )
         )
-        val json = JSONObject(res.text)
-        val data = json.optJSONArray("data") ?: run {
-            BCLog.e("[TVDB] no data array. head=${res.text.take(250)}")
+        val data = JSONObject(res.text).optJSONArray("data") ?: run {
+            BCLog.e("[TVDB] no data for $url — head=${res.text.take(150)}")
             return emptyList()
         }
 
-        val out = mutableListOf<AioMeta>()
-        for (i in 0 until minOf(data.length(), limit)) {
+        val out = mutableListOf<TvdbRow>()
+        for (i in 0 until data.length()) {
             val o = data.optJSONObject(i) ?: continue
             val id = o.optInt("id", 0).takeIf { it > 0 } ?: continue
             val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
 
-            // Soap genre filter — TVDB tags it as a real genre
+            // Soap filter — TVDB tags Soap as a genre
             val genres = o.optJSONArray("genres")
             var isSoap = false
             if (genres != null) {
@@ -112,26 +128,86 @@ suspend fun tvdbDiscover(
             }
             if (isSoap) continue
 
-            val image = o.optString("image").takeIf { it.startsWith("http") }
-            val firstAired = o.optString("firstAired").takeIf { it.isNotBlank() }
-            val year = firstAired?.take(4)?.toIntOrNull()?.toString()
-                ?: o.optString("year").take(4).toIntOrNull()?.toString()
+            // Poster — TVDB returns `image` as a path or full URL
+            val imageRaw = o.optString("image").takeIf { it.isNotBlank() && it != "null" }
+            val poster = imageRaw?.let {
+                when {
+                    it.startsWith("http") -> it
+                    it.startsWith("//") -> "https:$it"
+                    else -> "https://artworks.thetvdb.com$it"
+                }
+            }
 
-            out.add(
-                AioMeta(
-                    id = "tvdb:$id",
-                    name = name,
-                    type = if (type == "movies") "movie" else "series",
-                    poster = image,
-                    releaseInfo = year,
-                    year = year
-                )
-            )
+            val firstAired = o.optString("firstAired")
+            val year = firstAired.take(4)
+                .takeIf { it.length == 4 && it.all { c -> c.isDigit() } }
+
+            out.add(TvdbRow(id, name, poster, year))
         }
-        BCLog.d("[TVDB] $type/${langCode ?: "trending"} → ${out.size}")
         out
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
-        BCLog.e("[TVDB] discover failed: ${e.message}")
+        BCLog.e("[TVDB] fetch failed: ${e.message}")
         emptyList()
     }
+}
+
+suspend fun tvdbDiscover(
+    type: String,
+    langCode: String?,
+    limit: Int = 30
+): List<AioMeta> {
+    val token = TvdbAuth.getToken() ?: return emptyList()
+    val country = langCode?.let { COUNTRY_ISO2[it] }
+    val nativeLang = langCode?.let { LANG_ISO3[it] } ?: "eng"
+
+    val englishList = tvdbFetch(type, country, "eng", token)
+    val nativeList = if (nativeLang != "eng") tvdbFetch(type, country, nativeLang, token) else emptyList()
+    val nativeMap = nativeList.associate { it.id to it.name }
+
+    val seen = mutableSetOf<Int>()
+    val out = mutableListOf<AioMeta>()
+    for (row in englishList) {
+        if (!seen.add(row.id)) continue
+        if (out.size >= limit) break
+
+        val nativeTitle = nativeMap[row.id]
+        val displayName = if (nativeTitle != null && nativeTitle != row.name) {
+            "${row.name} ($nativeTitle)"
+        } else row.name
+
+        out.add(
+            AioMeta(
+                id = "tvdb:${row.id}",
+                name = displayName,
+                type = if (type == "movies") "movie" else "series",
+                poster = row.poster,
+                releaseInfo = row.year,
+                year = row.year
+            )
+        )
+    }
+
+    BCLog.d("[TVDB] $type/${langCode ?: "all"} → ${out.size} (no poster: ${out.count { it.poster.isNullOrBlank() }})")
+    return out
+}
+
+// Fill missing posters via Aiometa search. Runs in parallel, silent on failure.
+suspend fun tvdbFillPosters(items: List<AioMeta>): List<AioMeta> = coroutineScope {
+    items.map { item ->
+        async {
+            if (!item.poster.isNullOrBlank()) return@async item
+            val name = item.name ?: return@async item
+            val clean = name.substringBefore(" (").trim()
+            if (clean.isBlank()) return@async item
+            try {
+                val searchType = if (item.type == "movie") "movie" else "series"
+                val hit = aioSearch(clean, searchType).firstOrNull { !it.poster.isNullOrBlank() }
+                if (hit?.poster != null) item.copy(poster = hit.poster) else item
+            } catch (_: Exception) {
+                item
+            }
+        }
+    }.awaitAll()
 }
