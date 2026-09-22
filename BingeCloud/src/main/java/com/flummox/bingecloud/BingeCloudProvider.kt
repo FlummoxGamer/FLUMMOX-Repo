@@ -208,23 +208,16 @@ private suspend fun routeLanguageTVDB(
     return routeLanguage(rowType, langCode, page)
 }
 
-// Legacy fallback path — JustWatch + TMDB. Kept as safety net.
-private suspend fun routeLanguage(
-    rowType: String,
-    langCode: String,
-    page: Int
-): List<AioMeta> {
-    val jwType = when (rowType) {
-        "series", "anime" -> "SHOW"
-        else -> "MOVIE"
+    // Legacy fallback path — TMDB only. JustWatch's originalLanguages
+    // param doesn't exist in their schema, so it was removed.
+    private suspend fun routeLanguage(
+        rowType: String,
+        langCode: String,
+        page: Int
+    ): List<AioMeta> {
+        val tmdbType = if (rowType == "series" || rowType == "anime") "tv" else "movie"
+        return tmdbDiscoverByLanguage(tmdbType, langCode, (page - 1) * 20)
     }
-    val jwList = jwDiscoverByLanguage(langCode, jwType, 30)
-        .filter { !it.poster.isNullOrBlank() }
-    if (jwList.isNotEmpty()) return jwList
-
-    val tmdbType = if (rowType == "series" || rowType == "anime") "tv" else "movie"
-    return tmdbDiscoverByLanguage(tmdbType, langCode, (page - 1) * 20)
-}
 
 
     // ── search ──
