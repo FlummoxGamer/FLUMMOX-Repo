@@ -102,6 +102,10 @@ object Settings {
     const val K_ROW_HINDI_MOVIES = "bingecloud_row_hindi_movies"
     const val K_ROW_HINDI_SERIES = "bingecloud_row_hindi_series"
     const val K_ROW_BANGLA = "bingecloud_row_bangla"
+    const val K_ROW_KOREAN_SERIES = "bingecloud_row_korean_series"
+    const val K_ROW_KOREAN_MOVIES = "bingecloud_row_korean_movies"
+    const val K_TVDB_TOKEN = "bingecloud_tvdb_token"
+    const val K_TVDB_TOKEN_EXP = "bingecloud_tvdb_token_exp"
     const val K_ROW_ANIME_SCHEDULE = "bingecloud_row_anime_schedule"
 
 // ── Streaming platforms (one row per platform, mixed movie + series) ──
@@ -134,10 +138,13 @@ object Settings {
     RowSpec(K_ROW_STREAM_JIOHOTSTAR, "movie", "tmdb.provider.122", "JioHotstar", null, "JioHotstar"),
     RowSpec(K_ROW_STREAM_JIOHOTSTAR, "movie", "tmdb.provider.122", "JioHotstar", null, "JioHotstar"),
     RowSpec(K_ROW_STREAM_SONYLIV, "movie", "tmdb.provider.237", "SonyLIV", null, "SonyLIV"),
-    // ── Indian ──
+    
+    // ── Language ──
     RowSpec(K_ROW_HINDI_MOVIES, "movie", "tmdb.language", "Hindi Movies", "Hindi", "TMDB • Hindi"),
-    RowSpec(K_ROW_HINDI_SERIES, "series", "tmdb.language", "Hindi Series", "Hindi", "TMDB • Hindi"),
-    RowSpec(K_ROW_BANGLA, "movie", "justwatch.bengali", "Bangla", null, "JustWatch • Bangla"),
+    RowSpec(K_ROW_HINDI_SERIES, "series", "tmdb.language", "Hindi Series", "Hindi", "TVDB • Hindi"),
+    RowSpec(K_ROW_BANGLA, "movie", "justwatch.bengali", "Bangla", null, "TVDB • Bangla"),
+    RowSpec(K_ROW_KOREAN_SERIES, "series", "tvdb.korean.series", "Korean Series", null, "TVDB • Korean"),
+    RowSpec(K_ROW_KOREAN_MOVIES, "movie", "tvdb.korean.movies", "Korean Movies", null, "TVDB • Korean"),
 
     // ── Anime ──
     RowSpec(K_ROW_TOP_ANIME, "anime", "mal.top_anime", "Top Anime", null, "MAL"),
@@ -386,6 +393,14 @@ private val DEFAULT_ON_ROWS = setOf(
     fun saveFebBoxToken(t: String) { setKey(K_FEBBOX_TOKEN, t) }
     fun clearFebBoxToken() { setKey(K_FEBBOX_TOKEN, "") }
 
+    // ── TVDB session ──
+    fun getTvdbToken(): String? = getKey<String>(K_TVDB_TOKEN)?.takeIf { it.isNotBlank() }
+    fun getTvdbTokenExp(): Long = getKey<Long>(K_TVDB_TOKEN_EXP) ?: 0L
+    fun saveTvdbToken(token: String, expMs: Long) {
+    setKey(K_TVDB_TOKEN, token)
+    setKey(K_TVDB_TOKEN_EXP, expMs)
+    }
+    
     // ── source toggles ──
     fun isSrcVm(): Boolean = getKey<Boolean>(K_SRC_VM) ?: true
     fun isSrcMd(): Boolean = getKey<Boolean>(K_SRC_MD) ?: true
@@ -395,6 +410,7 @@ private val DEFAULT_ON_ROWS = setOf(
     fun isSrcAnikoto(): Boolean = getKey<Boolean>(K_SRC_ANIKOTO) ?: true
     fun isSrcShowBox(): Boolean = getKey<Boolean>(K_SRC_SHOWBOX) ?: true
     fun isSrcMlsbd(): Boolean = getKey<Boolean>(K_SRC_MLSBD) ?: true
+    
     // ══════════════════════════════════════════════════════════
     // ── COLORS ──
     // ══════════════════════════════════════════════════════════
