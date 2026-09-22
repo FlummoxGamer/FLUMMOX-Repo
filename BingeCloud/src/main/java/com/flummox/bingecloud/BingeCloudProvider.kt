@@ -103,11 +103,23 @@ override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageR
     lastHomeRenderMs = System.currentTimeMillis()
     val rowType = parts[0]
     val catalogId = parts[1]
-    val raw = resolveRow(rowType, catalogId, page)
-    val items = raw.filter { !it.isJunk() }.mapNotNull { it.toSearchResponse() }
-    return newHomePageResponse(request.name, items, hasNext = raw.size >= 20)
-}
+    var raw = resolveRow(rowType, catalogId, page)
 
+    // Fill missing posters from Aiometa (only for TVDB-sourced rows)
+    if (raw.any { it.id?.startsWith("tvdb:") == true }) {
+        raw = tvdbFillPosters(raw)
+    }
+
+    // Dedupe by normalized name, keep first occurrence
+    val seen = mutableSetOf<String>()
+    val deduped = raw.filter { m ->
+        val key = (m.name ?: "").lowercase().trim()
+        if (key.isBlank()) false else seen.add(key)
+    }
+
+    val items = deduped.filter { !it.isJunk() }.mapNotNull { it.toSearchResponse() }
+    return newHomePageResponse(request.name, items, hasNext = deduped.size >= 20)
+}
 private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): List<AioMeta> {
     return when (catalogId) {
         // Western — Aiometa/TMDB base + JustWatch top-up on page 1
@@ -132,7 +144,7 @@ private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): L
         "tvdb.korean.movies" -> routeLanguageTVDB("movie", "ko", page)
 
        // TVDB rows — TVDB direct, Aiometa fallback
-       "tvdb.trending", "tvdb.genres" -> {
+       "tvdb.trending" -> {
            val tvdbType = if (rowType == "series") "series" else "movies"
            val direct = tvdbDiscover(tvdbType, null, 30)
            if (direct.isNotEmpty()) direct
