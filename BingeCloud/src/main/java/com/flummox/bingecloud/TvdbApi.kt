@@ -95,7 +95,8 @@ private suspend fun tvdbFetch(
     type: String,
     country: String?,
     titleLang: String,
-    token: String
+    token: String,
+    requireContentGenre: Boolean
 ): List<TvdbRow> {
     val path = if (type == "movies") "movies" else "series"
     val countryParam = country?.let { "&country=$it" } ?: ""
@@ -135,8 +136,8 @@ for (i in 0 until data.length()) {
 
     // Language rows: require at least one content genre.
     // Drops BTS/reality/idol content that has no scripted tag.
-    if (langCode != null && genreNames.none { it in TVDB_CONTENT_GENRES }) continue
-
+    if (requireContentGenre && genreNames.none { it in TVDB_CONTENT_GENRES }) continue
+    
     val imageRaw = o.optString("image").takeIf { it.isNotBlank() && it != "null" }
     val poster = imageRaw?.let {
         when {
@@ -189,8 +190,9 @@ suspend fun tvdbDiscover(
     val country = langCode?.let { COUNTRY_ISO3[it] }
     val nativeLang = langCode?.let { LANG_ISO3[it] } ?: "eng"
 
-    val englishList = tvdbFetch(type, country, "eng", token)
-    val nativeList = if (nativeLang != "eng") tvdbFetch(type, country, nativeLang, token) else emptyList()
+    val requireGenre = langCode != null
+    val englishList = tvdbFetch(type, country, "eng", token, requireGenre)
+    val nativeList = if (nativeLang != "eng") tvdbFetch(type, country, nativeLang, token, requireGenre) else emptyList()
     val nativeMap = nativeList.associate { it.id to it.name }
 
     val seen = mutableSetOf<Int>()
