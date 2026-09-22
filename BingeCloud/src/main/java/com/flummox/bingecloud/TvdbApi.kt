@@ -209,8 +209,15 @@ suspend fun tvdbDiscover(
 // Enrich TVDB rows: swap tvdb: IDs for tmdb: IDs so the inside page
 // loads via Aiometa/TMDB, and fill missing posters. Runs in parallel,
 // each tile cached for 30 min. Silent on failure.
+// Enrich only the first N tiles. The rest pass through with their
+// original tvdb: IDs and get resolved lazily on inside-page load
+// via TMDB direct meta.
+private const val ENRICH_CAP = 10
+
 suspend fun tvdbEnrich(items: List<AioMeta>): List<AioMeta> = coroutineScope {
-    items.map { item ->
+    val toEnrich = items.take(ENRICH_CAP)
+    val rest = items.drop(ENRICH_CAP)
+    val enriched = toEnrich.map { item ->
         async {
             val name = item.name?.substringBefore(" (")?.trim()
             if (name.isNullOrBlank()) return@async item
@@ -258,11 +265,12 @@ suspend fun tvdbEnrich(items: List<AioMeta>): List<AioMeta> = coroutineScope {
                 BCCache.put(cacheKey, "${resolvedId ?: "NONE"}||${resolvedPoster ?: ""}")
             }
 
-            if (resolvedId != null) {
-                item.copy(id = resolvedId, poster = resolvedPoster ?: item.poster)
-            } else {
-                item
-            }
-        }
-    }.awaitAll()
-}
+                        if (resolvedId != null) {
+                            item.copy(id = resolvedId, poster = resolvedPoster ?: item.poster)
+                        } else {
+                             item
+                        }
+                   }
+               }.awaitAll()
+               enriched + rest
+           }
