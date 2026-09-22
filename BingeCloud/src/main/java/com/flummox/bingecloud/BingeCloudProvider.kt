@@ -52,12 +52,18 @@ private fun isAdultContent(title: String, genres: List<String>?): Boolean {
 
 // ── home content filter: drop daily soaps / talk / reality ──
 private val HOME_BLOCKED_GENRES = setOf(
-    "soap", "talk", "talk show", "reality", "reality tv", "news", "game show"
+    "soap", "soap opera", "daily soap", "telenovela",
+    "talk", "talk show", "talk-show",
+    "reality", "reality tv", "reality-tv", "reality show",
+    "news", "game show", "game-show"
 )
 
 private fun AioMeta.isJunk(): Boolean {
     val g = genres
-    if (g != null && g.any { it.lowercase().trim() in HOME_BLOCKED_GENRES }) return true
+    if (g != null && g.any {
+            val norm = it.lowercase().trim()
+            norm in HOME_BLOCKED_GENRES || norm.replace("-", " ") in HOME_BLOCKED_GENRES
+        }) return true
     // Title-based filter for daily soaps / reality / talk shows that
     // JustWatch returns without genre metadata.
     val n = name?.lowercase() ?: return false
