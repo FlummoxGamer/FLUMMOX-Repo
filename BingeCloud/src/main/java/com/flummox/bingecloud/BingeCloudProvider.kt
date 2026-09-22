@@ -125,15 +125,25 @@ private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): L
         "tmdb.provider.237"  -> routeIndian(rowType, "sony-liv", 237, page)
         "tmdb.provider.232"  -> routeIndian(rowType, "zee5", 232, page)
 
-        // Language rows — JustWatch primary, TMDB direct fallback
-        "tmdb.language"      -> routeLanguage(rowType, "hi", page)
-        "justwatch.bengali"  -> routeLanguage(rowType, "bn", page)
+        // Language rows — TVDB primary, Aiometa/JW/TMDB cascade fallback
+        "tmdb.language"      -> routeLanguageTVDB(rowType, "hi", page)
+        "justwatch.bengali"  -> routeLanguageTVDB(rowType, "bn", page)
+        "tvdb.korean.series" -> routeLanguageTVDB("series", "ko", page)
+        "tvdb.korean.movies" -> routeLanguageTVDB("movie", "ko", page)
 
-        // Trending rows — TMDB direct (avoids Aiometa's tmdb.trending)
-        "tmdb.trending" -> {
-            val tmdbType = if (rowType == "series") "tv" else "movie"
-            tmdbTrendingDirect(tmdbType)
-        }
+       // TVDB rows — TVDB direct, Aiometa fallback
+       "tvdb.trending", "tvdb.genres" -> {
+           val tvdbType = if (rowType == "series") "series" else "movies"
+           val direct = tvdbDiscover(tvdbType, null, 30)
+           if (direct.isNotEmpty()) direct
+           else aioFetchCatalog(rowType, catalogId, null, (page - 1) * 25)
+       }
+
+      // Trending rows — TMDB direct (avoids Aiometa's tmdb.trending)
+      "tmdb.trending" -> {
+          val tmdbType = if (rowType == "series") "tv" else "movie"
+          tmdbTrendingDirect(tmdbType)
+      }
 
         // Everything else (TVDB, MAL anime, etc.) — Aiometa catalog
         else -> aioFetchCatalog(rowType, catalogId, null, (page - 1) * 25)
@@ -170,60 +180,40 @@ private suspend fun routeIndian(
     return (jwList + tmdbFill).distinctBy { it.id }
 }
 
+private suspend fun routeLanguageTVDB(
+    rowType: String,
+    langCode: String,
+    page: Int
+): List<AioMeta> {
+    // TVDB is now the primary source for language rows.
+    // It has real language filtering (ISO 639-3) and a proper Soap
+    // genre tag, so no client-side heuristic needed.
+    val tvdbType = if (rowType == "series" || rowType == "anime") "series" else "movies"
+    val tvdbList = tvdbDiscover(tvdbType, langCode, 30)
+    if (tvdbList.isNotEmpty()) return tvdbList
+
+    BCLog.d("[TVDB] empty for $langCode/$tvdbType, falling back to JW + TMDB")
+    return routeLanguage(rowType, langCode, page)
+}
+
+// Legacy fallback path — JustWatch + TMDB. Kept as safety net.
 private suspend fun routeLanguage(
     rowType: String,
     langCode: String,
     page: Int
 ): List<AioMeta> {
-    var jwList = jwDiscoverByLanguage(langCode, jwTypeFor(rowType), 30)
-
-    // Bangla row: drop anything without a poster. Poster-less tiles
-    // look broken on the home screen.
-    if (langCode == "bn") {
-        jwList = jwList.filter { !it.poster.isNullOrBlank() }
+    val jwType = when (rowType) {
+        "series", "anime" -> "SHOW"
+        else -> "MOVIE"
     }
-
-    // Hindi Series row: drop daily soaps. JustWatch doesn't tag them
-    // as Soap, so we detect via episode count. Soaps run 200+ eps;
-    // premium Hindi series top out around 80.
-    if (langCode == "hi" && rowType == "series") {
-        jwList = filterOutSoaps(jwList)
-    }
-
+    val jwList = jwDiscoverByLanguage(langCode, jwType, 30)
+        .filter { !it.poster.isNullOrBlank() }
     if (jwList.isNotEmpty()) return jwList
-    val tmdbType = if (rowType == "series") "tv" else "movie"
+
+    val tmdbType = if (rowType == "series" || rowType == "anime") "tv" else "movie"
     return tmdbDiscoverByLanguage(tmdbType, langCode, (page - 1) * 20)
 }
 
-// Batch-check episode counts via TMDB. Cached per-ID for 30 min.
-// Runs in parallel so the row still loads fast.
-private suspend fun filterOutSoaps(items: List<AioMeta>): List<AioMeta> = coroutineScope {
-    items.map { item ->
-        async {
-            val id = item.id
-            if (id == null || !id.startsWith("tmdb:")) return@async item
-            val tmdbId = id.removePrefix("tmdb:")
-            val cacheKey = "soap:$tmdbId"
-            val cached = BCCache.get(cacheKey, 30 * 60 * 1000L)
-            val isSoap = if (cached != null) {
-                cached == "1"
-            } else {
-                try {
-                    val url = "https://api.themoviedb.org/3/tv/$tmdbId" +
-                        "?api_key=${BuildConfig.TMDB_API_KEY}&language=en-US"
-                    val obj = JSONObject(app.get(url).text)
-                    val eps = obj.optInt("number_of_episodes", 0)
-                    val result = eps > 200
-                    BCCache.put(cacheKey, if (result) "1" else "0")
-                    result
-                } catch (_: Exception) {
-                    false
-                }
-            }
-            if (isSoap) null else item
-        }
-    }.awaitAll().filterNotNull()
-}
 
     // ── search ──
     override suspend fun search(query: String): List<SearchResponse>? {
