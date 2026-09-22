@@ -132,10 +132,8 @@ object Settings {
     RowSpec(K_ROW_STREAM_MAX, "movie", "tmdb.provider.1899", "Max", null, "Max"),
     RowSpec(K_ROW_STREAM_APPLETV, "movie", "tmdb.provider.350", "Apple TV+", null, "Apple TV+"),
     RowSpec(K_ROW_STREAM_JIOHOTSTAR, "movie", "tmdb.provider.122", "JioHotstar", null, "JioHotstar"),
-    RowSpec(K_ROW_STREAM_JIOCINEMA, "movie", "tmdb.provider.220", "JioCinema", null, "JioCinema"),
+    RowSpec(K_ROW_STREAM_JIOHOTSTAR, "movie", "tmdb.provider.122", "JioHotstar", null, "JioHotstar"),
     RowSpec(K_ROW_STREAM_SONYLIV, "movie", "tmdb.provider.237", "SonyLIV", null, "SonyLIV"),
-    RowSpec(K_ROW_STREAM_ZEE5, "movie", "tmdb.provider.232", "ZEE5", null, "ZEE5"),
-
     // ── Indian ──
     RowSpec(K_ROW_HINDI_MOVIES, "movie", "tmdb.language", "Hindi Movies", "Hindi", "TMDB • Hindi"),
     RowSpec(K_ROW_HINDI_SERIES, "series", "tmdb.language", "Hindi Series", "Hindi", "TMDB • Hindi"),
@@ -180,12 +178,27 @@ private val DEFAULT_ON_ROWS = setOf(
 
     // ── row order ──
     fun getRowOrder(): List<String> {
-        val stored = getKey<String>(K_ROW_ORDER) ?: ""
-        val parts = stored.split("|").map { it.trim() }.filter { it.isNotBlank() }
-        if (parts.isEmpty()) return ALL_ROWS.map { it.key }
-        val seen = parts.toSet()
-        val extras = ALL_ROWS.map { it.key }.filter { it !in seen }
-        return parts + extras
+    val stored = getKey<String>(K_ROW_ORDER) ?: ""
+    val parts = stored.split("|").map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
+    if (parts.isEmpty()) return ALL_ROWS.map { it.key }
+    val seen = parts.toSet()
+    val extras = ALL_ROWS.map { it.key }.filter { it !in seen }
+
+    // Insert newly-added rows at their canonical ALL_ROWS position
+    // instead of appending at the end. Keeps row order sensible
+    // when new rows ship in later versions.
+    for (extra in extras) {
+        val targetIdx = ALL_ROWS.indexOfFirst { it.key == extra }
+        if (targetIdx < 0) { parts.add(extra); continue }
+        var insertAt = parts.size
+        for (i in parts.indices.reversed()) {
+            val curIdx = ALL_ROWS.indexOfFirst { it.key == parts[i] }
+            if (curIdx in 0 until targetIdx) { insertAt = i + 1; break }
+        }
+        parts.add(insertAt.coerceIn(0, parts.size), extra)
+    }
+    // Drop rows that no longer exist in ALL_ROWS (removed or merged).
+    return parts.filter { key -> ALL_ROWS.any { it.key == key } }
     }
 
     fun setRowOrder(order: List<String>) {
