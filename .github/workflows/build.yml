@@ -64,6 +64,7 @@ jobs:
       - name: Verify secret is visible
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
         run: |
           if [ -z "$TMDB_API_KEY" ]; then
             echo "SECRET IS EMPTY OR MISSING — fix repo secret"
