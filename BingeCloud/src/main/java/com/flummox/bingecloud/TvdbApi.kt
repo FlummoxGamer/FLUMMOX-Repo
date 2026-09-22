@@ -96,11 +96,12 @@ private suspend fun tvdbFetch(
     country: String?,
     titleLang: String,
     token: String,
-    requireContentGenre: Boolean
+    genreId: Int? = null
 ): List<TvdbRow> {
     val path = if (type == "movies") "movies" else "series"
     val countryParam = country?.let { "&country=$it" } ?: ""
-    val url = "$TVDB_ENDPOINT/$path/filter?sort=score&sortType=desc&page=0$countryParam&lang=$titleLang"
+    val genreParam = genreId?.let { "&genre=$it" } ?: ""
+    val url = "$TVDB_ENDPOINT/$path/filter?sort=score&sortType=desc&page=0$countryParam&lang=$titleLang$genreParam"
 
     return try {
         val res = app.get(
@@ -110,10 +111,79 @@ private suspend fun tvdbFetch(
                 "Accept" to "application/json"
             )
         )
-        val data = JSONObject(res.text).optJSONArray("data") ?: run {
-            BCLog.e("[TVDB] no data for $url — head=${res.text.take(150)}")
-            return emptyList()
+        val data = JSONObject(res.text).optJSONArray("data") ?: return emptyList()
+
+        val out = mutableListOf<TvdbRow>()
+        for (i in 0 until data.length()) {
+            val o = data.optJSONObject(i) ?: continue
+            val id = o.optInt("id", 0).takeIf { it > 0 } ?: continue
+            val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+
+            val imageRaw = o.optString("image").takeIf { it.isNotBlank() && it != "null" }
+            val poster = imageRaw?.let {
+                when {
+                    it.startsWith("http") -> it
+                    it.startsWith("//") -> "https:$it"
+                    else -> "https://artworks.thetvdb.com$it"
+                }
+            }
+
+            val firstAired = o.optString("firstAired")
+            val year = firstAired.take(4)
+                .takeIf { it.length == 4 && it.all { c -> c.isDigit() } }
+
+            out.add(TvdbRow(id, name, poster, year, emptyList()))
         }
+        out
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("[TVDB] fetch failed: ${e.message}")
+        emptyList()
+    }
+}
+
+suspend fun tvdbDiscover(
+    type: String,
+    langCode: String?,
+    limit: Int = 30,
+    genreIds: List<Int> = emptyList()
+): List<AioMeta> {
+    val token = TvdbAuth.getToken() ?: return emptyList()
+    val country = langCode?.let { COUNTRY_ISO3[it] }
+
+    // If genre IDs specified, query each genre separately and merge.
+    // TVDB treats multiple genre params as AND on their side, so we
+    // can't pass all at once — must fan out and dedupe.
+    val rows: List<TvdbRow> = if (genreIds.isEmpty()) {
+        tvdbFetch(type, country, "eng", token)
+    } else {
+        genreIds.flatMap { gid ->
+            tvdbFetch(type, country, "eng", token, gid)
+        }.distinctBy { it.id }
+    }
+
+    val seen = mutableSetOf<Int>()
+    val out = mutableListOf<AioMeta>()
+    for (row in rows) {
+        if (!seen.add(row.id)) continue
+        if (out.size >= limit) break
+        out.add(
+            AioMeta(
+                id = "tvdb:${row.id}",
+                name = row.name,
+                type = if (type == "movies") "movie" else "series",
+                poster = row.poster,
+                releaseInfo = row.year,
+                year = row.year
+            )
+        )
+    }
+
+    val sample = out.take(3).mapNotNull { it.name }
+    BCLog.d("[TVDB] $type/${langCode ?: "all"} genres=${genreIds.size} → ${out.size} sample=${sample.joinToString(" | ")}")
+    return out
+}
 
         val out = mutableListOf<TvdbRow>()
 for (i in 0 until data.length()) {
@@ -162,23 +232,6 @@ out
     }
 }
 
-// Hard blocklist — any of these disqualifies a title immediately.
-private val TVDB_BLOCKED_GENRES = setOf(
-    "soap", "reality", "talk show", "talk", "news",
-    "game show", "music", "musical", "variety", "award show",
-    "competition", "awards", "reality tv", "special interest"
-)
-
-// Genres that mark a title as scripted content. Language rows require
-// at least one of these, which drops K-pop idol content, behind-the-
-// scenes reels, and BTS-style productions that carry no scripted
-// genre tag.
-private val TVDB_CONTENT_GENRES = setOf(
-    "drama", "thriller", "crime", "mystery", "romance",
-    "science fiction", "sci-fi", "fantasy", "horror",
-    "action", "comedy", "adventure", "family", "history",
-    "war", "western", "suspense", "anime"
-)
 
 suspend fun tvdbDiscover(
     type: String,
