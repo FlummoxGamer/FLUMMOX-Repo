@@ -158,12 +158,14 @@ private suspend fun tmdbDiscover(
         "&page=$page"
 
     val result = try {
-        val json = app.get(url).text
-        val parsed = tryParseJson<TmdbDiscoverResponse>(json)
-        parsed?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-    } catch (e: Exception) {
-        BCLog.e("TMDB discover failed: ${e.message}")
-        emptyList()
+    val json = app.get(url).text
+    val parsed = tryParseJson<TmdbDiscoverResponse>(json)
+    parsed?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
+} catch (e: kotlinx.coroutines.CancellationException) {
+    throw e
+} catch (e: Exception) {
+    BCLog.e("TMDB discover failed: ${e.message}")
+    emptyList()
     }
 
     // Fallback: if the recency window returned nothing (sparse
@@ -177,7 +179,7 @@ private suspend fun tmdbDiscover(
             "&sort_by=popularity.desc" +
             "&page=$page"
               return try {
-                val json = app.get(url).text
+              val json = app.get(fallbackUrl).text
                 tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
               } catch (e: kotlinx.coroutines.CancellationException) {
                   throw e
