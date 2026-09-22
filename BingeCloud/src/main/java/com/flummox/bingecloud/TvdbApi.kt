@@ -210,16 +210,21 @@ suspend fun tvdbDiscover(
                 name = displayName,
                 type = if (type == "movies") "movie" else "series",
                 poster = row.poster,
+                genres = row.genres.takeIf { it.isNotEmpty() },
                 releaseInfo = row.year,
                 year = row.year
             )
         )
     }
 
-        val firstNames = out.take(3).mapNotNull { it.name?.substringBefore(" (") }
-        BCLog.d("[TVDB] $type/${langCode ?: "all"} → ${out.size} (no poster: ${out.count { it.poster.isNullOrBlank() }}) sample=${firstNames.joinToString(" | ")}")
-        return out
-   }
+    val sampleInfo = out.take(3).mapNotNull { item ->
+        val n = item.name?.substringBefore(" (") ?: return@mapNotNull null
+        val g = item.genres?.take(3)?.joinToString(",") ?: "-"
+        "$n[$g]"
+    }
+    BCLog.d("[TVDB] $type/${langCode ?: "all"} → ${out.size} (no poster: ${out.count { it.poster.isNullOrBlank() }}) sample=${sampleInfo.joinToString(" | ")}")
+    return out
+}
 
 // Enrich TVDB rows: swap tvdb: IDs for tmdb: IDs so the inside page
 // loads via Aiometa/TMDB, and fill missing posters. Runs in parallel,
