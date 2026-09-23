@@ -9,17 +9,16 @@ object AniZoneApi {
     private const val BASE = "https://anizone.to"
     private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-    // Pre-compiled regexes — no per-call overhead
     private val RX_NON_ALNUM = Regex("""[^\p{L}\p{N}\s]""")
     private val RX_WS = Regex("""\s+""")
     private val RX_JSON_PARSE_TPL = Regex("""\b(%s)\s*:\s*JSON\.parse\(\s*['"](.+?)['"]\s*\)""", RegexOption.DOT_MATCHES_ALL)
     private val RX_PLAYER = Regex("""vidstackPlayer\(\s*JSON\.parse\(\s*['"](.+?)['"]\s*\)\s*\)""", RegexOption.DOT_MATCHES_ALL)
+    private val RX_CUT = Regex("""\s*[:\-–—]\s+""")
 
     data class Hit(val slug: String, val title: String, val year: Int?, val episodes: Int)
     data class Episode(val number: Int, val title: String?)
     data class StreamResult(val url: String, val subtitles: List<Pair<String, String>>)
 
-    // Cache keys
     private fun searchKey(q: String) = "anizone:s:${q.lowercase()}"
     private fun epsKey(slug: String) = "anizone:e:$slug"
     private const val SEARCH_TTL = 30 * 60 * 1000L
@@ -60,6 +59,41 @@ object AniZoneApi {
     fun normalize(s: String): String =
         s.lowercase().trim().replace(RX_NON_ALNUM, " ").replace(RX_WS, " ").trim()
 
+    // ── query variants ──
+    // Try full title first; if 0 hits, retry with shortened forms. Cached per
+    // variant, so repeat plays cost nothing.
+    private fun buildVariants(query: String): List<String> {
+        val out = linkedSetOf<String>()
+        val q = query.trim()
+        if (q.isEmpty()) return emptyList()
+        out.add(q)
+
+        // Base = everything before first `:` or ` - `
+        val base = q.split(RX_CUT, limit = 2).firstOrNull()?.trim()
+        if (!base.isNullOrBlank() && base != q && base.length >= 3) out.add(base)
+
+        val words = q.split(" ").filter { it.isNotBlank() }
+        if (words.size > 3) {
+            out.add(words.take(3).joinToString(" ").trimEnd(':', '-', '–', '—').trim())
+        }
+        if (words.size > 2) {
+            out.add(words.take(2).joinToString(" ").trimEnd(':', '-', '–', '—').trim())
+        }
+        return out.filter { it.isNotBlank() }.toList()
+    }
+
+    suspend fun searchWithVariants(query: String): List<Hit> {
+        val variants = buildVariants(query)
+        for ((idx, v) in variants.withIndex()) {
+            val hits = search(v)
+            if (hits.isNotEmpty()) {
+                if (idx > 0) BCLog.d("AniZone: variant '$v' → ${hits.size} hits")
+                return hits
+            }
+        }
+        return emptyList()
+    }
+
     // ── search (cached) ──
     suspend fun search(query: String): List<Hit> {
         val ck = searchKey(query)
@@ -92,8 +126,6 @@ object AniZoneApi {
             }
         } catch (e: Exception) { BCLog.e("AniZone search parse: ${e.message}"); emptyList() }
 
-        // store compact form — skip empty so transient parse failures
-        // don't lock the source out for the full 30-min TTL
         if (hits.isNotEmpty()) {
             try {
                 val arr = JSONArray()
@@ -106,7 +138,7 @@ object AniZoneApi {
         return hits
     }
 
-    // Priority: exact name → year match → fuzzy → episode count (last resort)
+    // Priority: exact name → containment → fuzzy → year → episode count (last)
     fun pickBest(hits: List<Hit>, query: String, year: String): Hit? {
         if (hits.isEmpty()) return null
         val qn = normalize(query)
@@ -116,19 +148,25 @@ object AniZoneApi {
         val exact = hits.filter { normalize(it.title) == qn }
         if (exact.size == 1) return exact[0]
         if (exact.size > 1) {
-            // 2. Year tiebreak within exact
             if (yr != null) exact.firstOrNull { it.year == yr }?.let { return it }
-            // 4. Episode count
             return exact.maxByOrNull { it.episodes }
         }
 
-        // 3. Fuzzy name
+        // 2. Containment: candidate title fully inside query, or query fully inside candidate
+        val contained = hits.filter {
+            val cn = normalize(it.title)
+            cn.isNotBlank() && cn.length >= 3 && (qn.contains(cn) || cn.contains(qn))
+        }
+        if (contained.isNotEmpty()) {
+            if (yr != null) contained.firstOrNull { it.year == yr }?.let { return it }
+            return contained.maxByOrNull { it.episodes }
+        }
+
+        // 3. Fuzzy via shared titleMatches()
         val fuzzy = hits.filter { titleMatches(query, it.title) }
         if (fuzzy.isEmpty()) return null
         if (fuzzy.size == 1) return fuzzy[0]
-        // 2. Year within fuzzy
         if (yr != null) fuzzy.firstOrNull { it.year == yr }?.let { return it }
-        // 4. Episode count
         return fuzzy.maxByOrNull { it.episodes }
     }
 
@@ -204,14 +242,13 @@ object AniZoneApi {
     suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
         val start = System.currentTimeMillis()
 
-        // 1. Search + pick
-        val hits = search(q.title)
+        val hits = searchWithVariants(q.title)
         if (hits.isEmpty()) { BCLog.d("AniZone: no hits (${System.currentTimeMillis() - start}ms)"); return emptyList() }
         val hit = pickBest(hits, q.title, q.year) ?: run {
-            BCLog.d("AniZone: no name match (${System.currentTimeMillis() - start}ms)"); return emptyList()
+            BCLog.d("AniZone: no name match — top: ${hits.take(5).joinToString(" | ") { it.title }}")
+            return emptyList()
         }
 
-        // 2. Fast path — try direct URL first, skip episode list fetch entirely
         val targetEp = when {
             q.type == "movie" -> 1
             q.episode > 0 -> q.episode
@@ -224,7 +261,6 @@ object AniZoneApi {
             return listOf(mirror(hit, targetEp, null, fastStream))
         }
 
-        // 3. Slow path — episode number might differ; fetch list & retry
         BCLog.d("AniZone: fast miss E$targetEp, fetching episode list")
         val eps = getEpisodes(hit.slug)
         if (eps.isEmpty()) { BCLog.d("AniZone: no episodes"); return emptyList() }
