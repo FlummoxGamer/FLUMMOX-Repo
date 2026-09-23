@@ -434,10 +434,10 @@ private suspend fun fetchHindiPool(key: String): List<AioMeta> {
                         "?api_key=$key" +
                         "&with_original_language=hi" +
                         "&with_genres=9648%7C80%7C10765%7C10759%7C10768" +
-                        "&without_genres=10766,10764,10767,10763,18,10751" +
+                        "&without_genres=10766,10764,10767,10763" +
                         "&first_air_date.gte=$since" +
                         "&sort_by=first_air_date.desc" +
-                        "&vote_count.gte=10" +
+                        "&vote_count.gte=5" +
                         "&page=$p"
                     val json = app.get(url).text
                     tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta("tv") }
