@@ -768,7 +768,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
         } catch (e: Exception) { BCLog.e("AniKoto task failed: ${e.message}"); emptyList() }
     } ?: run { BCLog.d("AniKoto timeout"); emptyList() }
 })
-        if (Settings.isSrcShowBox()) jobs.add(async {
+                if (Settings.isSrcShowBox()) jobs.add(async {
     kotlinx.coroutines.withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
         try {
             com.flummox.bingecore.SpeedBooster.deduped("showbox:${q.cacheKey()}") {
@@ -777,6 +777,16 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
         } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: Exception) { BCLog.e("ShowBox task failed: ${e.message}"); emptyList() }
     } ?: run { BCLog.d("ShowBox timeout"); emptyList() }
+})
+        if (Settings.isSrcAniZone()) jobs.add(async {
+    kotlinx.coroutines.withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
+        try {
+            com.flummox.bingecore.SpeedBooster.deduped("anizone:${q.cacheKey()}") {
+                AniZoneApi.resolve(q)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { BCLog.e("AniZone task failed: ${e.message}"); emptyList() }
+    } ?: run { BCLog.d("AniZone timeout"); emptyList() }
 })
 // ── MLSBD REVIVE ── uncomment the block below to re-enable.
 // Reason disabled: see MlsbdApi.kt header. Bonghd wrapper now
