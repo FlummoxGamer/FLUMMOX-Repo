@@ -15,14 +15,18 @@ object AniZoneApi {
     private val RX_PLAYER = Regex("""vidstackPlayer\(\s*JSON\.parse\(\s*['"](.+?)['"]\s*\)\s*\)""", RegexOption.DOT_MATCHES_ALL)
     private val RX_CUT = Regex("""\s*[:\-–—]\s+""")
 
-    data class Hit(val slug: String, val title: String, val year: Int?, val episodes: Int)
+    data class Hit(val slug: String, val title: String, val allTitles: List<String>, val year: Int?, val episodes: Int)
     data class Episode(val number: Int, val title: String?)
     data class StreamResult(val url: String, val subtitles: List<Pair<String, String>>)
 
     private fun searchKey(q: String) = "anizone:s:${q.lowercase()}"
     private fun epsKey(slug: String) = "anizone:e:$slug"
+    private fun tmdbAltKey(imdb: String, title: String, year: String, type: String) =
+        if (imdb.isNotBlank()) "anizone:alts:i:$imdb"
+        else "anizone:alts:t:${title.lowercase()}:$year:$type"
     private const val SEARCH_TTL = 30 * 60 * 1000L
     private const val EPS_TTL = 60 * 60 * 1000L
+    private const val TMDB_ALT_TTL = 24 * 60 * 60 * 1000L
 
     // ── parsing helpers ──
     private fun unescapeJs(s: String): String {
@@ -59,39 +63,18 @@ object AniZoneApi {
     fun normalize(s: String): String =
         s.lowercase().trim().replace(RX_NON_ALNUM, " ").replace(RX_WS, " ").trim()
 
-    // ── query variants ──
-    // Try full title first; if 0 hits, retry with shortened forms. Cached per
-    // variant, so repeat plays cost nothing.
+    // ── query variants (shortening) ──
     private fun buildVariants(query: String): List<String> {
         val out = linkedSetOf<String>()
         val q = query.trim()
         if (q.isEmpty()) return emptyList()
         out.add(q)
-
-        // Base = everything before first `:` or ` - `
         val base = q.split(RX_CUT, limit = 2).firstOrNull()?.trim()
         if (!base.isNullOrBlank() && base != q && base.length >= 3) out.add(base)
-
         val words = q.split(" ").filter { it.isNotBlank() }
-        if (words.size > 3) {
-            out.add(words.take(3).joinToString(" ").trimEnd(':', '-', '–', '—').trim())
-        }
-        if (words.size > 2) {
-            out.add(words.take(2).joinToString(" ").trimEnd(':', '-', '–', '—').trim())
-        }
+        if (words.size > 3) out.add(words.take(3).joinToString(" ").trimEnd(':', '-', '–', '—').trim())
+        if (words.size > 2) out.add(words.take(2).joinToString(" ").trimEnd(':', '-', '–', '—').trim())
         return out.filter { it.isNotBlank() }.toList()
-    }
-
-    suspend fun searchWithVariants(query: String): List<Hit> {
-        val variants = buildVariants(query)
-        for ((idx, v) in variants.withIndex()) {
-            val hits = search(v)
-            if (hits.isNotEmpty()) {
-                if (idx > 0) BCLog.d("AniZone: variant '$v' → ${hits.size} hits")
-                return hits
-            }
-        }
-        return emptyList()
     }
 
     // ── search (cached) ──
@@ -102,9 +85,15 @@ object AniZoneApi {
                 val arr = JSONArray(cached)
                 (0 until arr.length()).mapNotNull { i ->
                     val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                    val allTitles = mutableListOf<String>()
+                    o.optJSONArray("a")?.let { a ->
+                        for (j in 0 until a.length()) a.optString(j).takeIf { it.isNotBlank() }?.let { allTitles.add(it) }
+                    }
+                    if (allTitles.isEmpty()) allTitles.add(o.optString("t"))
                     Hit(
                         slug = o.optString("s"),
                         title = o.optString("t"),
+                        allTitles = allTitles,
                         year = o.optInt("y", 0).takeIf { it > 0 },
                         episodes = o.optInt("e", 0)
                     )
@@ -121,8 +110,22 @@ object AniZoneApi {
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 val slug = o.optString("slug").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val title = o.optString("main_title").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                Hit(slug, title, o.optInt("start_year", 0).takeIf { it > 0 }, o.optInt("episode_count", 0))
+                val mainTitle = o.optString("main_title").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val allTitles = mutableListOf(mainTitle)
+                o.optJSONObject("title_list")?.let { tl ->
+                    val keys = tl.keys()
+                    while (keys.hasNext()) {
+                        val t = tl.optString(keys.next()).takeIf { it.isNotBlank() }
+                        if (t != null && t !in allTitles) allTitles.add(t)
+                    }
+                }
+                Hit(
+                    slug = slug,
+                    title = mainTitle,
+                    allTitles = allTitles,
+                    year = o.optInt("start_year", 0).takeIf { it > 0 },
+                    episodes = o.optInt("episode_count", 0)
+                )
             }
         } catch (e: Exception) { BCLog.e("AniZone search parse: ${e.message}"); emptyList() }
 
@@ -131,6 +134,7 @@ object AniZoneApi {
                 val arr = JSONArray()
                 for (h in hits) arr.put(JSONObject().apply {
                     put("s", h.slug); put("t", h.title); put("y", h.year ?: 0); put("e", h.episodes)
+                    put("a", JSONArray().apply { h.allTitles.forEach { put(it) } })
                 })
                 BCCache.put(ck, arr.toString())
             } catch (_: Exception) {}
@@ -138,32 +142,98 @@ object AniZoneApi {
         return hits
     }
 
-    // Priority: exact name → containment → fuzzy → year → episode count (last)
-    fun pickBest(hits: List<Hit>, query: String, year: String): Hit? {
+    // ── TMDB alt titles (cached) ──
+    private suspend fun tmdbAltTitles(query: String, year: String, type: String, imdbId: String): List<String> {
+        val key = BuildConfig.TMDB_API_KEY
+        if (key.isBlank()) return emptyList()
+        val ck = tmdbAltKey(imdbId, query, year, type)
+        BCCache.get(ck, TMDB_ALT_TTL)?.let { cached ->
+            if (cached.isBlank()) return emptyList()
+            return cached.split("\u0001").filter { it.isNotBlank() }
+        }
+
+        val tmdbType = if (type == "movie") "movie" else "tv"
+        var tmdbId: Int? = null
+
+        // Try find by IMDb ID first
+        if (imdbId.isNotBlank()) {
+            try {
+                val url = "https://api.themoviedb.org/3/find/$imdbId?external_source=imdb_id&api_key=$key"
+                val root = JSONObject(app.get(url).text)
+                val arr = if (tmdbType == "movie") root.optJSONArray("movie_results") else root.optJSONArray("tv_results")
+                tmdbId = arr?.optJSONObject(0)?.optInt("id", 0)?.takeIf { it > 0 }
+            } catch (_: Exception) {}
+        }
+
+        // Fallback: search by title
+        if (tmdbId == null) {
+            try {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                val url = "https://api.themoviedb.org/3/search/$tmdbType?api_key=$key&query=$encoded"
+                val root = JSONObject(app.get(url).text)
+                tmdbId = root.optJSONArray("results")?.optJSONObject(0)?.optInt("id", 0)?.takeIf { it > 0 }
+            } catch (_: Exception) {}
+        }
+        if (tmdbId == null) { BCCache.put(ck, ""); return emptyList() }
+
+        val alts = linkedSetOf<String>()
+
+        // Fetch detail for original_name/title
+        try {
+            val url = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?api_key=$key"
+            val root = JSONObject(app.get(url).text)
+            val orig = root.optString("original_name").ifBlank { root.optString("original_title") }
+            if (orig.isNotBlank()) alts.add(orig)
+        } catch (_: Exception) {}
+
+        // Fetch alternative_titles
+        try {
+            val url = "https://api.themoviedb.org/3/$tmdbType/$tmdbId/alternative_titles?api_key=$key"
+            val root = JSONObject(app.get(url).text)
+            val arr = root.optJSONArray("results") ?: root.optJSONArray("titles")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val t = arr.optJSONObject(i)?.optString("title")?.takeIf { it.isNotBlank() } ?: continue
+                    alts.add(t)
+                }
+            }
+        } catch (_: Exception) {}
+
+        val list = alts.toList()
+        try {
+            BCCache.put(ck, if (list.isEmpty()) "" else list.joinToString("\u0001"))
+        } catch (_: Exception) {}
+        return list
+    }
+
+    // Priority: exact (any title) → containment (any title) → fuzzy → year → episode count
+    fun pickBest(hits: List<Hit>, query: String, year: String, altTitles: List<String> = emptyList()): Hit? {
         if (hits.isEmpty()) return null
-        val qn = normalize(query)
+        val queries = (listOf(query) + altTitles).map { normalize(it) }.filter { it.isNotBlank() }.distinct()
         val yr = year.toIntOrNull()
 
-        // 1. Exact normalized name
-        val exact = hits.filter { normalize(it.title) == qn }
+        // 1. Exact match against any variant against any hit title
+        val exact = hits.filter { h -> h.allTitles.any { at -> queries.any { q -> normalize(at) == q } } }
         if (exact.size == 1) return exact[0]
         if (exact.size > 1) {
             if (yr != null) exact.firstOrNull { it.year == yr }?.let { return it }
             return exact.maxByOrNull { it.episodes }
         }
 
-        // 2. Containment: candidate title fully inside query, or query fully inside candidate
-        val contained = hits.filter {
-            val cn = normalize(it.title)
-            cn.isNotBlank() && cn.length >= 3 && (qn.contains(cn) || cn.contains(qn))
+        // 2. Containment
+        val contained = hits.filter { h ->
+            h.allTitles.any { at ->
+                val cn = normalize(at)
+                cn.length >= 3 && queries.any { q -> q.contains(cn) || cn.contains(q) }
+            }
         }
         if (contained.isNotEmpty()) {
             if (yr != null) contained.firstOrNull { it.year == yr }?.let { return it }
             return contained.maxByOrNull { it.episodes }
         }
 
-        // 3. Fuzzy via shared titleMatches()
-        val fuzzy = hits.filter { titleMatches(query, it.title) }
+        // 3. Fuzzy via titleMatches
+        val fuzzy = hits.filter { h -> h.allTitles.any { at -> titleMatches(query, at) } }
         if (fuzzy.isEmpty()) return null
         if (fuzzy.size == 1) return fuzzy[0]
         if (yr != null) fuzzy.firstOrNull { it.year == yr }?.let { return it }
@@ -242,9 +312,31 @@ object AniZoneApi {
     suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
         val start = System.currentTimeMillis()
 
-        val hits = searchWithVariants(q.title)
+        // Phase 1 — direct search with original + shortened variants
+        var hits = emptyList<Hit>()
+        for (v in buildVariants(q.title)) {
+            hits = search(v)
+            if (hits.isNotEmpty()) break
+        }
+
+        // Phase 2 — TMDB alt titles fallback (only if phase 1 gave nothing usable)
+        var altTitles = emptyList<String>()
+        if (hits.isEmpty() || pickBest(hits, q.title, q.year) == null) {
+            altTitles = tmdbAltTitles(q.title, q.year, q.type, q.imdbId)
+            if (altTitles.isNotEmpty()) {
+                BCLog.d("AniZone: TMDB alts = ${altTitles.take(5)}")
+                for (alt in altTitles) {
+                    val ah = search(alt)
+                    if (ah.isNotEmpty()) {
+                        hits = ah
+                        if (pickBest(hits, q.title, q.year, altTitles) != null) break
+                    }
+                }
+            }
+        }
+
         if (hits.isEmpty()) { BCLog.d("AniZone: no hits (${System.currentTimeMillis() - start}ms)"); return emptyList() }
-        val hit = pickBest(hits, q.title, q.year) ?: run {
+        val hit = pickBest(hits, q.title, q.year, altTitles) ?: run {
             BCLog.d("AniZone: no name match — top: ${hits.take(5).joinToString(" | ") { it.title }}")
             return emptyList()
         }
