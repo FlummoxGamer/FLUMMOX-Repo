@@ -92,14 +92,17 @@ object AniZoneApi {
             }
         } catch (e: Exception) { BCLog.e("AniZone search parse: ${e.message}"); emptyList() }
 
-        // store compact form
-        try {
-            val arr = JSONArray()
-            for (h in hits) arr.put(JSONObject().apply {
-                put("s", h.slug); put("t", h.title); put("y", h.year ?: 0); put("e", h.episodes)
-            })
-            BCCache.put(ck, arr.toString())
-        } catch (_: Exception) {}
+        // store compact form — skip empty so transient parse failures
+        // don't lock the source out for the full 30-min TTL
+        if (hits.isNotEmpty()) {
+            try {
+                val arr = JSONArray()
+                for (h in hits) arr.put(JSONObject().apply {
+                    put("s", h.slug); put("t", h.title); put("y", h.year ?: 0); put("e", h.episodes)
+                })
+                BCCache.put(ck, arr.toString())
+            } catch (_: Exception) {}
+        }
         return hits
     }
 
@@ -159,13 +162,15 @@ object AniZoneApi {
             }.distinctBy { it.number }.sortedBy { it.number }
         } catch (e: Exception) { BCLog.e("AniZone episodes parse: ${e.message}"); emptyList() }
 
-        try {
-            val arr = JSONArray()
-            for (e in eps) arr.put(JSONObject().apply {
-                put("n", e.number); put("t", e.title ?: "")
-            })
-            BCCache.put(ck, arr.toString())
-        } catch (_: Exception) {}
+        if (eps.isNotEmpty()) {
+            try {
+                val arr = JSONArray()
+                for (e in eps) arr.put(JSONObject().apply {
+                    put("n", e.number); put("t", e.title ?: "")
+                })
+                BCCache.put(ck, arr.toString())
+            } catch (_: Exception) {}
+        }
         return eps
     }
 
@@ -224,9 +229,10 @@ object AniZoneApi {
         val eps = getEpisodes(hit.slug)
         if (eps.isEmpty()) { BCLog.d("AniZone: no episodes"); return emptyList() }
 
-        val ep = eps.firstOrNull { it.number == targetEp }
-            ?: eps.firstOrNull()  // fall back to first episode
-            ?: run { BCLog.d("AniZone: no episode match"); return emptyList() }
+        val ep = eps.firstOrNull { it.number == targetEp } ?: run {
+            BCLog.d("AniZone: episode $targetEp not found (have ${eps.size})")
+            return emptyList()
+        }
 
         val stream = getStream(hit.slug, ep.number) ?: run {
             BCLog.d("AniZone: stream failed at E${ep.number}"); return emptyList()
