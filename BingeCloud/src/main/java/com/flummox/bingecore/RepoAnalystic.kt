@@ -1,6 +1,7 @@
 package com.flummox.bingecore
 
 import android.content.Context
+import com.flummox.bingecloud.BuildConfig
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +46,7 @@ object RepoAnalytics {
             put("installId", installId)
             put("repo", "FLUMMOX-Repo")
             put("ext", extensionName)
-            put("ver", "206")
+            put("ver", BuildConfig.PLUGIN_VERSION.toString())
         }.toString()
 
         CoroutineScope(Dispatchers.IO).launch {

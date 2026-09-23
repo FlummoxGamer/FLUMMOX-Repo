@@ -207,7 +207,7 @@ data class MBStream(
     val policyRaw = match.groupValues[1]
     
     var decoded: String? = null
-    val urlSafe = policyRaw.replace('-', '+').replace('~', '/').replace('_', '=')
+    val urlSafe = policyRaw.replace('-', '+').replace('_', '/')
     val paddedUrlSafe = if (urlSafe.length % 4 > 0) urlSafe + "=".repeat(4 - urlSafe.length % 4) else urlSafe
     decoded = try { String(Base64.decode(paddedUrlSafe, Base64.DEFAULT)) } catch (_: Exception) { null }
 

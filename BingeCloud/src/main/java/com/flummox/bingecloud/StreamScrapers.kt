@@ -432,6 +432,7 @@ private suspend fun movieboxExtractRaw(q: StreamQuery): List<ScrapedMirror> = co
     allStreams
     .distinctBy { it.realUrl }
     .filter { it.durationSec == 0L || it.durationSec >= 120L }
+    .filter { !it.realUrl.contains("aoneroom.com/other/", ignoreCase = true) }
     .map {
         ScrapedMirror(
             quality = it.quality.ifBlank { "Auto" },
