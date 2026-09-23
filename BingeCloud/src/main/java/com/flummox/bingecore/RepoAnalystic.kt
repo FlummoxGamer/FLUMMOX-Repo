@@ -45,7 +45,7 @@ object RepoAnalytics {
             put("installId", installId)
             put("repo", "FLUMMOX-Repo")
             put("ext", extensionName)
-            put("ver", "206")
+            put("ver", BuildConfig.PLUGIN_VERSION.toString())
         }.toString()
 
         CoroutineScope(Dispatchers.IO).launch {
