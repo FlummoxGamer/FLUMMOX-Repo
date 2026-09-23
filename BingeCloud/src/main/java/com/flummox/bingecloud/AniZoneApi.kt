@@ -61,7 +61,35 @@ object AniZoneApi {
     }
 
     fun normalize(s: String): String =
-        s.lowercase().trim().replace(RX_NON_ALNUM, " ").replace(RX_WS, " ").trim()
+    s.lowercase().trim().replace(RX_NON_ALNUM, " ").replace(RX_WS, " ").trim()
+
+// Reject alt titles that AniZone can't possibly index. Site carries
+// Latin / CJK / Hiragana / Katakana / Hangul only — no Cyrillic,
+// Devanagari, Bengali, Kannada, Tamil, Telugu, Arabic, Thai, etc.
+private fun isAniZoneFriendly(s: String): Boolean {
+    if (s.isBlank()) return false
+    for (c in s) {
+        val code = c.code
+        val ok = when {
+            code < 0x80 -> true          // ASCII
+            code in 0x00A0..0x024F -> true // Latin-1 + Extended
+            code in 0x0300..0x036F -> true // combining marks
+            code in 0x3040..0x309F -> true // Hiragana
+            code in 0x30A0..0x30FF -> true // Katakana
+            code in 0x31F0..0x31FF -> true // Katakana phonetic
+            code in 0x3400..0x4DBF -> true // CJK Ext A
+            code in 0x4E00..0x9FFF -> true // CJK Unified
+            code in 0xF900..0xFAFF -> true // CJK Compat
+            code in 0xFF00..0xFFEF -> true // Fullwidth
+            code in 0x1100..0x11FF -> true // Hangul Jamo
+            code in 0x3130..0x318F -> true // Hangul Compat
+            code in 0xAC00..0xD7AF -> true // Hangul Syllables
+            else -> false
+        }
+        if (!ok) return false
+    }
+    return true
+}
 
     // ── query variants (shortening) ──
     private fun buildVariants(query: String): List<String> {
@@ -220,17 +248,29 @@ object AniZoneApi {
             return exact.maxByOrNull { it.episodes }
         }
 
-        // 2. Containment
-        val contained = hits.filter { h ->
-            h.allTitles.any { at ->
+        // 2. Containment — prefer candidate whose title length is closest
+        //    to the query length. Prevents picking "Attack on Titan" (S1)
+        //    when query is "Attack on Titan: Final Season Part 2".
+        val contained = hits.mapNotNull { h ->
+            var best = Int.MAX_VALUE
+            for (at in h.allTitles) {
                 val cn = normalize(at)
-                cn.length >= 3 && queries.any { q -> q.contains(cn) || cn.contains(q) }
+                if (cn.length < 3) continue
+                for (q in queries) {
+                    if (q.contains(cn) || cn.contains(q)) {
+                       val d = kotlin.math.abs(cn.length - q.length)
+                       if (d < best) best = d
+                   }
+               }
             }
+            if (best == Int.MAX_VALUE) null else h to best
         }
         if (contained.isNotEmpty()) {
-            if (yr != null) contained.firstOrNull { it.year == yr }?.let { return it }
-            return contained.maxByOrNull { it.episodes }
-        }
+            val pool = if (yr != null) {
+                contained.filter { it.first.year == yr }.ifEmpty { contained }
+           } else contained
+           return pool.minByOrNull { it.second }?.first
+       }
 
         // 3. Fuzzy via titleMatches
         val fuzzy = hits.filter { h -> h.allTitles.any { at -> titleMatches(query, at) } }
@@ -350,18 +390,21 @@ suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
         }
 
         // Phase 2 — TMDB alt titles fallback (only if phase 1 gave nothing usable)
+        // Filter alts to scripts AniZone can actually index, cap at 3 retries.
         var altTitles = emptyList<String>()
         if (hits.isEmpty() || pickBest(hits, q.title, q.year) == null) {
-            altTitles = tmdbAltTitles(q.title, q.year, q.type, q.imdbId)
-            if (altTitles.isNotEmpty()) {
-                BCLog.d("AniZone: TMDB alts = ${altTitles.take(5)}")
-                for (alt in altTitles) {
+            val rawAlts = tmdbAltTitles(q.title, q.year, q.type, q.imdbId)
+            altTitles = rawAlts
+            val searchAlts = rawAlts.filter { isAniZoneFriendly(it) }.take(3)
+            if (rawAlts.isNotEmpty()) {
+                BCLog.d("AniZone: alts raw=${rawAlts.size} usable=${searchAlts.size} = $searchAlts")
+                for (alt in searchAlts) {
                     val ah = search(alt)
                     if (ah.isNotEmpty()) {
                         hits = ah
                         if (pickBest(hits, q.title, q.year, altTitles) != null) break
                     }
-                }
+               }
             }
         }
 
