@@ -468,16 +468,19 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
         if (Settings.isPrefetchEnabled() && !fromHomeBanner) {
             val prefetchQuery: StreamQuery? = when {
                 tvType == TvType.Movie && videos.isEmpty() ->
-                    StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
+                    StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "", totalEpisodes = 1)
                 videos.isNotEmpty() -> {
                     val first = videos.firstOrNull()
                     val s = first?.season
                     val e = first?.episode
                     if (s != null && e != null && s > 0)
-                        StreamQuery(name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e)
-                    else null
-                }
-                else -> null
+                        StreamQuery(
+                            name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e,
+                            totalEpisodes = videos.count { it.season == s }
+                        )
+                   else null
+                   }
+               else -> null
             }
             if (prefetchQuery != null) {
                 val key = prefetchQuery.cacheKey()
@@ -502,7 +505,7 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
         }
 
         return if (tvType == TvType.Movie && videos.isEmpty()) {
-        val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
+        val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "", totalEpisodes = 1)
         newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
              this.posterUrl = finalMeta.poster
              this.backgroundPosterUrl = finalMeta.background
@@ -520,7 +523,8 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
                 val q = StreamQuery(
                     name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "",
                     s, e,
-                    next?.season ?: 0, next?.episode ?: 0
+                    next?.season ?: 0, next?.episode ?: 0,
+                    totalEpisodes = videos.count { it.season == s }
                 )
                 newEpisode(encodeQuery(q)) {
                     this.name = v.title ?: "Episode $e"
@@ -752,7 +756,8 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
         && query.nextSeason > 0 && query.nextEpisode > 0) {
         val nextQ = StreamQuery(
             query.title, query.year, "series", query.imdbId,
-            query.nextSeason, query.nextEpisode
+            query.nextSeason, query.nextEpisode,
+            totalEpisodes = query.totalEpisodes
         )
         val nextKey = nextQ.cacheKey()
         if (BCCache.getMirrors(nextKey) == null) {
@@ -822,6 +827,7 @@ private fun encodeQuery(q: StreamQuery): String {
     o.put("t", q.title); o.put("y", q.year); o.put("ty", q.type)
     o.put("s", q.season); o.put("e", q.episode); o.put("i", q.imdbId)
     o.put("ns", q.nextSeason); o.put("ne", q.nextEpisode)
+    o.put("te", q.totalEpisodes)
     return o.toString()
 }
 
@@ -831,7 +837,8 @@ private fun decodeQuery(s: String): StreamQuery? = try {
         o.optString("t"), o.optString("y"),
         o.optString("ty", "movie"), o.optString("i"),
         o.optInt("s", 0), o.optInt("e", 0),
-        o.optInt("ns", 0), o.optInt("ne", 0)
+        o.optInt("ns", 0), o.optInt("ne", 0),
+        o.optInt("te", 0)
     )
 } catch (e: Exception) { null }
 
