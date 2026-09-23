@@ -118,7 +118,7 @@ override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageR
     }
 
     val items = deduped.filter { !it.isJunk() }.mapNotNull { it.toSearchResponse() }
-    return newHomePageResponse(request.name, items, hasNext = deduped.size >= 20)
+    return newHomePageResponse(request.name, items, hasNext = items.size >= 10)
 }
 private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): List<AioMeta> {
     return when (catalogId) {
