@@ -23,7 +23,8 @@ data class StreamQuery(
     val episode: Int = 0,
     val nextSeason: Int = 0,
     val nextEpisode: Int = 0,
-    val totalEpisodes: Int = 0
+    val totalEpisodes: Int = 0,
+    val originalLanguage: String = ""
 )
 
 data class ScrapedMirror(
