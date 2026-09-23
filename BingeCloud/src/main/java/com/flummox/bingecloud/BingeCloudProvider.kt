@@ -280,7 +280,7 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
                 val id = hit.id ?: return@async null
                 val blocked = hit.genre_ids?.any { it in listOf(10766, 10764, 10767, 10763) } ?: false
                 if (blocked) {
-                    BCLog.d("Hindi drop (genre): $name")
+                    BCLog.v("Hindi drop (genre): $name")
                     null
                 } else {
                     item.copy(id = "tmdb:$id")

@@ -142,6 +142,13 @@ data class TmdbDiscoverResponse(
 private val INDIAN_ONLY_PROVIDERS = setOf(122, 220, 237, 232)
 
 // ── TMDB discover ──
+// Per-(type,provider,region) path cache. Page 1 decides whether the
+// date+vote-filtered "primary" URL works; later pages stick with the
+// same path so page 2 doesn't swap to the unfiltered fallback set
+// (which was causing duplicate titles across pages).
+private val discoverPrimaryOk =
+    java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
 private suspend fun tmdbDiscover(
     tmdbType: String,
     providerId: Int,
@@ -154,8 +161,9 @@ private suspend fun tmdbDiscover(
 
     val since = java.time.LocalDate.now().minusDays(180).toString()
     val dateParam = if (tmdbType == "movie") "primary_release_date.gte" else "first_air_date.gte"
+    val cacheKey = "$tmdbType|$providerId|$region"
 
-    val url = "https://api.themoviedb.org/3/discover/$tmdbType" +
+    val primaryUrl = "https://api.themoviedb.org/3/discover/$tmdbType" +
         "?api_key=$key" +
         "&with_watch_providers=$providerId" +
         "&watch_region=$region" +
@@ -164,7 +172,33 @@ private suspend fun tmdbDiscover(
         "&vote_count.gte=10" +
         "&page=$page"
 
-    val result = try {
+    val fallbackUrl = "https://api.themoviedb.org/3/discover/$tmdbType" +
+        "?api_key=$key" +
+        "&with_watch_providers=$providerId" +
+        "&watch_region=$region" +
+        "&sort_by=popularity.desc" +
+        "&page=$page"
+
+    val usePrimary: Boolean = when {
+        discoverPrimaryOk.containsKey(cacheKey) -> discoverPrimaryOk[cacheKey] == true
+        skip == 0 -> {
+            val result = tmdbDiscoverFetch(primaryUrl, tmdbType)
+            if (result.isNotEmpty()) {
+                discoverPrimaryOk[cacheKey] = true
+                return result
+            }
+            discoverPrimaryOk[cacheKey] = false
+            BCLog.d("TMDB discover primary empty for $cacheKey — locked to fallback")
+            false
+        }
+        else -> true
+    }
+
+    return tmdbDiscoverFetch(if (usePrimary) primaryUrl else fallbackUrl, tmdbType)
+}
+
+private suspend fun tmdbDiscoverFetch(url: String, tmdbType: String): List<AioMeta> {
+    return try {
         val json = app.get(url).text
         tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
     } catch (e: kotlinx.coroutines.CancellationException) {
@@ -173,25 +207,6 @@ private suspend fun tmdbDiscover(
         BCLog.e("TMDB discover failed: ${e.message}")
         emptyList()
     }
-
-    if (result.isEmpty()) {
-        val fallbackUrl = "https://api.themoviedb.org/3/discover/$tmdbType" +
-            "?api_key=$key" +
-            "&with_watch_providers=$providerId" +
-            "&watch_region=$region" +
-            "&sort_by=popularity.desc" +
-            "&page=$page"
-        return try {
-            val json = app.get(fallbackUrl).text
-            tryParseJson<TmdbDiscoverResponse>(json)?.results?.mapNotNull { it.toAioMeta(tmdbType) } ?: emptyList()
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BCLog.e("TMDB discover failed: ${e.message}")
-            emptyList()
-        }
-    }
-    return result
 }
 
 suspend fun tmdbDiscoverMerged(providerId: Int, skip: Int): List<AioMeta> {
