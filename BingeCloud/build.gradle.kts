@@ -16,7 +16,6 @@ android {
         val pluginVer = (project.findProperty("bingecloud_version") as? String)?.toIntOrNull() ?: 1
         buildConfigField("int", "PLUGIN_VERSION", "$pluginVer")
     }
-    }
     buildFeatures {
         buildConfig = true
     }
