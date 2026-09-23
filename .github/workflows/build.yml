@@ -64,6 +64,7 @@ jobs:
       - name: Verify secret is visible
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
         run: |
           if [ -z "$TMDB_API_KEY" ]; then
             echo "SECRET IS EMPTY OR MISSING — fix repo secret"
@@ -75,6 +76,7 @@ jobs:
         working-directory: src
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
           NEW_VERSION: ${{ steps.ver.outputs.version }}
         run: gradle make --no-daemon --no-configuration-cache --no-build-cache
 
@@ -82,6 +84,7 @@ jobs:
         working-directory: src
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
           NEW_VERSION: ${{ steps.ver.outputs.version }}
         run: gradle makePluginsJson --no-daemon --no-configuration-cache --no-build-cache
 

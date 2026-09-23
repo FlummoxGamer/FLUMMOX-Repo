@@ -52,13 +52,29 @@ private fun isAdultContent(title: String, genres: List<String>?): Boolean {
 
 // ── home content filter: drop daily soaps / talk / reality ──
 private val HOME_BLOCKED_GENRES = setOf(
-    "soap", "talk", "talk show", "reality", "reality tv", "news", "game show"
+    "soap", "soap opera", "daily soap", "telenovela",
+    "talk", "talk show", "talk-show",
+    "reality", "reality tv", "reality-tv", "reality show",
+    "news", "game show", "game-show"
 )
 
 private fun AioMeta.isJunk(): Boolean {
-    val g = genres ?: return false
-    return g.any { it.lowercase().trim() in HOME_BLOCKED_GENRES }
-}
+    val g = genres
+    if (g != null && g.any {
+            val norm = it.lowercase().trim()
+            norm in HOME_BLOCKED_GENRES || norm.replace("-", " ") in HOME_BLOCKED_GENRES
+        }) return true
+    // Title-based filter for daily soaps / reality / talk shows that
+    // JustWatch returns without genre metadata.
+    val n = name?.lowercase() ?: return false
+    if (n.contains("reality show") || n.contains("talk show") || n.contains("daily soap")) return true
+    // Common Indian daily-soap patterns: heavy "Kumkum", "Kundali",
+    // "Naagin", etc. Not exhaustive, but covers the biggest offenders.
+    val SOAP_HINTS = listOf("kumkum", "kundali", "naagin", "kumkum bhagya", "kundali bhagya",
+        "yeh rishta", "anupamaa", "ghum hai", "imlie", "yrkkh", "kahaani ghar")
+    if (SOAP_HINTS.any { n.contains(it) }) return true
+    return false
+ }
 
 open class BingeCloudProvider : MainAPI() {
     override var mainUrl = AIOMETA_BASE
@@ -81,23 +97,250 @@ open class BingeCloudProvider : MainAPI() {
 )
 
     // ── home ──
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val parts = request.data.split(ROW_TAG)
-        if (parts.size < 2) return null
-        lastHomeRenderMs = System.currentTimeMillis()
-        val isStreaming = parts[1].startsWith("tmdb.provider.")
-val raw: List<AioMeta> = if (isStreaming) {
-    val providerId = parts[1].substringAfterLast(".").toIntOrNull() ?: 0
-    tmdbDiscoverMerged(providerId, (page - 1) * 20)
-} else {
-    aioFetchCatalog(parts[0], parts[1], parts.getOrNull(2), (page - 1) * 25)
+override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    val parts = request.data.split(ROW_TAG)
+    if (parts.size < 2) return null
+    lastHomeRenderMs = System.currentTimeMillis()
+    val rowType = parts[0]
+    val catalogId = parts[1]
+    var raw = resolveRow(rowType, catalogId, page)
+
+    // TVDB-sourced rows: swap to tmdb: IDs + fill missing posters
+    if (raw.any { it.id?.startsWith("tvdb:") == true }) {
+        raw = tvdbEnrich(raw)
+    }
+
+    // Dedupe by normalized name, keep first occurrence
+    val seen = mutableSetOf<String>()
+    val deduped = raw.filter { m ->
+        val key = (m.name ?: "").lowercase().trim()
+        if (key.isBlank()) false else seen.add(key)
+    }
+
+    val items = deduped.filter { !it.isJunk() }.mapNotNull { it.toSearchResponse() }
+    return newHomePageResponse(request.name, items, hasNext = deduped.size >= 20)
 }
-       val items = raw
-           .filter { !it.isJunk() }
-           .mapNotNull { it.toSearchResponse() }
-       val hasMore = if (isStreaming) raw.size >= 20 else raw.size >= 25
-       return newHomePageResponse(request.name, items, hasNext = hasMore)
+private suspend fun resolveRow(rowType: String, catalogId: String, page: Int): List<AioMeta> {
+    return when (catalogId) {
+        // Western — Aiometa/TMDB base + JustWatch top-up on page 1
+        "tmdb.provider.8"    -> routeWestern(rowType, "nfx", 8, page)
+        "tmdb.provider.9"    -> routeWestern(rowType, "amazon-prime-video", 9, page)
+        "tmdb.provider.350"  -> routeWestern(rowType, "apple-tv-plus", 350, page)
+
+        // Western — TMDB direct (no IN presence on JustWatch)
+        "tmdb.provider.1899" -> tmdbDiscoverMerged(1899, (page - 1) * 20)
+        "tmdb.provider.337"  -> tmdbDiscoverMerged(337, (page - 1) * 20)
+
+        // Indian — JustWatch primary + TMDB fill
+        "tmdb.provider.122"  -> routeIndian(rowType, "jiohotstar", 122, page)
+        "tmdb.provider.220"  -> routeIndian(rowType, "jio-cinema", 220, page)
+        "tmdb.provider.237"  -> routeIndian(rowType, "sony-liv", 237, page)
+        "tmdb.provider.232"  -> routeIndian(rowType, "zee5", 232, page)
+
+        // Language rows — TVDB primary, TMDB cascade fallback
+        "tmdb.language"      -> routeLanguageTVDB(rowType, "hi", page)
+        "justwatch.bengali"  -> routeBanglaTVDB(page)
+        "tvdb.korean.series" -> routeLanguageTVDB("series", "ko", page)
+        "tvdb.korean.movies" -> routeLanguageTVDB("movie", "ko", page)
+
+       // TVDB rows — TVDB direct, Aiometa fallback
+       "tvdb.trending" -> {
+           val tvdbType = if (rowType == "series") "series" else "movies"
+           val direct = tvdbDiscover(tvdbType, null, 30)
+           if (direct.isNotEmpty()) direct
+           else aioFetchCatalog(rowType, catalogId, null, (page - 1) * 25)
        }
+
+      // Trending rows — TMDB direct (avoids Aiometa's tmdb.trending)
+      "tmdb.trending" -> {
+          val tmdbType = if (rowType == "series") "tv" else "movie"
+          tmdbTrendingDirect(tmdbType)
+      }
+
+        // Everything else (TVDB, MAL anime, etc.) — Aiometa catalog
+        else -> aioFetchCatalog(rowType, catalogId, null, (page - 1) * 25)
+    }
+}
+
+private fun jwTypeFor(rowType: String): String? = when (rowType) {
+    "movie" -> "MOVIE"
+    "series" -> "SHOW"
+    else -> null
+}
+
+private suspend fun routeWestern(
+    rowType: String,
+    jwSlug: String,
+    tmdbProviderId: Int,
+    page: Int
+): List<AioMeta> {
+    if (page > 1) return tmdbDiscoverMerged(tmdbProviderId, (page - 1) * 20)
+    val base = tmdbDiscoverMerged(tmdbProviderId, 0)
+    val jwList = jwDiscoverByProvider(jwSlug, jwTypeFor(rowType), 20)
+    return (base + jwList).distinctBy { it.id }
+}
+
+private suspend fun routeIndian(
+    rowType: String,
+    jwSlug: String,
+    tmdbProviderId: Int,
+    page: Int
+): List<AioMeta> {
+    val jwList = jwDiscoverByProvider(jwSlug, jwTypeFor(rowType), 30)
+    if (jwList.size >= 15) return jwList
+    val tmdbFill = tmdbDiscoverMerged(tmdbProviderId, (page - 1) * 20)
+    return (jwList + tmdbFill).distinctBy { it.id }
+}
+
+// Bangla row: movies + series merged into one row.
+// Genre IDs: 12 Drama, 28 Romance, 15 Comedy
+private suspend fun routeBanglaTVDB(page: Int): List<AioMeta> {
+    val genreIds = listOf(12, 28, 15)
+    val series = tvdbDiscover("series", "bn", 20, genreIds)
+    val movies = tvdbDiscover("movies", "bn", 20, genreIds)
+    val merged = (series + movies).distinctBy { it.name?.lowercase() }
+    if (merged.isNotEmpty()) return merged
+    return routeLanguage("series", "bn", page)
+}
+
+// One-time merge of TMDB premium pool + TVDB Hindi (validated via
+// TMDB genres). Cached 24h. Fixed order for the day, paginated by
+// the caller.
+private suspend fun getHindiMergedPool(): List<AioMeta> {
+    val today = java.time.LocalDate.now().toString()
+    val cacheKey = "hindiMergedPool:$today"
+
+    val cached = BCCache.get(cacheKey, 24 * 60 * 60 * 1000L)
+    if (cached != null) {
+        try {
+            val arr = org.json.JSONArray(cached)
+            val out = mutableListOf<AioMeta>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").takeIf { it.isNotBlank() } ?: continue
+                val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+                out.add(
+                    AioMeta(
+                        id = id,
+                        name = name,
+                        type = "series",
+                        poster = o.optString("poster").takeIf { it.isNotBlank() },
+                        releaseInfo = o.optString("year").takeIf { it.isNotBlank() },
+                        year = o.optString("year").takeIf { it.isNotBlank() }
+                    )
+                )
+            }
+            if (out.isNotEmpty()) return out
+        } catch (_: Exception) {}
+    }
+
+    val tmdb = tmdbHindiSeriesClean()
+    val tvdbRaw = tvdbDiscover("series", "hi", 60, listOf(12, 24, 14))
+    val validated = validateHindiSeries(tvdbRaw)
+    val merged = (tmdb + validated)
+        .distinctBy { it.name?.lowercase()?.substringBefore(" (") }
+        .shuffled(java.util.Random(java.time.LocalDate.now().toEpochDay()))
+
+    try {
+        val arr = org.json.JSONArray()
+        for (m in merged) {
+            arr.put(
+                org.json.JSONObject().apply {
+                    put("id", m.id ?: "")
+                    put("name", m.name ?: "")
+                    put("poster", m.poster ?: "")
+                    put("year", m.year ?: "")
+                }
+            )
+        }
+        BCCache.put(cacheKey, arr.toString())
+    } catch (_: Exception) {}
+
+    return merged
+}
+
+
+     // Validate TVDB Hindi series against TMDB genre data. Drops anything
+// TMDB tags as Soap (10766), Reality (10764), Talk (10767), News
+// (10763). Converts survivors to tmdb: IDs for inside-page load.
+private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = coroutineScope {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return@coroutineScope emptyList()
+
+    items.map { item ->
+        async {
+            val name = item.name?.substringBefore(" (")?.trim()
+            if (name.isNullOrBlank()) return@async null
+            try {
+                val encoded = URLEncoder.encode(name, "UTF-8")
+                val url = "https://api.themoviedb.org/3/search/tv?api_key=$key&query=$encoded&language=en-US"
+                val json = app.get(url).text
+                val parsed = tryParseJson<TmdbDiscoverResponse>(json)
+                val hit = parsed?.results?.firstOrNull() ?: return@async null
+                val id = hit.id ?: return@async null
+                val blocked = hit.genre_ids?.any { it in listOf(10766, 10764, 10767, 10763) } ?: false
+                if (blocked) {
+                    BCLog.d("Hindi drop (genre): $name")
+                    null
+                } else {
+                    item.copy(id = "tmdb:$id")
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }.awaitAll().filterNotNull()
+}
+
+     private suspend fun routeLanguageTVDB(
+    rowType: String,
+    langCode: String,
+    page: Int
+): List<AioMeta> {
+    val tvdbType = if (rowType == "series" || rowType == "anime") "series" else "movies"
+
+     // Hindi SERIES: merged TMDB + TVDB pool, cached once per day,
+     // paginated by the caller. Prevents duplicate TVDB items across
+     // pages (each page used to refetch the same TVDB list).
+     if (langCode == "hi" && tvdbType == "series") {
+         val pool = getHindiMergedPool()
+         val start = (page - 1) * 20
+         if (start >= pool.size) return emptyList()
+         return pool.subList(start, (start + 20).coerceAtMost(pool.size))
+     }
+
+    // TVDB genre IDs (from /v4/genres?type=series):
+    //   12 Drama, 24 Thriller, 28 Romance, 14 Crime, 19 Action,
+    //   31 Mystery, 15 Comedy, 18 Adventure, 2 Sci-Fi, 22 Suspense
+    val genreIds = when (langCode) {
+        "ko" -> if (tvdbType == "series") listOf(12, 24, 28, 31)
+                else listOf(12, 24, 19, 14)
+        "hi" -> listOf(12, 15, 19, 28)   // movie path only — series is handled above
+        "bn" -> listOf(12, 28, 15)
+        else -> emptyList()
+    }
+
+    val tvdbList = tvdbDiscover(tvdbType, langCode, 30, genreIds)
+    if (tvdbList.isNotEmpty()) return tvdbList
+
+    BCLog.d("[TVDB] empty for $langCode/$tvdbType, falling back to JW + TMDB")
+    return routeLanguage(rowType, langCode, page)
+     }
+
+
+    // Legacy fallback path — TMDB only. JustWatch's originalLanguages
+    // param doesn't exist in their schema, so it was removed.
+    private suspend fun routeLanguage(
+        rowType: String,
+        langCode: String,
+        page: Int
+    ): List<AioMeta> {
+        val tmdbType = if (rowType == "series" || rowType == "anime") "tv" else "movie"
+        return tmdbDiscoverByLanguage(tmdbType, langCode, (page - 1) * 20)
+    }
+
 
     // ── search ──
     override suspend fun search(query: String): List<SearchResponse>? {
@@ -193,21 +436,27 @@ val raw: List<AioMeta> = if (isStreaming) {
         if (parts.size < 2) return null
         val type = parts[0]
         val metaId = parts[1]
-        val meta = aioFetchMeta(type, metaId) ?: return null
-        val name = meta.name ?: return null
+        var meta = aioFetchMeta(type, metaId)
+        if (meta == null && metaId.startsWith("tmdb:")) {
+            val id = metaId.removePrefix("tmdb:")
+            BCLog.d("Aiometa meta failed, TMDB direct fallback: $id")
+            meta = tmdbDetailMeta(type, id)
+        }
+        val finalMeta = meta ?: return null
+        val name = finalMeta.name ?: return null
         val tvType = when {
             type.contains("series", true) -> TvType.TvSeries
             type.contains("anime", true) -> TvType.Anime
             else -> TvType.Movie
         }
-        val yearInt = (meta.releaseInfo ?: meta.year)?.take(4)?.toIntOrNull()
-        val actors = meta.app_extras?.cast?.mapNotNull { c ->
+        val yearInt = (finalMeta.releaseInfo ?: finalMeta.year)?.take(4)?.toIntOrNull()
+        val actors = finalMeta.app_extras?.cast?.mapNotNull { c ->
             val n = c.name ?: return@mapNotNull null
             Actor(n, c.photo)
         } ?: emptyList()
-        val videos = meta.videos ?: emptyList()
-        val statusTag = computeStatusTag(meta, videos, tvType)
-        val desc = meta.description ?: ""
+        val videos = finalMeta.videos ?: emptyList()
+        val statusTag = computeStatusTag(finalMeta, videos, tvType)
+        val desc = finalMeta.description ?: ""
         val plot = if (statusTag.isNotBlank() && desc.isNotBlank()) "<b>$statusTag</b><br><br>$desc"
             else if (statusTag.isNotBlank()) "<b>$statusTag</b>" else desc
 
@@ -219,13 +468,13 @@ val raw: List<AioMeta> = if (isStreaming) {
         if (Settings.isPrefetchEnabled() && !fromHomeBanner) {
             val prefetchQuery: StreamQuery? = when {
                 tvType == TvType.Movie && videos.isEmpty() ->
-                    StreamQuery(name, yearInt?.toString() ?: "", "movie", meta.imdb_id ?: "")
+                    StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
                 videos.isNotEmpty() -> {
                     val first = videos.firstOrNull()
                     val s = first?.season
                     val e = first?.episode
                     if (s != null && e != null && s > 0)
-                        StreamQuery(name, yearInt?.toString() ?: "", "series", meta.imdb_id ?: "", s, e)
+                        StreamQuery(name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e)
                     else null
                 }
                 else -> null
@@ -253,23 +502,23 @@ val raw: List<AioMeta> = if (isStreaming) {
         }
 
         return if (tvType == TvType.Movie && videos.isEmpty()) {
-            val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", meta.imdb_id ?: "")
-            newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
-                this.posterUrl = meta.poster
-                this.backgroundPosterUrl = meta.background
-                this.plot = plot
-                this.year = yearInt
-                this.tags = meta.genres
-                this.score = Score.from10(meta.imdbRating)
-                if (actors.isNotEmpty()) addActors(actors)
-            }
-        } else {
+        val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
+        newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
+             this.posterUrl = finalMeta.poster
+             this.backgroundPosterUrl = finalMeta.background
+             this.plot = plot
+             this.year = yearInt
+             this.tags = finalMeta.genres
+             this.score = Score.from10(finalMeta.imdbRating)
+             if (actors.isNotEmpty()) addActors(actors)
+         }
+         } else {
             val episodes = videos.mapIndexedNotNull { idx, v ->
                 val s = v.season ?: return@mapIndexedNotNull null
                 val e = v.episode ?: return@mapIndexedNotNull null
                 val next = videos.getOrNull(idx + 1)
                 val q = StreamQuery(
-                    name, yearInt?.toString() ?: "", "series", meta.imdb_id ?: "",
+                    name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "",
                     s, e,
                     next?.season ?: 0, next?.episode ?: 0
                 )
@@ -277,18 +526,18 @@ val raw: List<AioMeta> = if (isStreaming) {
                     this.name = v.title ?: "Episode $e"
                     this.season = s
                     this.episode = e
-                    this.posterUrl = v.thumbnail ?: meta.background
+                    this.posterUrl = v.thumbnail ?: finalMeta.background
                     this.description = v.overview
                 }
             }
             val responseType = if (tvType == TvType.Anime) TvType.Anime else TvType.TvSeries
             newTvSeriesLoadResponse(name, url, responseType, episodes) {
-                this.posterUrl = meta.poster
-                this.backgroundPosterUrl = meta.background
+                this.posterUrl = finalMeta.poster
+                this.backgroundPosterUrl = finalMeta.background
                 this.plot = plot
                 this.year = yearInt
-                this.tags = meta.genres
-                this.score = Score.from10(meta.imdbRating)
+                this.tags = finalMeta.genres
+                this.score = Score.from10(finalMeta.imdbRating)
                 if (actors.isNotEmpty()) addActors(actors)
             }
         }

@@ -7,7 +7,7 @@ object BCCache {
     private data class Entry(val ts: Long, val body: String)
     private data class MirrorEntry(val ts: Long, val mirrors: List<ScrapedMirror>)
 
-    private val map = LruCache<String, Entry>(64)
+    private val map = LruCache<String, Entry>(512)
     private val mirrorMap = LruCache<String, MirrorEntry>(16)
     private val lock = Any()
 

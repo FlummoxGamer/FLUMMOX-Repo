@@ -711,7 +711,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
     return coroutineScope {
         val jobs = mutableListOf<kotlinx.coroutines.Deferred<List<ScrapedMirror>?>>()
 
-        if (Settings.isSrcVm()) jobs.add(async {
+                if (Settings.isSrcVm()) jobs.add(async {
             kotlinx.coroutines.withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
                 try {
                     com.flummox.bingecore.SpeedBooster.deduped("vm:${q.cacheKey()}") {
@@ -719,6 +719,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
                         if (q.type == "series") vegamoviesExtractSeriesRaw(page, q.season, q.episode)
                         else vegamoviesExtractMovieRaw(page)
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e
                 } catch (e: Exception) { BCLog.e("VM task failed: ${e.message}"); emptyList() }
             } ?: run { BCLog.d("VM timeout"); emptyList() }
         })
@@ -730,6 +731,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
                         if (q.type == "series") moviesdriveExtractSeriesRaw(page, q.season, q.episode)
                         else moviesdriveExtractMovieRaw(page)
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e
                 } catch (e: Exception) { BCLog.e("MD task failed: ${e.message}"); emptyList() }
             } ?: run { BCLog.d("MD timeout"); emptyList() }
         })
@@ -740,6 +742,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
                         val page = hdhub4uFindPage(q.title, q.year, q.type, q.season) ?: return@deduped emptyList()
                         hdhub4uExtractRaw(page)
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e
                 } catch (e: Exception) { BCLog.e("HDH task failed: ${e.message}"); emptyList() }
             } ?: run { BCLog.d("HDH timeout"); emptyList() }
         })
@@ -750,6 +753,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
             com.flummox.bingecore.SpeedBooster.deduped("mb:${q.cacheKey()}") {
                 movieboxExtractRaw(q)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: Exception) { BCLog.e("MB task failed: ${e.message}"); emptyList() }
     } ?: run { BCLog.d("MB timeout"); emptyList() }
 })
@@ -759,6 +763,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
             com.flummox.bingecore.SpeedBooster.deduped("anikoto:${q.cacheKey()}") {
                 anikotoExtractRaw(q)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: Exception) { BCLog.e("AniKoto task failed: ${e.message}"); emptyList() }
     } ?: run { BCLog.d("AniKoto timeout"); emptyList() }
 })
@@ -768,6 +773,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
             com.flummox.bingecore.SpeedBooster.deduped("showbox:${q.cacheKey()}") {
                 showBoxExtractRaw(q)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: Exception) { BCLog.e("ShowBox task failed: ${e.message}"); emptyList() }
     } ?: run { BCLog.d("ShowBox timeout"); emptyList() }
 })

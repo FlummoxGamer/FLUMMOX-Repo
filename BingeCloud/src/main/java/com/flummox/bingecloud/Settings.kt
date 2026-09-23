@@ -85,8 +85,6 @@ object Settings {
     const val K_ROW_TRENDING_SERIES = "bingecloud_row_trending_series"
     const val K_ROW_TVDB_MOVIES = "bingecloud_row_tvdb_movies"
     const val K_ROW_TVDB_SERIES = "bingecloud_row_tvdb_series"
-    const val K_ROW_TVDB_GENRES_MOVIES = "bingecloud_row_tvdb_genres_movies"
-    const val K_ROW_TVDB_GENRES_SERIES = "bingecloud_row_tvdb_genres_series"
     const val K_ROW_TOP_ANIME = "bingecloud_row_top_anime"
     const val K_ROW_AIRING_ANIME = "bingecloud_row_airing_anime"
     const val K_ROW_UPCOMING_ANIME = "bingecloud_row_upcoming_anime"
@@ -101,6 +99,11 @@ object Settings {
     const val K_ROW_BEST_80S = "bingecloud_row_best_80s"
     const val K_ROW_HINDI_MOVIES = "bingecloud_row_hindi_movies"
     const val K_ROW_HINDI_SERIES = "bingecloud_row_hindi_series"
+    const val K_ROW_BANGLA = "bingecloud_row_bangla"
+    const val K_ROW_KOREAN_SERIES = "bingecloud_row_korean_series"
+    const val K_ROW_KOREAN_MOVIES = "bingecloud_row_korean_movies"
+    const val K_TVDB_TOKEN = "bingecloud_tvdb_token"
+    const val K_TVDB_TOKEN_EXP = "bingecloud_tvdb_token_exp"
     const val K_ROW_ANIME_SCHEDULE = "bingecloud_row_anime_schedule"
 
 // ── Streaming platforms (one row per platform, mixed movie + series) ──
@@ -131,13 +134,14 @@ object Settings {
     RowSpec(K_ROW_STREAM_MAX, "movie", "tmdb.provider.1899", "Max", null, "Max"),
     RowSpec(K_ROW_STREAM_APPLETV, "movie", "tmdb.provider.350", "Apple TV+", null, "Apple TV+"),
     RowSpec(K_ROW_STREAM_JIOHOTSTAR, "movie", "tmdb.provider.122", "JioHotstar", null, "JioHotstar"),
-    RowSpec(K_ROW_STREAM_JIOCINEMA, "movie", "tmdb.provider.220", "JioCinema", null, "JioCinema"),
     RowSpec(K_ROW_STREAM_SONYLIV, "movie", "tmdb.provider.237", "SonyLIV", null, "SonyLIV"),
-    RowSpec(K_ROW_STREAM_ZEE5, "movie", "tmdb.provider.232", "ZEE5", null, "ZEE5"),
-
-    // ── Indian ──
+    
+    // ── Language ──
     RowSpec(K_ROW_HINDI_MOVIES, "movie", "tmdb.language", "Hindi Movies", "Hindi", "TMDB • Hindi"),
-    RowSpec(K_ROW_HINDI_SERIES, "series", "tmdb.language", "Hindi Series", "Hindi", "TMDB • Hindi"),
+    RowSpec(K_ROW_HINDI_SERIES, "series", "tmdb.language", "Hindi Series", "Hindi", "TVDB • Hindi"),
+    RowSpec(K_ROW_BANGLA, "movie", "justwatch.bengali", "Bangla", null, "TVDB • Bangla"),
+    RowSpec(K_ROW_KOREAN_SERIES, "series", "tvdb.korean.series", "Korean Series", null, "TVDB • Korean"),
+    RowSpec(K_ROW_KOREAN_MOVIES, "movie", "tvdb.korean.movies", "Korean Movies", null, "TVDB • Korean"),
 
     // ── Anime ──
     RowSpec(K_ROW_TOP_ANIME, "anime", "mal.top_anime", "Top Anime", null, "MAL"),
@@ -150,10 +154,8 @@ object Settings {
     RowSpec(K_ROW_ANIME_SCHEDULE, "anime", "mal.schedule", "Airing Schedule", "Monday", "MAL"),
 
     // ── TVDB ──
-    RowSpec(K_ROW_TVDB_MOVIES, "movie", "tvdb.trending", "TVDB Trending Movies", "genre=Action", "TVDB"),
-    RowSpec(K_ROW_TVDB_SERIES, "series", "tvdb.trending", "TVDB Trending Series", "genre=Action", "TVDB"),
-    RowSpec(K_ROW_TVDB_GENRES_MOVIES, "movie", "tvdb.genres", "TVDB Genre Movies", "genre=Action", "TVDB"),
-    RowSpec(K_ROW_TVDB_GENRES_SERIES, "series", "tvdb.genres", "TVDB Genre Series", "genre=Action", "TVDB"),
+    RowSpec(K_ROW_TVDB_MOVIES, "movie", "tvdb.trending", "TVDB Trending Movies", null, "TVDB"),
+    RowSpec(K_ROW_TVDB_SERIES, "series", "tvdb.trending", "TVDB Trending Series", null, "TVDB"),
 
     // ── Best Anime of decade ──
     RowSpec(K_ROW_BEST_2020S, "anime", "mal.20sDecade", "Best Anime of 2020s", "genre=Action", "MAL"),
@@ -178,12 +180,27 @@ private val DEFAULT_ON_ROWS = setOf(
 
     // ── row order ──
     fun getRowOrder(): List<String> {
-        val stored = getKey<String>(K_ROW_ORDER) ?: ""
-        val parts = stored.split("|").map { it.trim() }.filter { it.isNotBlank() }
-        if (parts.isEmpty()) return ALL_ROWS.map { it.key }
-        val seen = parts.toSet()
-        val extras = ALL_ROWS.map { it.key }.filter { it !in seen }
-        return parts + extras
+    val stored = getKey<String>(K_ROW_ORDER) ?: ""
+    val parts = stored.split("|").map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
+    if (parts.isEmpty()) return ALL_ROWS.map { it.key }
+    val seen = parts.toSet()
+    val extras = ALL_ROWS.map { it.key }.filter { it !in seen }
+
+    // Insert newly-added rows at their canonical ALL_ROWS position
+    // instead of appending at the end. Keeps row order sensible
+    // when new rows ship in later versions.
+    for (extra in extras) {
+        val targetIdx = ALL_ROWS.indexOfFirst { it.key == extra }
+        if (targetIdx < 0) { parts.add(extra); continue }
+        var insertAt = parts.size
+        for (i in parts.indices.reversed()) {
+            val curIdx = ALL_ROWS.indexOfFirst { it.key == parts[i] }
+            if (curIdx in 0 until targetIdx) { insertAt = i + 1; break }
+        }
+        parts.add(insertAt.coerceIn(0, parts.size), extra)
+    }
+    // Drop rows that no longer exist in ALL_ROWS (removed or merged).
+    return parts.filter { key -> ALL_ROWS.any { it.key == key } }
     }
 
     fun setRowOrder(order: List<String>) {
@@ -371,6 +388,14 @@ private val DEFAULT_ON_ROWS = setOf(
     fun saveFebBoxToken(t: String) { setKey(K_FEBBOX_TOKEN, t) }
     fun clearFebBoxToken() { setKey(K_FEBBOX_TOKEN, "") }
 
+    // ── TVDB session ──
+    fun getTvdbToken(): String? = getKey<String>(K_TVDB_TOKEN)?.takeIf { it.isNotBlank() }
+    fun getTvdbTokenExp(): Long = getKey<Long>(K_TVDB_TOKEN_EXP) ?: 0L
+    fun saveTvdbToken(token: String, expMs: Long) {
+    setKey(K_TVDB_TOKEN, token)
+    setKey(K_TVDB_TOKEN_EXP, expMs)
+    }
+    
     // ── source toggles ──
     fun isSrcVm(): Boolean = getKey<Boolean>(K_SRC_VM) ?: true
     fun isSrcMd(): Boolean = getKey<Boolean>(K_SRC_MD) ?: true
@@ -380,6 +405,7 @@ private val DEFAULT_ON_ROWS = setOf(
     fun isSrcAnikoto(): Boolean = getKey<Boolean>(K_SRC_ANIKOTO) ?: true
     fun isSrcShowBox(): Boolean = getKey<Boolean>(K_SRC_SHOWBOX) ?: true
     fun isSrcMlsbd(): Boolean = getKey<Boolean>(K_SRC_MLSBD) ?: true
+    
     // ══════════════════════════════════════════════════════════
     // ── COLORS ──
     // ══════════════════════════════════════════════════════════
