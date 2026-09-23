@@ -649,7 +649,21 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
                                     try { subtitleCallback(SubtitleFile(lang, subUrl)) } catch (_: Exception) {}
                                     }
                                 }
-                                    "SHOWBOX" -> {
+                                    "ANIZONE" -> {
+                                      val linkType = if (m.url.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                      val display = "$emoji${m.quality} •${m.mirror}"
+                                      val link = newExtractorLink("AniZone", display, m.url, linkType) {
+                                          this.referer = "https://anizone.to/"
+                                          this.headers = m.headers ?: mapOf("Referer" to "https://anizone.to/")
+                                      }
+                                      callback.invoke(link)
+                                      emittedCount.incrementAndGet()
+                                      HostHealth.recordSuccess(host)
+                                      m.captions.forEach { (lang, subUrl) ->
+                                          try { subtitleCallback(SubtitleFile(lang, subUrl)) } catch (_: Exception) {}
+                                        }
+                                      }
+                                      "SHOWBOX" -> {
                                         val linkType = when {
                                             m.url.contains(".mp4", true) -> ExtractorLinkType.VIDEO
                                             m.url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
