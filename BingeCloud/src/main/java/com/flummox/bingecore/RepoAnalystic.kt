@@ -1,6 +1,7 @@
 package com.flummox.bingecore
 
 import android.content.Context
+import com.flummox.bingecloud.BuildConfig
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
