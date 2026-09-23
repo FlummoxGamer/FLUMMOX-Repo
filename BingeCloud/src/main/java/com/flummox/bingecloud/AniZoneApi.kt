@@ -308,9 +308,39 @@ object AniZoneApi {
         }
     }
 
-    // ── main entry ──
-    suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
-        val start = System.currentTimeMillis()
+         // ── Part N handling ──
+private val RX_PART = Regex("""\bpart\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+
+private fun parsePartNum(title: String): Int =
+    RX_PART.find(title)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+
+private fun stripPart(title: String): String =
+    title.replace(RX_PART, "").replace(RX_WS, " ").trim().trimEnd(':','-','–','—',' ')
+
+// ── main entry ──
+suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
+    val start = System.currentTimeMillis()
+
+    // Fast-path: Part N >= 2 — probe base series with offset before anything else
+    val partNum = parsePartNum(q.title)
+    if (partNum >= 2 && q.totalEpisodes > 0 && q.type != "movie") {
+        val base = stripPart(q.title)
+        BCLog.d("AniZone: part $partNum detected, probing base '$base' (cur=${q.totalEpisodes} eps)")
+        val baseHits = search(base)
+        if (baseHits.isNotEmpty()) {
+            val baseHit = pickBest(baseHits, base, q.year)
+            if (baseHit != null && baseHit.episodes > q.totalEpisodes) {
+                val offset = baseHit.episodes - q.totalEpisodes
+                val targetEp = offset + q.episode
+                BCLog.d("AniZone: combined entry '${baseHit.title}' ${baseHit.episodes}eps, offset=$offset target=$targetEp")
+                val fastStream = getStream(baseHit.slug, targetEp)
+                if (fastStream != null) {
+                    BCLog.d("AniZone: part-offset hit E$targetEp (${System.currentTimeMillis() - start}ms)")
+                    return listOf(mirror(baseHit, targetEp, null, fastStream))
+                }
+            }
+        }
+    }
 
         // Phase 1 — direct search with original + shortened variants
         var hits = emptyList<Hit>()
