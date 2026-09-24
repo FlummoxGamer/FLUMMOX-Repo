@@ -161,19 +161,21 @@ val q = if (year != null) """
                 status
                 genres
                 relations {
-                    node {
-                      id
-                      idMal
-                      title { romaji english native }
-                      format
-                      episodes
-                      seasonYear
-                      startDate { year month day }
-                      description
-                      coverImage { extraLarge large }
-                      averageScore
-                      status
-                      genres
+                    edges {
+                     relationType
+                     node {
+                     id
+                     idMal
+                     title { romaji english native }
+                     format
+                     episodes
+                     seasonYear
+                     startDate { year month day }
+                     description
+                     coverImage { extraLarge large }
+                     averageScore
+                     status
+                     genres
                     }
                   }
                 }
