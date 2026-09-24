@@ -21,13 +21,9 @@ object AniZoneApi {
 
     private fun searchKey(q: String) = "anizone:s:${q.lowercase()}"
     private fun epsKey(slug: String) = "anizone:e:$slug"
-    private fun tmdbAltKey(imdb: String, title: String, year: String, type: String) =
-        if (imdb.isNotBlank()) "anizone:alts:i:$imdb"
-        else "anizone:alts:t:${title.lowercase()}:$year:$type"
     private const val SEARCH_TTL = 30 * 60 * 1000L
     private const val EPS_TTL = 60 * 60 * 1000L
-    private const val TMDB_ALT_TTL = 24 * 60 * 60 * 1000L
-
+    
     // ── parsing helpers ──
     private fun unescapeJs(s: String): String {
         val sb = StringBuilder(s.length)
@@ -62,34 +58,6 @@ object AniZoneApi {
 
     fun normalize(s: String): String =
     s.lowercase().trim().replace(RX_NON_ALNUM, " ").replace(RX_WS, " ").trim()
-
-// Reject alt titles that AniZone can't possibly index. Site carries
-// Latin / CJK / Hiragana / Katakana / Hangul only — no Cyrillic,
-// Devanagari, Bengali, Kannada, Tamil, Telugu, Arabic, Thai, etc.
-private fun isAniZoneFriendly(s: String): Boolean {
-    if (s.isBlank()) return false
-    for (c in s) {
-        val code = c.code
-        val ok = when {
-            code < 0x80 -> true          // ASCII
-            code in 0x00A0..0x024F -> true // Latin-1 + Extended
-            code in 0x0300..0x036F -> true // combining marks
-            code in 0x3040..0x309F -> true // Hiragana
-            code in 0x30A0..0x30FF -> true // Katakana
-            code in 0x31F0..0x31FF -> true // Katakana phonetic
-            code in 0x3400..0x4DBF -> true // CJK Ext A
-            code in 0x4E00..0x9FFF -> true // CJK Unified
-            code in 0xF900..0xFAFF -> true // CJK Compat
-            code in 0xFF00..0xFFEF -> true // Fullwidth
-            code in 0x1100..0x11FF -> true // Hangul Jamo
-            code in 0x3130..0x318F -> true // Hangul Compat
-            code in 0xAC00..0xD7AF -> true // Hangul Syllables
-            else -> false
-        }
-        if (!ok) return false
-    }
-    return true
-}
 
     // ── query variants (shortening) ──
     private fun buildVariants(query: String): List<String> {
@@ -168,70 +136,6 @@ private fun isAniZoneFriendly(s: String): Boolean {
             } catch (_: Exception) {}
         }
         return hits
-    }
-
-    // ── TMDB alt titles (cached) ──
-    private suspend fun tmdbAltTitles(query: String, year: String, type: String, imdbId: String): List<String> {
-        val key = BuildConfig.TMDB_API_KEY
-        if (key.isBlank()) return emptyList()
-        val ck = tmdbAltKey(imdbId, query, year, type)
-        BCCache.get(ck, TMDB_ALT_TTL)?.let { cached ->
-            if (cached.isBlank()) return emptyList()
-            return cached.split("\u0001").filter { it.isNotBlank() }
-        }
-
-        val tmdbType = if (type == "movie") "movie" else "tv"
-        var tmdbId: Int? = null
-
-        // Try find by IMDb ID first
-        if (imdbId.isNotBlank()) {
-            try {
-                val url = "https://api.themoviedb.org/3/find/$imdbId?external_source=imdb_id&api_key=$key"
-                val root = JSONObject(app.get(url).text)
-                val arr = if (tmdbType == "movie") root.optJSONArray("movie_results") else root.optJSONArray("tv_results")
-                tmdbId = arr?.optJSONObject(0)?.optInt("id", 0)?.takeIf { it > 0 }
-            } catch (_: Exception) {}
-        }
-
-        // Fallback: search by title
-        if (tmdbId == null) {
-            try {
-                val encoded = URLEncoder.encode(query, "UTF-8")
-                val url = "https://api.themoviedb.org/3/search/$tmdbType?api_key=$key&query=$encoded"
-                val root = JSONObject(app.get(url).text)
-                tmdbId = root.optJSONArray("results")?.optJSONObject(0)?.optInt("id", 0)?.takeIf { it > 0 }
-            } catch (_: Exception) {}
-        }
-        if (tmdbId == null) { BCCache.put(ck, ""); return emptyList() }
-
-        val alts = linkedSetOf<String>()
-
-        // Fetch detail for original_name/title
-        try {
-            val url = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?api_key=$key"
-            val root = JSONObject(app.get(url).text)
-            val orig = root.optString("original_name").ifBlank { root.optString("original_title") }
-            if (orig.isNotBlank()) alts.add(orig)
-        } catch (_: Exception) {}
-
-        // Fetch alternative_titles
-        try {
-            val url = "https://api.themoviedb.org/3/$tmdbType/$tmdbId/alternative_titles?api_key=$key"
-            val root = JSONObject(app.get(url).text)
-            val arr = root.optJSONArray("results") ?: root.optJSONArray("titles")
-            if (arr != null) {
-                for (i in 0 until arr.length()) {
-                    val t = arr.optJSONObject(i)?.optString("title")?.takeIf { it.isNotBlank() } ?: continue
-                    alts.add(t)
-                }
-            }
-        } catch (_: Exception) {}
-
-        val list = alts.toList()
-        try {
-            BCCache.put(ck, if (list.isEmpty()) "" else list.joinToString("\u0001"))
-        } catch (_: Exception) {}
-        return list
     }
 
     // Priority: exact (any title) → containment (any title) → fuzzy → year → episode count
@@ -348,71 +252,64 @@ private fun isAniZoneFriendly(s: String): Boolean {
         }
     }
 
-         // ── Part N handling ──
-private val RX_PART = Regex("""\bpart\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+         // ── pick best AniList entry for a query ──
+private fun pickBestAniList(hits: List<AniListApi.Entry>, query: String, year: String): AniListApi.Entry? {
+    if (hits.isEmpty()) return null
+    val qn = normalize(query)
+    val yr = year.toIntOrNull()
 
-private fun parsePartNum(title: String): Int =
-    RX_PART.find(title)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+    val exact = hits.filter { h -> h.title.all().any { normalize(it) == qn } }
+    if (exact.isNotEmpty()) {
+        if (yr != null) exact.firstOrNull { it.seasonYear == yr }?.let { return it }
+        return exact.first()
+    }
 
-private fun stripPart(title: String): String =
-    title.replace(RX_PART, "").replace(RX_WS, " ").trim().trimEnd(':','-','–','—',' ')
+    val contained = hits.filter { h ->
+        h.title.all().any { at ->
+            val cn = normalize(at)
+            cn.length >= 3 && (qn.contains(cn) || cn.contains(qn))
+        }
+    }
+    if (contained.isNotEmpty()) {
+        if (yr != null) contained.firstOrNull { it.seasonYear == yr }?.let { return it }
+        return contained.first()
+    }
+
+    return hits.firstOrNull()
+}
 
 // ── main entry ──
 suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
     val start = System.currentTimeMillis()
+    val isAnime = q.originalLanguage in setOf("ja", "ko", "zh")
 
-    // Fast-path: Part N >= 2 — probe base series with offset before anything else
-    val partNum = parsePartNum(q.title)
-    if (partNum >= 2 && q.totalEpisodes > 0 && q.type != "movie") {
-        val base = stripPart(q.title)
-        BCLog.d("AniZone: part $partNum detected, probing base '$base' (cur=${q.totalEpisodes} eps)")
-        val baseHits = search(base)
-        if (baseHits.isNotEmpty()) {
-            val baseHit = pickBest(baseHits, base, q.year)
-            if (baseHit != null && baseHit.episodes > q.totalEpisodes) {
-                val offset = baseHit.episodes - q.totalEpisodes
-                val targetEp = offset + q.episode
-                BCLog.d("AniZone: combined entry '${baseHit.title}' ${baseHit.episodes}eps, offset=$offset target=$targetEp")
-                val fastStream = getStream(baseHit.slug, targetEp)
-                if (fastStream != null) {
-                    BCLog.d("AniZone: part-offset hit E$targetEp (${System.currentTimeMillis() - start}ms)")
-                    return listOf(mirror(baseHit, targetEp, null, fastStream))
-                }
+    // Phase 1 — AniList title variants (anime only)
+    var altTitles = emptyList<String>()
+    if (isAnime) {
+        val alHits = AniListApi.searchAnime(q.title, q.year.toIntOrNull())
+        if (alHits.isNotEmpty()) {
+            val best = pickBestAniList(alHits, q.title, q.year)
+            if (best != null) {
+                altTitles = best.title.all()
+                BCLog.d("AniList: '${best.title.romaji ?: best.title.english}' (${best.episodes ?: 0}eps) alts=${altTitles.size} = $altTitles")
             }
         }
     }
 
-        // Phase 1 — direct search with original + shortened variants
-        var hits = emptyList<Hit>()
-        for (v in buildVariants(q.title)) {
-            hits = search(v)
-            if (hits.isNotEmpty()) break
-        }
+    // Phase 2 — search AniZone: AniList titles first, then original + variants
+    var hits = emptyList<Hit>()
+    val tried = mutableSetOf<String>()
+    for (s in (altTitles + buildVariants(q.title))) {
+        if (!tried.add(s.lowercase())) continue
+        hits = search(s)
+        if (hits.isNotEmpty()) break
+    }
 
-        // Phase 2 — TMDB alt titles fallback (only if phase 1 gave nothing usable)
-        // Filter alts to scripts AniZone can actually index, cap at 3 retries.
-        var altTitles = emptyList<String>()
-        if (hits.isEmpty() || pickBest(hits, q.title, q.year) == null) {
-            val rawAlts = tmdbAltTitles(q.title, q.year, q.type, q.imdbId)
-            altTitles = rawAlts
-            val searchAlts = rawAlts.filter { isAniZoneFriendly(it) }.take(3)
-            if (rawAlts.isNotEmpty()) {
-                BCLog.d("AniZone: alts raw=${rawAlts.size} usable=${searchAlts.size} = $searchAlts")
-                for (alt in searchAlts) {
-                    val ah = search(alt)
-                    if (ah.isNotEmpty()) {
-                        hits = ah
-                        if (pickBest(hits, q.title, q.year, altTitles) != null) break
-                    }
-               }
-            }
-        }
-
-        if (hits.isEmpty()) { BCLog.d("AniZone: no hits (${System.currentTimeMillis() - start}ms)"); return emptyList() }
-        val hit = pickBest(hits, q.title, q.year, altTitles) ?: run {
-            BCLog.d("AniZone: no name match — top: ${hits.take(5).joinToString(" | ") { it.title }}")
-            return emptyList()
-        }
+    if (hits.isEmpty()) { BCLog.d("AniZone: no hits (${System.currentTimeMillis() - start}ms)"); return emptyList() }
+    val hit = pickBest(hits, q.title, q.year, altTitles) ?: run {
+        BCLog.d("AniZone: no name match — top: ${hits.take(5).joinToString(" | ") { it.title }}")
+        return emptyList()
+    }
 
         val targetEp = when {
             q.type == "movie" -> 1
