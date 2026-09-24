@@ -149,10 +149,12 @@ path: BingeCloud/build.gradle.kts
   - hostOf, qualityRank, audioPriority, computeStatusTag — helpers
 - encodeQuery, decodeQuery — JSON serialize StreamQuery
 - TmdbSearchResponse, TmdbSearchItem — data models
+- RX_COUR — filter AniList "Cour N" entries at search boundary
 
 
 ## Cache.kt
-- BCCache — LRU cache (512 response, 16 mirrors)
+- BCCache — LRU cachemodels
+- response, 16 mirrors)
   - get, put, getMirrors, putMirrors, clear
 
 
