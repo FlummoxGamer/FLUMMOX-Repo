@@ -426,8 +426,10 @@ var effectiveEpisode = q.episode
 val partInfo = AniListApi.parsePartInfo(q.title)
 if (partInfo != null && q.type == "series") {
     val partHits = try { mbSearch(q.title) } catch (e: Exception) { emptyList() }
+    val expectedType = 2
     val partMatch = partHits.firstOrNull { s ->
-        titleMatches(q.title, s.title) &&
+        s.type == expectedType &&
+            titleMatches(q.title, s.title) &&
             Regex("""\bpart\s+${partInfo.partNum}\b""", RegexOption.IGNORE_CASE).containsMatchIn(s.title)
     }
     if (partMatch != null) {
