@@ -354,8 +354,12 @@ suspend fun showBoxExtractRaw(q: StreamQuery): List<ScrapedMirror> {
         val f = fileList.optJSONObject(i) ?: continue
         val name = f.optString("file_name")
         if (q.type == "series" && q.season > 0 && q.episode > 0) {
-            val pat = Regex("""s0*${q.season}\s*e0*${q.episode}""", RegexOption.IGNORE_CASE)
-            if (!pat.containsMatchIn(name)) continue
+            // Word boundaries prevent "s01e1" matching inside "s01e10".."s01e19"
+            val pat = Regex(
+                """(?:^|[^0-9])s0*${q.season}\s*e0*${q.episode}(?:[^0-9]|$)""",
+                RegexOption.IGNORE_CASE
+           )
+           if (!pat.containsMatchIn(name)) continue
         }
         val fid = f.optLong("fid", 0L)
         val inlinePath = f.optString("path").takeIf { it.isNotBlank() }
