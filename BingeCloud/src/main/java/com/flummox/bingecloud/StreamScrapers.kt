@@ -614,7 +614,26 @@ private suspend fun anikotoResolvePlayerUrl(linkId: String, referer: String): St
 
 private suspend fun anikotoExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     val series = anikotoFindSeries(q.title) ?: return emptyList()
-    val serverIds = anikotoGetServerIds(series, q.episode) ?: run {
+    var effectiveEpisode = q.episode
+
+    val partInfo = AniListApi.parsePartInfo(q.title)
+    if (partInfo != null && q.type == "series") {
+        val hasDirectPart = Regex("""\bpart\s+${partInfo.partNum}\b""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(series.title)
+        if (hasDirectPart) {
+            BCLog.d("AniKoto: direct Part ${partInfo.partNum} → '${series.title}'")
+        } else {
+            val offset = AniListApi.getPrequelOffset(q.title, q.year.toIntOrNull())
+            if (offset == null || offset <= 0) {
+                BCLog.d("AniKoto: combined entry, no offset available — skipping Part-N")
+                return emptyList()
+            }
+            effectiveEpisode = offset + q.episode
+            BCLog.d("AniKoto: combined '${series.title}', offset=$offset → E$effectiveEpisode")
+        }
+    }
+
+    val serverIds = anikotoGetServerIds(series, effectiveEpisode) ?: run {
         BCLog.d("AniKoto: no serverIds"); return emptyList()
     }
     val listJson = try {
