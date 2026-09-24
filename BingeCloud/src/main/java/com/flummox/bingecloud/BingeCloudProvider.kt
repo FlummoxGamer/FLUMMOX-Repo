@@ -455,22 +455,20 @@ val tmdbByGroup = tmdbClean
     .groupBy { searchGroupKey(it.name) }
 val aniKept = mutableListOf<SearchResponse>()
 for (r in aniAfterPart) {
-    val aniKept = mutableListOf<SearchResponse>()
-    for (r in aniAfterExtra) {
-        if (isExtraTitle(r.name)) { aniKept.add(r); continue }
-        val group = searchGroupKey(r.name)
-        val sibling = tmdbByGroup[group]?.firstOrNull { !isExtraTitle(it.name) }
-        if (sibling == null) { aniKept.add(r); continue }
-        val tmdbId = Regex("""tmdb:(\d+)""").find(sibling.url)?.groupValues?.get(1)?.toIntOrNull()
-        if (tmdbId == null) { aniKept.add(r); continue }
-        val tmdbSeasons = tmdbSeasonNumbers(tmdbId)
-        val aniSeason = seasonNumberOf(r.name)
-        if (aniSeason in tmdbSeasons) {
-            BCLog.d("AniList drop (S$aniSeason in TMDB $tmdbId): ${r.name}")
-        } else {
-            aniKept.add(r)
-        }
+    if (isExtraTitle(r.name)) { aniKept.add(r); continue }
+    val group = searchGroupKey(r.name)
+    val sibling = tmdbByGroup[group]?.firstOrNull { !isExtraTitle(it.name) }
+    if (sibling == null) { aniKept.add(r); continue }
+    val tmdbId = Regex("""tmdb:(\d+)""").find(sibling.url)?.groupValues?.get(1)?.toIntOrNull()
+    if (tmdbId == null) { aniKept.add(r); continue }
+    val tmdbSeasons = tmdbSeasonNumbers(tmdbId)
+    val aniSeason = seasonNumberOf(r.name)
+    if (aniSeason in tmdbSeasons) {
+        BCLog.d("AniList drop (S$aniSeason in TMDB $tmdbId): ${r.name}")
+    } else {
+        aniKept.add(r)
     }
+}
 
     // 4. tag + group + sort
     data class Tagged(val r: SearchResponse, val src: Int, val idx: Int)
