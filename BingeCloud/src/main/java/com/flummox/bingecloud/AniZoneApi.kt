@@ -288,8 +288,9 @@ private suspend fun tryNextPartInChain(
     currentSiteCount: Int,
     startMs: Long
 ): List<ScrapedMirror> {
+    if (q.type != "series") return emptyList()
     if (q.episode <= currentSiteCount) return emptyList()
-    if (q.originalLanguage !in setOf("ja", "ko", "zh")) return emptyList()
+    BCLog.d("AniZone: chain walk for E${q.episode} > site=$currentSiteCount")
 
     val alHits = AniListApi.searchAnime(q.title, q.year.toIntOrNull())
     val alEntry = alHits.firstOrNull { h ->
