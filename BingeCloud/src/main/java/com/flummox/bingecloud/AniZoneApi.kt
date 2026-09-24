@@ -278,6 +278,65 @@ private fun pickBestAniList(hits: List<AniListApi.Entry>, query: String, year: S
     return hits.firstOrNull()
 }
 
+// ── inverse Part case: TMDB combined, site split ──
+// Called when site's episode list is smaller than q.episode.
+// Walks AniList chain forward, subtracting each part's episode count,
+// until target episode lands on the correct part.
+private suspend fun tryNextPartInChain(
+    q: StreamQuery,
+    currentSlug: String,
+    currentSiteCount: Int,
+    startMs: Long
+): List<ScrapedMirror> {
+    if (q.episode <= currentSiteCount) return emptyList()
+    if (q.originalLanguage !in setOf("ja", "ko", "zh")) return emptyList()
+
+    val alHits = AniListApi.searchAnime(q.title, q.year.toIntOrNull())
+    val alEntry = alHits.firstOrNull { h ->
+        h.title.all().any { t -> titleMatches(q.title, t) }
+    } ?: return emptyList()
+    val chain = AniListApi.resolveChain(alEntry.id)
+    if (chain.size < 2) return emptyList()
+    val idx = chain.indexOfFirst { it.id == alEntry.id }
+    if (idx < 0) return emptyList()
+
+    var remaining = q.episode
+    var cursor = idx
+    while (remaining > 0 && cursor < chain.size) {
+        val entryEps = chain[cursor].episodes ?: 0
+        if (entryEps <= 0) return emptyList()
+        if (remaining <= entryEps) {
+            if (cursor == idx) return emptyList()
+            val target = chain[cursor]
+            val targetTitle = target.title.romaji ?: target.title.english ?: q.title
+            BCLog.d("AniZone: next part '$targetTitle' E$remaining (steps=${cursor - idx})")
+
+            var nextHits = emptyList<Hit>()
+            val tried = mutableSetOf<String>()
+            for (t in target.title.all() + buildVariants(q.title)) {
+                if (!tried.add(t.lowercase())) continue
+                nextHits = search(t).filter { it.slug != currentSlug }
+                if (nextHits.isNotEmpty()) break
+            }
+            if (nextHits.isEmpty()) return emptyList()
+
+            val nextHit = pickBest(
+                nextHits,
+                targetTitle,
+                target.seasonYear?.toString() ?: "",
+                target.title.all()
+            ) ?: return emptyList()
+
+            val stream = getStream(nextHit.slug, remaining) ?: return emptyList()
+            BCLog.d("AniZone: next-part hit '${nextHit.title}' E$remaining (${System.currentTimeMillis() - startMs}ms)")
+            return listOf(mirror(nextHit, remaining, null, stream))
+        }
+        remaining -= entryEps
+        cursor++
+    }
+    return emptyList()
+}
+
 // ── main entry ──
 suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
     val start = System.currentTimeMillis()
@@ -327,9 +386,10 @@ suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
         val eps = getEpisodes(hit.slug)
         if (eps.isEmpty()) { BCLog.d("AniZone: no episodes"); return emptyList() }
 
-        val ep = eps.firstOrNull { it.number == targetEp } ?: run {
-            BCLog.d("AniZone: episode $targetEp not found (have ${eps.size})")
-            return emptyList()
+        val ep = eps.firstOrNull { it.number == targetEp }
+        if (ep == null) {
+            BCLog.d("AniZone: E$targetEp not found (have ${eps.size}) — checking next part")
+            return tryNextPartInChain(q, hit.slug, eps.size, start)
         }
 
         val stream = getStream(hit.slug, ep.number) ?: run {
