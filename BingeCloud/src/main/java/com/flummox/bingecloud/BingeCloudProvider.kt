@@ -383,9 +383,8 @@ private fun mergeSearchResults(
 
 private fun searchDedupeKey(r: SearchResponse): String {
     val n = r.name.lowercase().replace(Regex("""[^a-z0-9]"""), "").take(40)
-    return "$n|${r.year ?: 0}"
+    return "$n|${r.type}"
 }
-
 private fun AniListApi.Entry.toAniListSearchResponse(): SearchResponse? {
     val displayName = title.english ?: title.romaji ?: title.native ?: return null
     val tvType = if (format == "MOVIE") TvType.Movie else TvType.Anime
