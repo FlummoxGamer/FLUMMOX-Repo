@@ -209,6 +209,56 @@ object AniListApi {
         return chain
     }
 
+    // ── Part-N helpers ──
+data class PartInfo(val partNum: Int, val seasonNum: Int?, val baseTitle: String)
+
+private val RX_PART_N = Regex("""\bpart\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+private val RX_SEASON_N = Regex("""\bseason\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+
+fun parsePartInfo(title: String): PartInfo? {
+    val partMatch = RX_PART_N.find(title) ?: return null
+    val partNum = partMatch.groupValues[1].toIntOrNull() ?: return null
+    if (partNum < 2) return null
+    val seasonMatch = RX_SEASON_N.find(title)
+    val seasonNum = seasonMatch?.groupValues?.get(1)?.toIntOrNull()
+    val baseTitle = title.replace(RX_PART_N, "")
+        .replace(Regex("""\s+"""), " ").trim().trimEnd(':','-','–','—',' ')
+    return PartInfo(partNum, seasonNum, baseTitle)
+}
+
+private fun normalizedBase(s: String): String =
+    s.lowercase()
+     .replace(RX_PART_N, "")
+     .replace(Regex("""[^a-z0-9\s]"""), " ")
+     .replace(Regex("""\s+"""), " ")
+     .trim()
+
+// Sum episodes of same-season prequels. For AoT S3P2 → S3P1's 12 eps.
+// For Final Season Part 2 → Final Season Part 1's 16 eps.
+suspend fun getPrequelOffset(title: String, year: Int?): Int? {
+    var hits = try { searchAnime(title, year) } catch (_: Exception) { emptyList() }
+    if (hits.isEmpty() && year != null) {
+        hits = try { searchAnime(title, null) } catch (_: Exception) { emptyList() }
+    }
+    if (hits.isEmpty()) return null
+    val target = hits.first()
+    val targetBase = normalizedBase(target.title.romaji ?: target.title.english ?: return null)
+    if (targetBase.isBlank()) return null
+
+    val chain = resolveChain(target.id)
+    if (chain.size < 2) return null
+    val idx = chain.indexOfFirst { it.id == target.id }
+    if (idx <= 0) return null
+
+    var sum = 0
+    for (i in 0 until idx) {
+        val pre = chain[i]
+        val preBase = normalizedBase(pre.title.romaji ?: pre.title.english ?: "")
+        if (preBase == targetBase) sum += pre.episodes ?: 0
+    }
+    return if (sum > 0) sum else null
+}
+
     // ── JSON parsing ──
     private fun parseSearchResponse(root: JSONObject): List<Entry> {
         val media = root.optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media") ?: return emptyList()
