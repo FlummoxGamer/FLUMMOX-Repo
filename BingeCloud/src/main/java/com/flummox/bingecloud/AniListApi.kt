@@ -27,15 +27,17 @@ object AniListApi {
     }
 
     data class Entry(
-        val id: Int,
-        val idMal: Int?,
-        val title: Title,
-        val format: String?,       // TV, TV_SHORT, MOVIE, OVA, ONA, SPECIAL
-        val episodes: Int?,
-        val seasonYear: Int?,
-        val startDate: String?,    // YYYY-MM-DD
-        val relations: List<Relation> = emptyList()
-    )
+    val id: Int,
+    val idMal: Int?,
+    val title: Title,
+    val format: String?,       // TV, TV_SHORT, MOVIE, OVA, ONA, SPECIAL
+    val episodes: Int?,
+    val seasonYear: Int?,
+    val startDate: String?,    // YYYY-MM-DD
+    val description: String? = null,
+    val coverImage: String? = null,
+    val relations: List<Relation> = emptyList()
+)
 
     data class Relation(val type: String, val entry: Entry)
 
@@ -57,6 +59,8 @@ object AniListApi {
                   episodes
                   seasonYear
                   startDate { year month day }
+                  description
+                  coverImage { extraLarge large }
                   relations {
                     edges {
                       relationType
@@ -68,6 +72,8 @@ object AniListApi {
                         episodes
                         seasonYear
                         startDate { year month day }
+                        description
+                        coverImage { extraLarge large }
                       }
                     }
                   }
@@ -292,16 +298,25 @@ suspend fun getPrequelOffset(title: String, year: Int?): Int? {
             }
         }
 
-        return Entry(
-            id = id,
-            idMal = o.optInt("idMal", 0).takeIf { it > 0 },
-            title = title,
-            format = o.optString("format")?.takeIf { it.isNotBlank() && it != "null" },
-            episodes = o.optInt("episodes", 0).takeIf { it > 0 },
-            seasonYear = o.optInt("seasonYear", 0).takeIf { it > 0 },
-            startDate = startDate,
-            relations = relations
-        )
+        val coverImage = o.optJSONObject("coverImage")?.let { c ->
+            c.optString("extraLarge").takeIf { it.isNotBlank() && it != "null" }
+                ?: c.optString("large").takeIf { it.isNotBlank() && it != "null" }
+        }
+        val description = o.optString("description")
+            .takeIf { it.isNotBlank() && it != "null" }
+
+         return Entry(
+             id = id,
+             idMal = o.optInt("idMal", 0).takeIf { it > 0 },
+             title = title,
+             format = o.optString("format")?.takeIf { it.isNotBlank() && it != "null" },
+             episodes = o.optInt("episodes", 0).takeIf { it > 0 },
+             seasonYear = o.optInt("seasonYear", 0).takeIf { it > 0 },
+             startDate = startDate,
+             description = description,
+             coverImage = coverImage,
+             relations = relations
+          )
     }
 
     private fun entryToJson(e: Entry): JSONObject = JSONObject().apply {
@@ -316,6 +331,8 @@ suspend fun getPrequelOffset(title: String, year: Int?): Int? {
         put("episodes", e.episodes ?: 0)
         put("seasonYear", e.seasonYear ?: 0)
         put("startDate", e.startDate ?: "")
+        put("description", e.description ?: "")
+        put("coverImage", e.coverImage ?: "")
         // relations omitted in cache — not needed post-chain
     }
 }
