@@ -142,6 +142,8 @@ path: BingeCloud/build.gradle.kts
   - getHindiMergedPool, validateHindiSeries — Hindi pool
   - routeLanguageTVDB, routeLanguage — language rows
   - search, searchViaTmdb — search
+  - mergeSearchResults, searchDedupeKey, searchGroupKey — merge + group seasons/extras
+  - isExtraTitle, seasonNumberOf — extra/season tier helpers
   - searchViaAiometa [DEAD — unused]
   - AioMeta.toSearchResponse, TmdbSearchItem.toSearchResponse — mappers
   - load — detail fetch (Aiometa → TMDB fallback)
