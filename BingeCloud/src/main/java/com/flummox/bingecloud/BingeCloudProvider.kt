@@ -385,14 +385,72 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
     }
 }
 
+private val RX_SEASON_N = Regex("""\b(?:season|part|cour)\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+private val RX_EXTRA_MARKER = Regex(
+    """\b(?:ova|ona|special|specials|recap|short|shorts|spinoff|spin-off|picture\s+drama|movie)\b""",
+    RegexOption.IGNORE_CASE
+)
+private val GROUP_STOPWORDS = setOf(
+    "the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for", "with"
+)
+
+private fun isExtraTitle(name: String): Boolean = RX_EXTRA_MARKER.containsMatchIn(name)
+
+private fun seasonNumberOf(name: String): Int =
+    RX_SEASON_N.find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+
+private fun searchGroupKey(name: String): String {
+    val norm = name.lowercase().replace(Regex("""[^a-z0-9\s]"""), " ").trim()
+    return norm.split(Regex("""\s+"""))
+        .filter { it.isNotBlank() && it !in GROUP_STOPWORDS }
+        .take(2)
+        .joinToString(" ")
+}
+
 private fun mergeSearchResults(
     tmdb: List<SearchResponse>,
     ani: List<SearchResponse>
 ): List<SearchResponse> {
-    val seen = mutableSetOf<String>()
+    // 1. dedupe within each source
+    val tmdbSeen = mutableSetOf<String>()
+    val tmdbClean = tmdb.filter { tmdbSeen.add(searchDedupeKey(it)) }
+    val aniSeen = mutableSetOf<String>()
+    val aniClean = ani.filter { aniSeen.add(searchDedupeKey(it)) }
+
+    // 2. cross-dedupe extras only (TMDB wins on collision).
+    //    Seasons from both sources stay — that's the point.
+    val tmdbExtraKeys = tmdbClean
+        .filter { isExtraTitle(it.name) }
+        .map { searchDedupeKey(it) }
+        .toSet()
+    val aniKept = aniClean.filter { r ->
+        if (!isExtraTitle(r.name)) true
+        else searchDedupeKey(r) !in tmdbExtraKeys
+    }
+
+    // 3. tag each with source (0=TMDB, 1=AniList)
+    data class Tagged(val r: SearchResponse, val src: Int, val idx: Int)
+    val tagged = mutableListOf<Tagged>()
+    tmdbClean.forEachIndexed { i, r -> tagged.add(Tagged(r, 0, i)) }
+    aniKept.forEachIndexed { i, r -> tagged.add(Tagged(r, 1, i)) }
+
+    // 4. group by base title, preserve first-seen group order
+    val groupOrder = LinkedHashSet<String>()
+    tagged.forEach { groupOrder.add(searchGroupKey(it.r.name)) }
+
     val out = mutableListOf<SearchResponse>()
-    for (r in tmdb) if (seen.add(searchDedupeKey(r))) out.add(r)
-    for (r in ani) if (seen.add(searchDedupeKey(r))) out.add(r)
+    for (g in groupOrder) {
+        val entries = tagged.filter { searchGroupKey(it.r.name) == g }
+        val sorted = entries.sortedWith(
+            compareBy(
+                { isExtraTitle(it.r.name) },          // false (seasons) before true (extras)
+                { it.src },                            // TMDB (0) before AniList (1)
+                { seasonNumberOf(it.r.name) },         // S1 < S2 < S3...
+                { it.idx }                             // stable
+            )
+        )
+        sorted.forEach { out.add(it.r) }
+    }
     return out
 }
 
