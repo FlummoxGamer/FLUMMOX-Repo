@@ -618,20 +618,26 @@ private suspend fun anikotoFindSeries(title: String): AnikotoSeries? {
     return best
 }
 
-private suspend fun anikotoGetServerIds(series: AnikotoSeries, episode: Int): String? {
-    if (series.animeId.isBlank()) return null
+
+private data class AnikotoEpInfo(val serverIds: String?, val totalEps: Int)
+
+private suspend fun anikotoGetEpInfo(series: AnikotoSeries, episode: Int): AnikotoEpInfo {
+    if (series.animeId.isBlank()) return AnikotoEpInfo(null, 0)
     val listJson = try {
         anikotoResultString(app.get("$ANIKOTO_DOMAIN/ajax/episode/list/${series.animeId}", headers = anikotoAjaxHeaders(series.url)).text)
     } catch (e: Exception) {
-        BCLog.e("AniKoto ep list failed: ${e.message}"); return null
+        BCLog.e("AniKoto ep list failed: ${e.message}")
+        return AnikotoEpInfo(null, 0)
     }
-    if (listJson.isBlank()) return null
-    val listDoc = Jsoup.parse(listJson)
-    val allEp = listDoc.select("a[data-ids]")
-    if (allEp.isEmpty()) return null
+    if (listJson.isBlank()) return AnikotoEpInfo(null, 0)
+    val allEp = Jsoup.parse(listJson).select("a[data-ids]")
+    if (allEp.isEmpty()) return AnikotoEpInfo(null, 0)
+    // Strict match. If the requested episode isn't in this series,
+    // return null IDs + the count so the caller can chain-walk instead
+    // of silently serving episode 1.
     val epEl = allEp.firstOrNull { it.attr("data-num").toIntOrNull() == episode }
-        ?: allEp.firstOrNull() ?: return null
-    return epEl.attr("data-ids").takeIf { it.isNotBlank() }
+        ?: return AnikotoEpInfo(null, allEp.size)
+    return AnikotoEpInfo(epEl.attr("data-ids").takeIf { it.isNotBlank() }, allEp.size)
 }
 
 private suspend fun anikotoResolvePlayerUrl(linkId: String, referer: String): String? {
@@ -670,30 +676,12 @@ private suspend fun anikotoResolvePlayerUrl(linkId: String, referer: String): St
     return null
 }
 
-private suspend fun anikotoExtractRaw(q: StreamQuery): List<ScrapedMirror> {
-    val series = anikotoFindSeries(q.title) ?: return emptyList()
-    var effectiveEpisode = q.episode
-
-    val partInfo = AniListApi.parsePartInfo(q.title)
-    if (partInfo != null && q.type == "series") {
-        val hasDirectPart = Regex("""\bpart\s+${partInfo.partNum}\b""", RegexOption.IGNORE_CASE)
-            .containsMatchIn(series.title)
-        if (hasDirectPart) {
-            BCLog.d("AniKoto: direct Part ${partInfo.partNum} → '${series.title}'")
-        } else {
-            val offset = AniListApi.getPrequelOffset(q.title, q.year.toIntOrNull())
-            if (offset == null || offset <= 0) {
-                BCLog.d("AniKoto: combined entry, no offset available — skipping Part-N")
-                return emptyList()
-            }
-            effectiveEpisode = offset + q.episode
-            BCLog.d("AniKoto: combined '${series.title}', offset=$offset → E$effectiveEpisode")
-        }
-    }
-
-    val serverIds = anikotoGetServerIds(series, effectiveEpisode) ?: run {
-        BCLog.d("AniKoto: no serverIds"); return emptyList()
-    }
+// Resolve mirrors from already-fetched serverIds.
+private suspend fun anikotoResolveFromServerIds(
+    series: AnikotoSeries,
+    serverIds: String,
+    episodeForLog: Int
+): List<ScrapedMirror> {
     val listJson = try {
         anikotoResultString(app.get("$ANIKOTO_DOMAIN/ajax/server/list?servers=${android.net.Uri.encode(serverIds)}", headers = anikotoAjaxHeaders(series.url)).text)
     } catch (e: Exception) {
@@ -715,7 +703,7 @@ private suspend fun anikotoExtractRaw(q: StreamQuery): List<ScrapedMirror> {
             entries.add(linkId to "AniKoto ${anikotoServerTypeLabel(sType)} $name")
         }
     }
-    BCLog.d("AniKoto: ${entries.size} servers")
+    BCLog.d("AniKoto: ${entries.size} servers (E$episodeForLog)")
     if (entries.isEmpty()) return emptyList()
 
     val mirrors = coroutineScope {
@@ -733,6 +721,103 @@ private suspend fun anikotoExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     }
     BCLog.d("AniKoto: ${mirrors.size} mirrors")
     return mirrors
+}
+
+// Query episode out of range for the matched series — walk the AniList
+// chain forward, find the next part on AniKoto, subtract prior episode
+// counts. Mirrors AniZoneApi.tryNextPartInChain.
+private suspend fun anikotoChainWalk(
+    q: StreamQuery,
+    currentSeries: AnikotoSeries,
+    wantedEp: Int,
+    currentEps: Int
+): List<ScrapedMirror> {
+    BCLog.d("AniKoto: chain walk for E$wantedEp > site=$currentEps")
+    val alHits = try {
+        AniListApi.searchAnime(q.title, q.year.toIntOrNull())
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (_: Exception) { emptyList() }
+    val alEntry = alHits.firstOrNull { h -> h.title.all().any { t -> titleMatches(q.title, t) } }
+        ?: return emptyList()
+    val chain = try {
+        AniListApi.resolveChain(alEntry.id)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (_: Exception) { emptyList() }
+    if (chain.size < 2) return emptyList()
+    val idx = chain.indexOfFirst { it.id == alEntry.id }
+    if (idx < 0) return emptyList()
+
+    var remaining = wantedEp
+    var cursor = idx
+    while (remaining > 0 && cursor < chain.size) {
+        val entryEps = chain[cursor].episodes ?: 0
+        if (entryEps <= 0) return emptyList()
+        if (remaining <= entryEps) {
+            if (cursor == idx) return emptyList()
+            val target = chain[cursor]
+            val targetTitles = target.title.all()
+            BCLog.d("AniKoto: chain step ${cursor - idx} → '${target.title.romaji ?: target.title.english}' E$remaining")
+
+            var nextSeries: AnikotoSeries? = null
+            for (t in targetTitles) {
+                val hit = try {
+                    anikotoFindSeries(t)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) { null } ?: continue
+                if (hit.slug != currentSeries.slug) { nextSeries = hit; break }
+            }
+            val ns = nextSeries ?: run {
+                BCLog.d("AniKoto: chain next part not found on site")
+                return emptyList()
+            }
+            val nextInfo = anikotoGetEpInfo(ns, remaining)
+            val nextIds = nextInfo.serverIds ?: run {
+                BCLog.d("AniKoto: chain next part E$remaining not on site")
+                return emptyList()
+            }
+            BCLog.d("AniKoto: chain hit '${ns.title}' E$remaining")
+            return anikotoResolveFromServerIds(ns, nextIds, remaining)
+        }
+        remaining -= entryEps
+        cursor++
+    }
+    return emptyList()
+}
+
+private suspend fun anikotoExtractRaw(q: StreamQuery): List<ScrapedMirror> {
+    val series = anikotoFindSeries(q.title) ?: return emptyList()
+    var effectiveEpisode = q.episode
+
+    val partInfo = AniListApi.parsePartInfo(q.title)
+    if (partInfo != null && q.type == "series") {
+        val hasDirectPart = Regex("""\bpart\s+${partInfo.partNum}\b""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(series.title)
+        if (hasDirectPart) {
+            BCLog.d("AniKoto: direct Part ${partInfo.partNum} → '${series.title}'")
+        } else {
+            val offset = AniListApi.getPrequelOffset(q.title, q.year.toIntOrNull())
+            if (offset == null || offset <= 0) {
+                BCLog.d("AniKoto: combined entry, no offset available — skipping Part-N")
+                return emptyList()
+            }
+            effectiveEpisode = offset + q.episode
+            BCLog.d("AniKoto: combined '${series.title}', offset=$offset → E$effectiveEpisode")
+        }
+    }
+
+    val epInfo = anikotoGetEpInfo(series, effectiveEpisode)
+    val serverIds = epInfo.serverIds
+    if (serverIds == null) {
+        if (q.type == "series" && epInfo.totalEps > 0 && effectiveEpisode > epInfo.totalEps) {
+            return anikotoChainWalk(q, series, effectiveEpisode, epInfo.totalEps)
+        }
+        BCLog.d("AniKoto: no serverIds for E$effectiveEpisode")
+        return emptyList()
+    }
+    return anikotoResolveFromServerIds(series, serverIds, effectiveEpisode)
 }
 
 // ═══════════════════════════════════════════
