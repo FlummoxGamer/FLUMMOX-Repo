@@ -36,6 +36,9 @@ object AniListApi {
     val startDate: String?,    // YYYY-MM-DD
     val description: String? = null,
     val coverImage: String? = null,
+    val averageScore: Int? = null,
+    val status: String? = null,
+    val genres: List<String>? = null,
     val relations: List<Relation> = emptyList()
 )
 
@@ -58,6 +61,9 @@ object AniListApi {
           startDate { year month day }
           description
           coverImage { extraLarge large }
+          averageScore
+          status
+          genres
           relations {
             edges {
               relationType
@@ -71,6 +77,9 @@ object AniListApi {
                 startDate { year month day }
                 description
                 coverImage { extraLarge large }
+                averageScore
+                status
+                genres
               }
             }
           }
@@ -148,9 +157,10 @@ val q = if (year != null) """
                 startDate { year month day }
                 description
                 coverImage { extraLarge large }
+                averageScore
+                status
+                genres
                 relations {
-                  edges {
-                    relationType
                     node {
                       id
                       idMal
@@ -161,6 +171,9 @@ val q = if (year != null) """
                       startDate { year month day }
                       description
                       coverImage { extraLarge large }
+                      averageScore
+                      status
+                      genres
                     }
                   }
                 }
@@ -324,20 +337,30 @@ suspend fun getPrequelOffset(title: String, year: Int?): Int? {
                 ?: c.optString("large").takeIf { it.isNotBlank() && it != "null" }
         }
         val description = o.optString("description")
-            .takeIf { it.isNotBlank() && it != "null" }
+    .takeIf { it.isNotBlank() && it != "null" }
+val averageScore = o.optInt("averageScore", 0).takeIf { it > 0 }
+val status = o.optString("status").takeIf { it.isNotBlank() && it != "null" }
+val genres = o.optJSONArray("genres")?.let { arr ->
+    (0 until arr.length()).mapNotNull { i ->
+        arr.optString(i).takeIf { it.isNotBlank() }
+    }
+}?.takeIf { it.isNotEmpty() }
 
-         return Entry(
-             id = id,
-             idMal = o.optInt("idMal", 0).takeIf { it > 0 },
-             title = title,
-             format = o.optString("format")?.takeIf { it.isNotBlank() && it != "null" },
-             episodes = o.optInt("episodes", 0).takeIf { it > 0 },
-             seasonYear = o.optInt("seasonYear", 0).takeIf { it > 0 },
-             startDate = startDate,
-             description = description,
-             coverImage = coverImage,
-             relations = relations
-          )
+ return Entry(
+     id = id,
+     idMal = o.optInt("idMal", 0).takeIf { it > 0 },
+     title = title,
+     format = o.optString("format")?.takeIf { it.isNotBlank() && it != "null" },
+     episodes = o.optInt("episodes", 0).takeIf { it > 0 },
+     seasonYear = o.optInt("seasonYear", 0).takeIf { it > 0 },
+     startDate = startDate,
+     description = description,
+     coverImage = coverImage,
+     averageScore = averageScore,
+     status = status,
+     genres = genres,
+     relations = relations
+  )
     }
 
     private fun entryToJson(e: Entry): JSONObject = JSONObject().apply {
@@ -354,6 +377,11 @@ suspend fun getPrequelOffset(title: String, year: Int?): Int? {
         put("startDate", e.startDate ?: "")
         put("description", e.description ?: "")
         put("coverImage", e.coverImage ?: "")
+        put("averageScore", e.averageScore ?: 0)
+        put("status", e.status ?: "")
+        put("genres", JSONArray().apply {
+            e.genres?.forEach { g -> this.put(g) }
+        })
         // relations omitted in cache — not needed post-chain
-    }
-}
+            }
+        }
