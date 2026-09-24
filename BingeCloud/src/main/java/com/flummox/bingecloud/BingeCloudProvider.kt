@@ -809,12 +809,10 @@ if (isMovie) {
     }
 }
 
-    if (epCount <= 0) {
-        BCLog.d("AniList: series '$name' has no episode count — skipping")
     if (totalEps <= 0) {
     BCLog.d("AniList: series '$name' has no episode count — skipping")
     return null
-}
+    }
 
 val episodes = (1..totalEps).map { epNum ->
     val next = if (epNum < totalEps) epNum + 1 else 0
