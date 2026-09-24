@@ -400,7 +400,12 @@ private fun seasonNumberOf(name: String): Int =
     RX_SEASON_N.find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
 private fun searchGroupKey(name: String): String {
-    val norm = name.lowercase().replace(Regex("""[^a-z0-9\s]"""), " ").trim()
+    // NFD decompose then strip combining marks so "Shippūden" → "shippuden",
+    // "Shingeki no Kyojin" variants collapse to the same key.
+    val normalized = java.text.Normalizer
+        .normalize(name, java.text.Normalizer.Form.NFD)
+        .replace(Regex("""\p{Mn}+"""), "")
+    val norm = normalized.lowercase().replace(Regex("""[^a-z0-9\s]"""), " ").trim()
     return norm.split(Regex("""\s+"""))
         .filter { it.isNotBlank() && it !in GROUP_STOPWORDS }
         .take(2)
@@ -427,12 +432,29 @@ private suspend fun mergeSearchResults(
         else searchDedupeKey(r) !in tmdbExtraKeys
     }
 
-    // 3. per-group: drop AniList TV season entries when TMDB has same season.
-    //    TMDB's bundled card lists all its season_numbers; AniList's
-    //    per-season entries for those numbers are redundant.
-    val tmdbByGroup = tmdbClean
-        .filter { !isExtraTitle(it.name) }
-        .groupBy { searchGroupKey(it.name) }
+// 2b. within AniList: drop "Part N" (N>=2) entries when the base
+//     title (with Part stripped) is also present as a separate
+//     AniList entry. AniList returns S3 and S3 Part 2 as siblings;
+//     the load path merges them, so showing both is a dup.
+val aniLowerNames = aniAfterExtra.map { it.name.lowercase().trim() }.toSet()
+val aniAfterPart = aniAfterExtra.filter { r ->
+    val partInfo = AniListApi.parsePartInfo(r.name) ?: return@filter true
+    if (partInfo.partNum < 2) return@filter true
+    val base = partInfo.baseTitle.lowercase().trim()
+    if (base.isNotBlank() && base in aniLowerNames) {
+        BCLog.d("AniList drop (Part base present): ${r.name}")
+        false
+    } else true
+}
+
+// 3. per-group: drop AniList TV season entries when TMDB has same season.
+//    TMDB's bundled card lists all its season_numbers; AniList's
+//    per-season entries for those numbers are redundant.
+val tmdbByGroup = tmdbClean
+    .filter { !isExtraTitle(it.name) }
+    .groupBy { searchGroupKey(it.name) }
+val aniKept = mutableListOf<SearchResponse>()
+for (r in aniAfterPart) {
     val aniKept = mutableListOf<SearchResponse>()
     for (r in aniAfterExtra) {
         if (isExtraTitle(r.name)) { aniKept.add(r); continue }
