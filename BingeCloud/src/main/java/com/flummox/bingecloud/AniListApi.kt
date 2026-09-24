@@ -48,39 +48,51 @@ object AniListApi {
         BCCache.get(ck, CACHE_TTL)?.let { cached ->
             return try { parseSearchResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
         }
-        val q = """
-            query (${'$'}search: String, ${'$'}year: Int) {
-              Page(perPage: 10) {
-                media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH${if (year != null) ", seasonYear: ${'$'}year" else ""}) {
-                  id
-                  idMal
-                  title { romaji english native }
-                  format
-                  episodes
-                  seasonYear
-                  startDate { year month day }
-                  description
-                  coverImage { extraLarge large }
-                  relations {
-                    edges {
-                      relationType
-                      node {
-                        id
-                        idMal
-                        title { romaji english native }
-                        format
-                        episodes
-                        seasonYear
-                        startDate { year month day }
-                        description
-                        coverImage { extraLarge large }
-                      }
-                    }
-                  }
-                }
+        val mediaFields = """
+          id
+          idMal
+          title { romaji english native }
+          format
+          episodes
+          seasonYear
+          startDate { year month day }
+          description
+          coverImage { extraLarge large }
+          relations {
+            edges {
+              relationType
+              node {
+                id
+                idMal
+                title { romaji english native }
+                format
+                episodes
+                seasonYear
+                startDate { year month day }
+                description
+                coverImage { extraLarge large }
               }
             }
-        """.trimIndent()
+          }
+""".trimIndent()
+
+val q = if (year != null) """
+    query (${'$'}search: String, ${'$'}year: Int) {
+      Page(perPage: 10) {
+        media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH, seasonYear: ${'$'}year) {
+          $mediaFields
+        }
+      }
+    }
+""".trimIndent() else """
+    query (${'$'}search: String) {
+      Page(perPage: 10) {
+        media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH) {
+          $mediaFields
+        }
+      }
+    }
+""".trimIndent()
 
         val vars = JSONObject().apply {
             put("search", query)
@@ -103,10 +115,15 @@ object AniListApi {
                 for (i in 0 until media.length()) {
                     parseEntry(media.optJSONObject(i))?.let { entries.add(it) }
                 }
-            }
-            BCCache.put(ck, root.toString())
-            BCLog.d("AniList: '$query' → ${entries.size} hits")
-            entries
+                BCCache.put(ck, root.toString())
+           } else {
+               val errs = root.optJSONArray("errors")
+               if (errs != null && errs.length() > 0) {
+               BCLog.e("AniList errors: ${errs.toString().take(500)}")
+               }
+           }
+           BCLog.d("AniList: '$query' → ${entries.size} hits")
+           entries
         } catch (e: Exception) {
             BCLog.e("AniList search failed: ${e.message}")
             emptyList()
