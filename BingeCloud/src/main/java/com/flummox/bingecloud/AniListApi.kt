@@ -275,6 +275,12 @@ private fun normalizedBase(s: String): String =
      .replace(Regex("""\s+"""), " ")
      .trim()
 
+fun sameBaseTitle(a: String, b: String): Boolean {
+    val na = normalizedBase(a)
+    val nb = normalizedBase(b)
+    return na.isNotBlank() && na == nb
+}
+
 // Sum episodes of same-season prequels. For AoT S3P2 → S3P1's 12 eps.
 // For Final Season Part 2 → Final Season Part 1's 16 eps.
 suspend fun getPrequelOffset(title: String, year: Int?): Int? {
