@@ -407,7 +407,7 @@ private fun searchGroupKey(name: String): String {
         .joinToString(" ")
 }
 
-private fun mergeSearchResults(
+private suspend fun mergeSearchResults(
     tmdb: List<SearchResponse>,
     ani: List<SearchResponse>
 ): List<SearchResponse> {
@@ -418,23 +418,44 @@ private fun mergeSearchResults(
     val aniClean = ani.filter { aniSeen.add(searchDedupeKey(it)) }
 
     // 2. cross-dedupe extras only (TMDB wins on collision).
-    //    Seasons from both sources stay — that's the point.
     val tmdbExtraKeys = tmdbClean
         .filter { isExtraTitle(it.name) }
         .map { searchDedupeKey(it) }
         .toSet()
-    val aniKept = aniClean.filter { r ->
+    val aniAfterExtra = aniClean.filter { r ->
         if (!isExtraTitle(r.name)) true
         else searchDedupeKey(r) !in tmdbExtraKeys
     }
 
-    // 3. tag each with source (0=TMDB, 1=AniList)
+    // 3. per-group: drop AniList TV season entries when TMDB has same season.
+    //    TMDB's bundled card lists all its season_numbers; AniList's
+    //    per-season entries for those numbers are redundant.
+    val tmdbByGroup = tmdbClean
+        .filter { !isExtraTitle(it.name) }
+        .groupBy { searchGroupKey(it.name) }
+    val aniKept = mutableListOf<SearchResponse>()
+    for (r in aniAfterExtra) {
+        if (isExtraTitle(r.name)) { aniKept.add(r); continue }
+        val group = searchGroupKey(r.name)
+        val sibling = tmdbByGroup[group]?.firstOrNull { !isExtraTitle(it.name) }
+        if (sibling == null) { aniKept.add(r); continue }
+        val tmdbId = Regex("""tmdb:(\d+)""").find(sibling.url)?.groupValues?.get(1)?.toIntOrNull()
+        if (tmdbId == null) { aniKept.add(r); continue }
+        val tmdbSeasons = tmdbSeasonNumbers(tmdbId)
+        val aniSeason = seasonNumberOf(r.name)
+        if (aniSeason in tmdbSeasons) {
+            BCLog.d("AniList drop (S$aniSeason in TMDB $tmdbId): ${r.name}")
+        } else {
+            aniKept.add(r)
+        }
+    }
+
+    // 4. tag + group + sort
     data class Tagged(val r: SearchResponse, val src: Int, val idx: Int)
     val tagged = mutableListOf<Tagged>()
     tmdbClean.forEachIndexed { i, r -> tagged.add(Tagged(r, 0, i)) }
     aniKept.forEachIndexed { i, r -> tagged.add(Tagged(r, 1, i)) }
 
-    // 4. group by base title, preserve first-seen group order
     val groupOrder = LinkedHashSet<String>()
     tagged.forEach { groupOrder.add(searchGroupKey(it.r.name)) }
 
@@ -457,6 +478,40 @@ private fun mergeSearchResults(
 private fun searchDedupeKey(r: SearchResponse): String {
     val n = r.name.lowercase().replace(Regex("""[^a-z0-9]"""), "").take(40)
     return "$n|${r.type}"
+}
+
+// Fetch TMDB season numbers for a TV id. Cached 24h.
+// Used to drop AniList TV entries whose season already exists on TMDB.
+private suspend fun tmdbSeasonNumbers(tmdbId: Int): Set<Int> {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return emptySet()
+    val ck = "tmdb:seasons:$tmdbId"
+    BCCache.get(ck, 24 * 60 * 60 * 1000L)?.let { cached ->
+        return try {
+            val arr = org.json.JSONArray(cached)
+            (0 until arr.length()).mapNotNull { i -> arr.optInt(i, 0).takeIf { it > 0 } }.toSet()
+        } catch (_: Exception) { emptySet() }
+    }
+    return try {
+        val url = "https://api.themoviedb.org/3/tv/$tmdbId?api_key=$key&language=en-US"
+        val json = app.get(url).text
+        val arr = org.json.JSONObject(json).optJSONArray("seasons") ?: return emptySet()
+        val nums = mutableSetOf<Int>()
+        for (i in 0 until arr.length()) {
+            val n = arr.optJSONObject(i)?.optInt("season_number", 0) ?: 0
+            if (n > 0) nums.add(n)
+        }
+        val cacheArr = org.json.JSONArray()
+        nums.sorted().forEach { cacheArr.put(it) }
+        BCCache.put(ck, cacheArr.toString())
+        BCLog.d("TMDB seasons($tmdbId): $nums")
+        nums
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("tmdbSeasonNumbers($tmdbId): ${e.message}")
+        emptySet()
+    }
 }
 private fun AniListApi.Entry.toAniListSearchResponse(): SearchResponse? {
     val displayName = title.english ?: title.romaji ?: title.native ?: return null
@@ -694,13 +749,36 @@ private suspend fun loadFromAniList(id: Int): LoadResponse? {
     val name = entry.title.english ?: entry.title.romaji ?: entry.title.native
         ?: run { BCLog.e("AniList entry $id has no title"); return null }
     val yearInt = entry.seasonYear
-    val epCount = entry.episodes ?: 0
+    val baseEpCount = entry.episodes ?: 0
     val poster = entry.coverImage
     val plot = entry.description ?: ""
     val isMovie = entry.format == "MOVIE"
 
-    BCLog.d("AniList load: '$name' (${entry.format}) eps=$epCount year=$yearInt")
+// Combine S1 with its cour-split sequel ("... Part 2") so one card
+// carries the combined episode count. Only when the current entry
+// is unsuffixed (no "Part N") and the sequel is a "Part 2" of the
+// same base title.
+var combinedExtra = 0
+if (!isMovie && baseEpCount > 0 && AniListApi.parsePartInfo(name) == null) {
+    for (rel in entry.relations) {
+        if (rel.type != "SEQUEL") continue
+        val seqName = rel.entry.title.english
+            ?: rel.entry.title.romaji
+            ?: rel.entry.title.native
+            ?: continue
+        val p = AniListApi.parsePartInfo(seqName) ?: continue
+        if (p.partNum != 2) continue
+        if (!AniListApi.sameBaseTitle(seqName, name)) continue
+        val seqEps = rel.entry.episodes ?: 0
+        if (seqEps <= 0) continue
+        combinedExtra = seqEps
+        BCLog.d("AniList: combine '$name' + '$seqName' → ${baseEpCount + seqEps} eps")
+        break
+    }
+}
+val totalEps = baseEpCount + combinedExtra
 
+BCLog.d("AniList load: '$name' (${entry.format}) eps=$totalEps year=$yearInt")
     val score10 = entry.averageScore?.let { it / 10.0 }
 val statusTag = when (entry.status) {
     "RELEASING" -> "Ongoing"
@@ -733,18 +811,20 @@ if (isMovie) {
 
     if (epCount <= 0) {
         BCLog.d("AniList: series '$name' has no episode count — skipping")
-        return null
-    }
+    if (totalEps <= 0) {
+    BCLog.d("AniList: series '$name' has no episode count — skipping")
+    return null
+}
 
-    val episodes = (1..epCount).map { epNum ->
-        val next = if (epNum < epCount) epNum + 1 else 0
-        val q = StreamQuery(
-            name, yearInt?.toString() ?: "", "series", "",
-            1, epNum,
-            1, next,
-            totalEpisodes = epCount,
-            originalLanguage = "ja"
-        )
+val episodes = (1..totalEps).map { epNum ->
+    val next = if (epNum < totalEps) epNum + 1 else 0
+    val q = StreamQuery(
+        name, yearInt?.toString() ?: "", "series", "",
+        1, epNum,
+        1, next,
+        totalEpisodes = totalEps,
+        originalLanguage = "ja"
+    )
         newEpisode(encodeQuery(q)) {
             this.name = "Episode $epNum"
             this.season = 1
