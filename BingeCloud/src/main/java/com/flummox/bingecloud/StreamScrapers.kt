@@ -419,15 +419,50 @@ private suspend fun movieboxExtractRaw(q: StreamQuery): List<ScrapedMirror> = co
         if (s.type == expectedType) score += 2
         if (score > bestScore) { bestScore = score; best = s }
     }
-    val subject = best ?: return@coroutineScope emptyList()
+    var subject = best ?: return@coroutineScope emptyList()
+var effectiveSeason = q.season
+var effectiveEpisode = q.episode
 
-    val languages = try { mbLanguages(subject.subjectId) } catch (e: Exception) {
-        listOf(subject.subjectId to "Original")
+val partInfo = AniListApi.parsePartInfo(q.title)
+if (partInfo != null && q.type == "series") {
+    val partHits = try { mbSearch(q.title) } catch (e: Exception) { emptyList() }
+    val partMatch = partHits.firstOrNull { s ->
+        titleMatches(q.title, s.title) &&
+            Regex("""\bpart\s+${partInfo.partNum}\b""", RegexOption.IGNORE_CASE).containsMatchIn(s.title)
     }
+    if (partMatch != null) {
+        BCLog.d("MB: direct Part ${partInfo.partNum} → ${partMatch.title}")
+        subject = partMatch
+        effectiveSeason = q.season
+        effectiveEpisode = q.episode
+    } else {
+        val offset = AniListApi.getPrequelOffset(q.title, q.year.toIntOrNull())
+        if (offset == null || offset <= 0) {
+            BCLog.d("MB: no Part-specific hit, no offset — skipping Part-N")
+            return@coroutineScope emptyList()
+        }
+        val season = partInfo.seasonNum ?: q.season
+        if (season < 1) {
+            BCLog.d("MB: season unknown, skipping Part-N")
+            return@coroutineScope emptyList()
+        }
+        effectiveSeason = season
+        effectiveEpisode = offset + q.episode
+        BCLog.d("MB: combined '${subject.title}', season=$season, offset=$offset → E$effectiveEpisode")
+    }
+}
 
-    val allStreams = languages.map { (sid, lang) ->
-        async { try { mbPlay(sid, q.season, q.episode, lang) } catch (e: Exception) { emptyList() } }
-    }.awaitAll().flatten()
+val finalSubject = subject
+val finalSeason = effectiveSeason
+val finalEpisode = effectiveEpisode
+
+val languages = try { mbLanguages(finalSubject.subjectId) } catch (e: Exception) {
+    listOf(finalSubject.subjectId to "Original")
+}
+
+val allStreams = languages.map { (sid, lang) ->
+    async { try { mbPlay(sid, finalSeason, finalEpisode, lang) } catch (e: Exception) { emptyList() } }
+}.awaitAll().flatten()
 
     BCLog.d("MB total: ${allStreams.size} streams / ${languages.size} langs")
 
