@@ -628,18 +628,35 @@ private suspend fun loadFromAniList(id: Int): LoadResponse? {
 
     BCLog.d("AniList load: '$name' (${entry.format}) eps=$epCount year=$yearInt")
 
-    if (isMovie) {
-        val q = StreamQuery(
-            name, yearInt?.toString() ?: "", "movie", "",
-            totalEpisodes = 1,
-            originalLanguage = "ja"
-        )
-        return newMovieLoadResponse(name, "/anilist:$id", TvType.Movie, encodeQuery(q)) {
-            this.posterUrl = poster
-            this.plot = plot
-            this.year = yearInt
-        }
+    val score10 = entry.averageScore?.let { it / 10.0 }
+val statusTag = when (entry.status) {
+    "RELEASING" -> "Ongoing"
+    "FINISHED" -> "Completed"
+    "NOT_YET_RELEASED" -> "Upcoming"
+    "CANCELLED" -> "Cancelled"
+    "HIATUS" -> "On Hiatus"
+    else -> ""
+}
+val plotWithStatus = when {
+    statusTag.isNotBlank() && plot.isNotBlank() -> "<b>$statusTag</b><br><br>$plot"
+    statusTag.isNotBlank() -> "<b>$statusTag</b>"
+    else -> plot
+}
+
+if (isMovie) {
+    val q = StreamQuery(
+        name, yearInt?.toString() ?: "", "movie", "",
+        totalEpisodes = 1,
+        originalLanguage = "ja"
+    )
+    return newMovieLoadResponse(name, "/anilist:$id", TvType.Movie, encodeQuery(q)) {
+        this.posterUrl = poster
+        this.plot = plotWithStatus
+        this.year = yearInt
+        this.tags = entry.genres
+        if (score10 != null) this.score = Score.from10(score10)
     }
+}
 
     if (epCount <= 0) {
         BCLog.d("AniList: series '$name' has no episode count — skipping")
@@ -664,9 +681,11 @@ private suspend fun loadFromAniList(id: Int): LoadResponse? {
     }
 
     return newTvSeriesLoadResponse(name, "/anilist:$id", TvType.Anime, episodes) {
-        this.posterUrl = poster
-        this.plot = plot
-        this.year = yearInt
+    this.posterUrl = poster
+    this.plot = plotWithStatus
+    this.year = yearInt
+    this.tags = entry.genres
+    if (score10 != null) this.score = Score.from10(score10)
     }
 }
 
