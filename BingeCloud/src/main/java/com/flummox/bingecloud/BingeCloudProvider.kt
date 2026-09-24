@@ -25,6 +25,11 @@ private const val SEP = "|"
 private const val ROW_TAG = "::"
 private const val PREFETCH_DEBOUNCE_MS = 800L
 
+// AniList uses "Cour N" for split-season broadcast blocks. No scraper
+// site we hit indexes by cour — they use combined seasons. Filter these
+// out at the search boundary so cour never enters StreamQuery.
+private val RX_COUR = Regex("""\bcour\s+\d+\b""", RegexOption.IGNORE_CASE)
+
 private val PREFETCH_SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 private var activePrefetchJob: Job? = null
 private var lastHomeRenderMs: Long = 0L
@@ -360,8 +365,18 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
     return coroutineScope {
         val tmdbDef = async { searchViaTmdb(query, key) ?: emptyList() }
         val aniDef = async {
-            try { AniListApi.searchAnime(query, null).mapNotNull { it.toAniListSearchResponse() } }
-            catch (e: Exception) { BCLog.e("AniList search failed: ${e.message}"); emptyList() }
+    try {
+        val raw = AniListApi.searchAnime(query, null)
+        val filtered = raw.filterNot { e ->
+            e.title.all().any { t -> RX_COUR.containsMatchIn(t) }
+        }
+        if (raw.size != filtered.size) {
+            BCLog.d("AniList: dropped ${raw.size - filtered.size} cour entr${if (raw.size - filtered.size == 1) "y" else "ies"}")
+        }
+        filtered.mapNotNull { it.toAniListSearchResponse() }
+    } catch (e: Exception) {
+        BCLog.e("AniList search failed: ${e.message}"); emptyList()
+    }
         }
         val tmdb = tmdbDef.await()
         val ani = aniDef.await()
