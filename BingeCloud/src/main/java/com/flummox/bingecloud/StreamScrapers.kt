@@ -423,8 +423,13 @@ private suspend fun movieboxExtractRaw(q: StreamQuery): List<ScrapedMirror> = co
 var effectiveSeason = q.season
 var effectiveEpisode = q.episode
 
+// Same-series season number extracted from the title, when present.
+val seasonFromTitle = Regex("""\bseason\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+    .find(q.title)?.groupValues?.get(1)?.toIntOrNull()
+
 val partInfo = AniListApi.parsePartInfo(q.title)
 if (partInfo != null && q.type == "series") {
+    // ── Part-N path ──
     val partHits = try { mbSearch(q.title) } catch (e: Exception) { emptyList() }
     val expectedType = 2
     val partMatch = partHits.firstOrNull { s ->
@@ -451,6 +456,22 @@ if (partInfo != null && q.type == "series") {
         effectiveSeason = season
         effectiveEpisode = offset + q.episode
         BCLog.d("MB: combined '${subject.title}', season=$season, offset=$offset → E$effectiveEpisode")
+    }
+} else if (q.type == "series" && seasonFromTitle != null
+    && seasonFromTitle != effectiveSeason) {
+    // ── Plain "Season N" path ──
+    // Only override when MB's matched subject does NOT already carry the
+    // same season number in its title. If it does, MB has a per-season
+    // entry and the default (se=q.season) is already correct.
+    val subjectHasSeason = Regex(
+        """\bseason\s+$seasonFromTitle\b""",
+        RegexOption.IGNORE_CASE
+    ).containsMatchIn(subject.title)
+    if (subjectHasSeason) {
+        BCLog.d("MB: subject '${subject.title}' already per-season — no override")
+    } else {
+        BCLog.d("MB: season override from title 'Season $seasonFromTitle' (was ${effectiveSeason})")
+        effectiveSeason = seasonFromTitle
     }
 }
 
