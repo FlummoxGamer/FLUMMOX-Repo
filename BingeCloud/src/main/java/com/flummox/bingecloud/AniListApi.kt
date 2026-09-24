@@ -146,6 +146,8 @@ val q = if (year != null) """
                 episodes
                 seasonYear
                 startDate { year month day }
+                description
+                coverImage { extraLarge large }
                 relations {
                   edges {
                     relationType
@@ -157,6 +159,8 @@ val q = if (year != null) """
                       episodes
                       seasonYear
                       startDate { year month day }
+                      description
+                      coverImage { extraLarge large }
                     }
                   }
                 }
