@@ -466,27 +466,29 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
             BCLog.d("load() preview (no prefetch): ${name.take(40)} [${sinceHome}ms since home]")
         }
         if (Settings.isPrefetchEnabled() && !fromHomeBanner) {
+        val langForQuery = finalMeta.originalLanguage?.takeIf { it.isNotBlank() }
+            ?: if (tvType == TvType.Anime) "ja" else ""
         val prefetchQuery: StreamQuery? = when {
             tvType == TvType.Movie && videos.isEmpty() ->
                 StreamQuery(
                     name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "",
                     totalEpisodes = 1,
-                    originalLanguage = finalMeta.originalLanguage ?: ""
+                    originalLanguage = langForQuery
                 )
             videos.isNotEmpty() -> {
                 val first = videos.firstOrNull()
                 val s = first?.season
                 val e = first?.episode
                 if (s != null && e != null && s > 0)
-                    StreamQuery(
-                        name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e,
-                        totalEpisodes = videos.count { it.season == s },
-                        originalLanguage = finalMeta.originalLanguage ?: ""
-                   )
-               else null
-           }
-           else -> null
-     }
+            StreamQuery(
+                name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e,
+                totalEpisodes = videos.count { it.season == s },
+                originalLanguage = langForQuery
+            )
+        else null
+    }
+    else -> null
+}
             if (prefetchQuery != null) {
                 val key = prefetchQuery.cacheKey()
                 if (BCCache.getMirrors(key) == null) {
@@ -513,9 +515,10 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
         val q = StreamQuery(
             name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "",
             totalEpisodes = 1,
-            originalLanguage = finalMeta.originalLanguage ?: ""
-       )
-       newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
+            originalLanguage = finalMeta.originalLanguage?.takeIf { it.isNotBlank() }
+                ?: if (tvType == TvType.Anime) "ja" else ""
+        )
+        newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
              this.posterUrl = finalMeta.poster
              this.backgroundPosterUrl = finalMeta.background
              this.plot = plot
@@ -534,7 +537,8 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
                     s, e,
                     next?.season ?: 0, next?.episode ?: 0,
                     totalEpisodes = videos.count { it.season == s },
-                    originalLanguage = finalMeta.originalLanguage ?: ""
+                    originalLanguage = finalMeta.originalLanguage?.takeIf { it.isNotBlank() }
+                        ?: if (tvType == TvType.Anime) "ja" else ""
                 )
                 newEpisode(encodeQuery(q)) {
                     this.name = v.title ?: "Episode $e"
