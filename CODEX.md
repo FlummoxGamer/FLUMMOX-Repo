@@ -289,7 +289,10 @@ path: BingeCloud/build.gradle.kts
 - prettyAudio — audio label normalizer
 - ANIKOTO_DOMAIN, ANIKOTO_UA, anikotoBrowserHeaders, anikotoAjaxHeaders
 - anikotoResultString, anikotoResultUrl, anikotoScore
-- AnikotoSeries, anikotoFindSeries, anikotoGetServerIds, anikotoResolvePlayerUrl
+- AnikotoSeries, anikotoFindSeries, anikotoGetEpInfo, anikotoResolvePlayerUrl
+  - AnikotoEpInfo — strict ep lookup + total count
+  - anikotoResolveFromServerIds — serverIds → mirrors
+  - anikotoChainWalk — out-of-range → AniList chain → next part on site
 - anikotoExtractRaw — AniKoto (Part-N offset applied here)
 - resolveWrapper — wrapper URL resolver
 - PER_SOURCE_TIMEOUT_MS
