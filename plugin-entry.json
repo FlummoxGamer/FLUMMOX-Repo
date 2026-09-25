@@ -1,8 +1,8 @@
 {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeCloud/icon.png",
-    "fileHash": "sha256-10d5dcadeefbf18da9dfbfd5e7690bda2da1b22a1bca22ee41bc43e6ed4d8324",
+    "fileHash": "sha256-69fd14f0651a20254d613e688069d45c74fe3529ccf78763e8d74cbedbfb2c42",
     "apiVersion": 1,
-    "fileSize": 32064,
+    "fileSize": 32058,
     "status": 1,
     "language": "en",
     "authors": [
@@ -12,7 +12,7 @@
         "Anime",
         "AnimeMovie"
     ],
-    "version": 216,
+    "version": 1,
     "internalName": "Otakutsu",
     "description": "Anime streaming from Otakutsu",
     "url": "",
