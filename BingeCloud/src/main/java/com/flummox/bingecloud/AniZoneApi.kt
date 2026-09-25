@@ -389,9 +389,16 @@ suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
 
         val ep = eps.firstOrNull { it.number == targetEp }
         if (ep == null) {
+            // Chain walk is only valid for S1 — there q.episode maps cleanly
+            // to a global position across split cours. S2+ numbering is
+            // per-TMDB-season and would walk the wrong chain.
+            if (q.season > 1) {
+                BCLog.d("AniZone: E$targetEp not found on site (have ${eps.size}), season>1 — skipping chain")
+                return emptyList()
+            }
             BCLog.d("AniZone: E$targetEp not found (have ${eps.size}) — checking next part")
             return tryNextPartInChain(q, hit.slug, eps.size, start)
-        }
+         }
 
         val stream = getStream(hit.slug, ep.number) ?: run {
             BCLog.d("AniZone: stream failed at E${ep.number}"); return emptyList()
