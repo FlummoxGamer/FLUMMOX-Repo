@@ -11,7 +11,7 @@ import java.net.URLEncoder
 class OtakutsuProvider : MainAPI() {
     override var mainUrl = "https://otakutsu.cc"
     override var name = "Otakutsu"
-    override val hasMainPage = false
+    override val hasMainPage = true
     override var lang = "en"
     override val hasQuickSearch = true
     override val hasDownloadSupport = true
@@ -20,7 +20,6 @@ class OtakutsuProvider : MainAPI() {
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
-    // Rotates on Otakutsu redeploys.
     private val NEXT_ACTION_ID = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
 
     private val baseHeaders get() = mapOf(
@@ -28,6 +27,38 @@ class OtakutsuProvider : MainAPI() {
         "Referer" to "$mainUrl/",
         "Origin" to mainUrl,
     )
+
+    private val browserHeaders get() = mapOf(
+        "User-Agent" to UA,
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language" to "en-US,en;q=0.9",
+        "Cache-Control" to "no-cache",
+        "Pragma" to "no-cache",
+        "Referer" to "$mainUrl/",
+    )
+
+    override val mainPage = mainPageOf(
+        "home" to "Latest",
+        "trending" to "Trending",
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        val url = when (request.data) {
+            "trending" -> "$mainUrl/discover/trending"
+            else -> mainUrl
+        }
+        OLog.section("mainPage: ${request.data} $url")
+        return try {
+            val html = app.get(url, headers = browserHeaders).text
+            OLog.d("home html len=${html.length}")
+            val cards = parseCards(html)
+            OLog.d("home parsed ${cards.size} cards")
+            newHomePageResponse(request.name, cards, hasNext = false)
+        } catch (e: Exception) {
+            OLog.e("mainPage failed: ${e.message}")
+            null
+        }
+    }
 
     private fun parseCards(html: String): List<SearchResponse> {
         val out = mutableListOf<SearchResponse>()
@@ -52,9 +83,14 @@ class OtakutsuProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         OLog.section("search: $query")
         val q = URLEncoder.encode(query.trim(), "UTF-8")
-        for (u in listOf("$mainUrl/browse?q=$q", "$mainUrl/search?q=$q")) {
+        val urls = listOf(
+            "$mainUrl/browse?q=$q",
+            "$mainUrl/search?q=$q",
+            "$mainUrl/?q=$q",
+        )
+        for (u in urls) {
             try {
-                val res = app.get(u, headers = baseHeaders)
+                val res = app.get(u, headers = browserHeaders)
                 OLog.d("search HTTP ${res.code} $u len=${res.text.length}")
                 val cards = parseCards(res.text)
                 OLog.d("search parsed ${cards.size} cards")
@@ -71,7 +107,7 @@ class OtakutsuProvider : MainAPI() {
         val id = Regex("""/(?:watch|anime)/([a-f0-9]{24})""").find(url)?.groupValues?.get(1) ?: return null
         OLog.section("load: $id")
 
-        val animeHtml = app.get("$mainUrl/anime/$id", headers = baseHeaders).text
+        val animeHtml = app.get("$mainUrl/anime/$id", headers = browserHeaders).text
         OLog.d("anime html len=${animeHtml.length}")
 
         val title = Regex("""<h1[^>]*>([^<]+)</h1>""")
@@ -82,7 +118,7 @@ class OtakutsuProvider : MainAPI() {
             .find(animeHtml)?.groupValues?.get(1)?.trim()
         val year = Regex("""\b(19|20)\d{2}\b""").find(animeHtml)?.value?.toIntOrNull()
 
-        val watchHtml = app.get("$mainUrl/watch/$id?ep=1", headers = baseHeaders).text
+        val watchHtml = app.get("$mainUrl/watch/$id?ep=1", headers = browserHeaders).text
         OLog.d("watch html len=${watchHtml.length}")
         val eps = Regex("""/watch/$id\?ep=(\d+)""").findAll(watchHtml)
             .mapNotNull { it.groupValues[1].toIntOrNull() }
