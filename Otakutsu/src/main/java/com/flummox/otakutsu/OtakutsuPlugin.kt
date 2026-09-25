@@ -7,6 +7,11 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class OtakutsuPlugin : Plugin() {
     override fun load(context: Context) {
+        OLog.init(context)
+        OLog.d("Otakutsu boot")
         registerMainAPI(OtakutsuProvider())
+        this.openSettings = { ctx ->
+            OSettings.show(ctx)
+        }
     }
 }
