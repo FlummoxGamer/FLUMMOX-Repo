@@ -4,11 +4,9 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -20,17 +18,19 @@ import android.widget.Toast
 
 object OSettings {
 
-    private const val BG = 0xFF0A0D14.toInt()
-    private const val CARD = 0xFF0F1520.toInt()
-    private const val CARD_BORDER = 0xFF1E2A3D.toInt()
-    private const val ROW = 0xFF141B28.toInt()
-    private const val INPUT = 0xFF0B1018.toInt()
-    private const val ACCENT_BG = 0x1A7DD3FC
-    private const val ACCENT_STRONG = 0xFF38BDF8.toInt()
-    private const val TEXT = 0xFFE6EDF5.toInt()
-    private const val SUBTEXT = 0xFF8296AD.toInt()
-    private const val RED = 0xFFF87171.toInt()
-    private const val LOG_TEXT = 0xFFB8C4D4.toInt()
+    // ── charcoal palette ──
+    private const val BG = 0xFF0A0A0A.toInt()
+    private const val HEADER = 0xFF141414.toInt()
+    private const val CARD = 0xFF1A1A1A.toInt()
+    private const val CARD_BORDER = 0xFF2E2E2E.toInt()
+    private const val ROW = 0xFF161616.toInt()
+    private const val INPUT = 0xFF0F0F0F.toInt()
+    private const val ACCENT_BG = 0x22FFFFFF
+    private const val ACCENT_STRONG = 0xFFD4D4D4.toInt()
+    private const val TEXT = 0xFFEDEDED.toInt()
+    private const val SUBTEXT = 0xFF8A8A8A.toInt()
+    private const val RED = 0xFFE57373.toInt()
+    private const val LOG_TEXT = 0xFFBFBFBF.toInt()
 
     private fun dp(ctx: Context, v: Int): Int =
         (v * ctx.resources.displayMetrics.density).toInt()
@@ -50,7 +50,7 @@ object OSettings {
     private fun accentPill(ctx: Context): GradientDrawable = GradientDrawable().apply {
         setColor(ACCENT_BG)
         cornerRadius = dp(ctx, 20).toFloat()
-        setStroke(dp(ctx, 1), 0x337DD3FC)
+        setStroke(dp(ctx, 1), 0x33FFFFFF)
     }
 
     fun show(ctx: Context) {
@@ -64,11 +64,11 @@ object OSettings {
         // ── header ──
         val header = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            background = bg(0xFF0F1520.toInt(), 0, ctx)
+            background = bg(HEADER, 0, ctx)
             setPadding(dp(ctx, 22), dp(ctx, 22), dp(ctx, 22), dp(ctx, 22))
         }
         header.addView(TextView(ctx).apply {
-            text = "🎬  Otakutsu"
+            text = "⛩  Otakutsu"
             setTextColor(TEXT)
             textSize = 22f
             setTypeface(typeface, Typeface.BOLD)
@@ -200,7 +200,7 @@ object OSettings {
 
         // ── footer ──
         body.addView(TextView(ctx).apply {
-            text = "☁  FLUMMOX Repo  •  Otakutsu"
+            text = "FLUMMOX Repo  •  Otakutsu"
             setTextColor(SUBTEXT)
             textSize = 11f
             gravity = Gravity.CENTER
