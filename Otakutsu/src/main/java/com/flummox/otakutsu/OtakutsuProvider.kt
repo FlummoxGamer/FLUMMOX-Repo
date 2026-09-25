@@ -163,29 +163,45 @@ class OtakutsuProvider : MainAPI() {
         val ep = payload.optInt("ep", 1).coerceAtLeast(1)
         OLog.d("animeId=$animeId ep=$ep")
 
-        val bootText = app.post(
-            "$mainUrl/api/media/bootstrap",
-            headers = baseHeaders + mapOf("Content-Type" to "application/json"),
-            requestBody = JSONObject()
-                .put("animeId", animeId).put("ep", ep)
-                .toString().toRequestBody("application/json".toMediaType())
-        ).text
-        OLog.d("bootstrap resp len=${bootText.length}")
-        val streamToken = JSONObject(bootText).optString("streamToken")
-            .takeIf { it.isNotBlank() } ?: return false
-        OLog.d("streamToken len=${streamToken.length}")
+        // Warm up — puts cookies into the shared client jar
+try {
+    val warm = app.get(mainUrl, headers = browserHeaders)
+    OLog.d("warmup code=${warm.code}")
+} catch (e: Exception) {
+    OLog.e("warmup failed: ${e.message}")
+}
 
-        try {
-            app.post(
-                "$mainUrl/api/media/session",
-                headers = baseHeaders + mapOf("Content-Type" to "application/json"),
-                requestBody = JSONObject().put("streamToken", streamToken)
-                    .toString().toRequestBody("application/json".toMediaType())
-            )
-            OLog.d("session ok")
-        } catch (e: Exception) {
-            OLog.e("session failed: ${e.message}")
-        }
+val apiHeaders = baseHeaders + mapOf(
+    "Content-Type" to "application/json",
+    "Accept" to "application/json, text/plain, */*",
+    "X-Requested-With" to "XMLHttpRequest",
+)
+
+val bootResp = app.post(
+    "$mainUrl/api/media/bootstrap",
+    headers = apiHeaders,
+    requestBody = JSONObject()
+        .put("animeId", animeId).put("ep", ep)
+        .toString().toRequestBody("application/json".toMediaType())
+)
+val bootText = bootResp.text
+OLog.d("bootstrap code=${bootResp.code} len=${bootText.length}")
+if (bootText.length < 100) OLog.e("bootstrap body: $bootText")
+val streamToken = JSONObject(bootText).optString("streamToken")
+    .takeIf { it.isNotBlank() } ?: return false
+OLog.d("streamToken len=${streamToken.length}")
+
+try {
+    val sesResp = app.post(
+        "$mainUrl/api/media/session",
+        headers = apiHeaders,
+        requestBody = JSONObject().put("streamToken", streamToken)
+            .toString().toRequestBody("application/json".toMediaType())
+    )
+    OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
+} catch (e: Exception) {
+    OLog.e("session failed: ${e.message}")
+}
 
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
