@@ -356,14 +356,25 @@ suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
         }
     }
 
-    // Phase 2 — search AniZone: AniList titles first, then original + variants
-    var hits = emptyList<Hit>()
-    val tried = mutableSetOf<String>()
-    for (s in (altTitles + buildVariants(q.title))) {
-        if (!tried.add(s.lowercase())) continue
-        hits = search(s)
-        if (hits.isNotEmpty()) break
-    }
+// Phase 2 — search AniZone: AniList titles first, then original + variants.
+// If season > 1 and title has no season/part marker, prepend a
+// season-suffixed query so the site's per-season entry wins.
+val searchQueries = mutableListOf<String>()
+if (q.type == "series" && q.season > 1 && AniListApi.parsePartInfo(q.title) == null) {
+    val hasSeasonMarker = Regex("""\bseason\s+${q.season}\b""", RegexOption.IGNORE_CASE)
+        .containsMatchIn(q.title)
+    if (!hasSeasonMarker) searchQueries.add("${q.title} Season ${q.season}")
+}
+searchQueries.addAll(altTitles)
+searchQueries.addAll(buildVariants(q.title))
+
+var hits = emptyList<Hit>()
+val tried = mutableSetOf<String>()
+for (s in searchQueries) {
+    if (!tried.add(s.lowercase())) continue
+    hits = search(s)
+    if (hits.isNotEmpty()) break
+}
 
     if (hits.isEmpty()) { BCLog.d("AniZone: no hits (${System.currentTimeMillis() - start}ms)"); return emptyList() }
     val hit = pickBest(hits, q.title, q.year, altTitles) ?: run {
