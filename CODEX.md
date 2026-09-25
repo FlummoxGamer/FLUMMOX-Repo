@@ -293,6 +293,7 @@ path: BingeCloud/build.gradle.kts
   - AnikotoEpInfo — strict ep lookup + total count
   - anikotoResolveFromServerIds — serverIds → mirrors
   - anikotoChainWalk — out-of-range → AniList chain → next part on site
+  - isSeasonSpecific — season-marker check for AniKoto season search
 - anikotoExtractRaw — AniKoto (Part-N offset applied here)
 - resolveWrapper — wrapper URL resolver
 - PER_SOURCE_TIMEOUT_MS
