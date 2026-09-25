@@ -20,7 +20,7 @@ class OtakutsuProvider : MainAPI() {
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
-    // Otakutsu redeploy → rotate this. Update if loadLinks returns 0 sources.
+    // Rotates on Otakutsu redeploys.
     private val NEXT_ACTION_ID = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
 
     private val baseHeaders get() = mapOf(
@@ -50,20 +50,29 @@ class OtakutsuProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        OLog.section("search: $query")
         val q = URLEncoder.encode(query.trim(), "UTF-8")
         for (u in listOf("$mainUrl/browse?q=$q", "$mainUrl/search?q=$q")) {
             try {
-                val html = app.get(u, headers = baseHeaders).text
-                val cards = parseCards(html)
+                val res = app.get(u, headers = baseHeaders)
+                OLog.d("search HTTP ${res.code} $u len=${res.text.length}")
+                val cards = parseCards(res.text)
+                OLog.d("search parsed ${cards.size} cards")
                 if (cards.isNotEmpty()) return cards
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                OLog.e("search try failed: ${e.message}")
+            }
         }
+        OLog.e("search returned 0 for '$query'")
         return emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val id = Regex("""/(?:watch|anime)/([a-f0-9]{24})""").find(url)?.groupValues?.get(1) ?: return null
+        OLog.section("load: $id")
+
         val animeHtml = app.get("$mainUrl/anime/$id", headers = baseHeaders).text
+        OLog.d("anime html len=${animeHtml.length}")
 
         val title = Regex("""<h1[^>]*>([^<]+)</h1>""")
             .find(animeHtml)?.groupValues?.get(1)?.trim() ?: return null
@@ -74,9 +83,11 @@ class OtakutsuProvider : MainAPI() {
         val year = Regex("""\b(19|20)\d{2}\b""").find(animeHtml)?.value?.toIntOrNull()
 
         val watchHtml = app.get("$mainUrl/watch/$id?ep=1", headers = baseHeaders).text
+        OLog.d("watch html len=${watchHtml.length}")
         val eps = Regex("""/watch/$id\?ep=(\d+)""").findAll(watchHtml)
             .mapNotNull { it.groupValues[1].toIntOrNull() }
             .distinct().sorted().toList()
+        OLog.d("episodes found=${eps.size} first=${eps.firstOrNull()} last=${eps.lastOrNull()}")
 
         if (eps.isEmpty()) {
             val q = JSONObject().apply { put("id", id); put("ep", 1) }.toString()
@@ -110,9 +121,11 @@ class OtakutsuProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        OLog.section("loadLinks")
         val payload = try { JSONObject(data) } catch (_: Exception) { return false }
         val animeId = payload.optString("id").takeIf { it.isNotBlank() } ?: return false
         val ep = payload.optInt("ep", 1).coerceAtLeast(1)
+        OLog.d("animeId=$animeId ep=$ep")
 
         val bootText = app.post(
             "$mainUrl/api/media/bootstrap",
@@ -121,8 +134,10 @@ class OtakutsuProvider : MainAPI() {
                 .put("animeId", animeId).put("ep", ep)
                 .toString().toRequestBody("application/json".toMediaType())
         ).text
+        OLog.d("bootstrap resp len=${bootText.length}")
         val streamToken = JSONObject(bootText).optString("streamToken")
             .takeIf { it.isNotBlank() } ?: return false
+        OLog.d("streamToken len=${streamToken.length}")
 
         try {
             app.post(
@@ -131,7 +146,10 @@ class OtakutsuProvider : MainAPI() {
                 requestBody = JSONObject().put("streamToken", streamToken)
                     .toString().toRequestBody("application/json".toMediaType())
             )
-        } catch (_: Exception) {}
+            OLog.d("session ok")
+        } catch (e: Exception) {
+            OLog.e("session failed: ${e.message}")
+        }
 
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
@@ -147,6 +165,8 @@ class OtakutsuProvider : MainAPI() {
             ),
             requestBody = actionBody
         ).text
+        OLog.d("RSC resp len=${rsc.length}")
+        if (rsc.length < 200) OLog.e("RSC suspiciously short: ${rsc.take(300)}")
 
         val sourcesObj = rsc.lines()
             .mapNotNull { line ->
@@ -154,8 +174,12 @@ class OtakutsuProvider : MainAPI() {
                 if (idx < 1) return@mapNotNull null
                 try { JSONObject(line.substring(idx + 1)) } catch (_: Exception) { null }
             }
-            .firstOrNull { it.has("sources") } ?: return false
+            .firstOrNull { it.has("sources") } ?: run {
+                OLog.e("RSC had no 'sources' key. First 500: ${rsc.take(500)}")
+                return false
+            }
         val sources = sourcesObj.optJSONArray("sources") ?: return false
+        OLog.d("sources count=${sources.length()}")
 
         var emitted = 0
         for (i in 0 until sources.length()) {
@@ -166,6 +190,7 @@ class OtakutsuProvider : MainAPI() {
             val server = s.optString("server").ifBlank { "otakutsu" }
             val subType = s.optString("subType").ifBlank { "sub" }
 
+            OLog.d("emit [$label] [$server/$subType]")
             callback.invoke(
                 newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
                     this.referer = "$mainUrl/"
@@ -187,6 +212,7 @@ class OtakutsuProvider : MainAPI() {
             }
         }
 
+        OLog.d("loadLinks emitted=$emitted")
         return emitted > 0
     }
 }
