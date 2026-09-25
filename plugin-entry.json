@@ -1,21 +1,20 @@
 {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeCloud/icon.png",
-    "fileHash": "sha256-b0b16e808ed6f9162a3497a2c8bb4164f24db23ec8aa2b1b2c7fc1055a57cb94",
+    "fileHash": "sha256-27b0521f2ac9507ce062ac57043671aaeea9339e327ea6baa6ce5e1f2c21c06b",
     "apiVersion": 1,
-    "fileSize": 363349,
+    "fileSize": 17828,
     "status": 1,
     "language": "en",
     "authors": [
         "FLUMMOX"
     ],
     "tvTypes": [
-        "Movies",
-        "TV Series",
-        "Anime"
+        "Anime",
+        "AnimeMovie"
     ],
     "version": 216,
-    "internalName": "BingeCloud",
-    "description": "TV Series, Movies, Anime",
+    "internalName": "Otakutsu",
+    "description": "Anime streaming from Otakutsu",
     "url": "",
-    "name": "BingeCloud"
+    "name": "Otakutsu"
 }
