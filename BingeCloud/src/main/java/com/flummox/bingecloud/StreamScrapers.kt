@@ -787,8 +787,34 @@ private suspend fun anikotoChainWalk(
     return emptyList()
 }
 
+private fun isSeasonSpecific(title: String, season: Int): Boolean {
+    val lower = title.lowercase()
+    if (Regex("""\bseason\s+$season\b""", RegexOption.IGNORE_CASE).containsMatchIn(lower)) return true
+    if (season == 2 && Regex("""\bii\b""", RegexOption.IGNORE_CASE).containsMatchIn(lower)) return true
+    if (season == 3 && Regex("""\biii\b""", RegexOption.IGNORE_CASE).containsMatchIn(lower)) return true
+    return false
+}
+
 private suspend fun anikotoExtractRaw(q: StreamQuery): List<ScrapedMirror> {
-    val series = anikotoFindSeries(q.title) ?: return emptyList()
+    // Season-aware: TMDB bundles S1+S2+S3 under one card. If user is
+    // on S{N>1}, search a season-suffixed title to find the site's
+    // per-season entry. Fall back to base title if not found.
+    val series: AnikotoSeries = if (
+        q.type == "series" && q.season > 1 && AniListApi.parsePartInfo(q.title) == null
+    ) {
+        val seasonQuery = "${q.title} Season ${q.season}"
+        val s = try { anikotoFindSeries(seasonQuery) } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) { null }
+        if (s != null && isSeasonSpecific(s.title, q.season)) {
+            BCLog.d("AniKoto: season-aware '${s.title}' for S${q.season}")
+            s
+        } else {
+            anikotoFindSeries(q.title) ?: return emptyList()
+        }
+    } else {
+        anikotoFindSeries(q.title) ?: return emptyList()
+    }
     var effectiveEpisode = q.episode
 
     val partInfo = AniListApi.parsePartInfo(q.title)
@@ -811,7 +837,10 @@ private suspend fun anikotoExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     val epInfo = anikotoGetEpInfo(series, effectiveEpisode)
     val serverIds = epInfo.serverIds
     if (serverIds == null) {
-        if (q.type == "series" && epInfo.totalEps > 0 && effectiveEpisode > epInfo.totalEps) {
+        // Chain walk only valid for S1 — there q.episode maps cleanly to
+        // a global position across the season's split cours. For S{N>1}
+        // the episode number is per-season and would walk the wrong chain.
+        if (q.type == "series" && q.season <= 1 && epInfo.totalEps > 0 && effectiveEpisode > epInfo.totalEps) {
             return anikotoChainWalk(q, series, effectiveEpisode, epInfo.totalEps)
         }
         BCLog.d("AniKoto: no serverIds for E$effectiveEpisode")
