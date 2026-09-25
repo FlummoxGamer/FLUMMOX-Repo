@@ -29,7 +29,7 @@ cloudstream {
     tvTypes = listOf("Anime", "AnimeMovie")
     language = "en"
     iconUrl = "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeCloud/icon.png"
-    version = (project.findProperty("bingecloud_version") as? String)?.toIntOrNull() ?: 1
+    version = (project.findProperty("otakutsu_version") as? String)?.toIntOrNull() ?: 1
 }
 
 dependencies {
