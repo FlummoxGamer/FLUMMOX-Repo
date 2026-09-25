@@ -50,7 +50,8 @@ data class AioMeta(
     val country: String? = null,
     val imdb_id: String? = null,
     val videos: List<AioVideo>? = null,
-    val app_extras: AioAppExtras? = null
+    val app_extras: AioAppExtras? = null,
+    val originalLanguage: String? = null
 )
 
 data class AioMetaResponse(val meta: AioMeta? = null)
@@ -329,7 +330,8 @@ suspend fun tmdbDetailMeta(type: String, tmdbId: String): AioMeta? {
             releaseInfo = yearStr,
             year = yearStr,
             imdb_id = obj.optString("imdb_id").takeIf { it.isNotBlank() && it != "null" },
-            videos = videos.takeIf { it.isNotEmpty() }
+            videos = videos.takeIf { it.isNotEmpty() },
+            originalLanguage = obj.optString("original_language").takeIf { it.isNotBlank() && it != "null" }
         )
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e

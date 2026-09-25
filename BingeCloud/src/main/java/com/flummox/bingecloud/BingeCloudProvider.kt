@@ -25,6 +25,11 @@ private const val SEP = "|"
 private const val ROW_TAG = "::"
 private const val PREFETCH_DEBOUNCE_MS = 800L
 
+// AniList uses "Cour N" for split-season broadcast blocks. No scraper
+// site we hit indexes by cour — they use combined seasons. Filter these
+// out at the search boundary so cour never enters StreamQuery.
+private val RX_COUR = Regex("""\bcour\s+\d+\b""", RegexOption.IGNORE_CASE)
+
 private val PREFETCH_SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 private var activePrefetchJob: Job? = null
 private var lastHomeRenderMs: Long = 0L
@@ -346,12 +351,196 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
     override suspend fun search(query: String): List<SearchResponse>? {
     val key = BuildConfig.TMDB_API_KEY
     BCLog.v("TMDB key diag: len=${key.length} head=${key.take(6)} tail=${key.takeLast(4)}")
+
     if (key.isBlank()) {
-        BCLog.e("TMDB key missing at runtime")
-        return emptyList()
+        BCLog.e("TMDB key missing at runtime — AniList only")
+        return try {
+            AniListApi.searchAnime(query, null).mapNotNull { it.toAniListSearchResponse() }
+        } catch (e: Exception) {
+            BCLog.e("AniList search failed: ${e.message}")
+            emptyList()
+        }
     }
-    return searchViaTmdb(query, key)
+
+    return coroutineScope {
+        val tmdbDef = async { searchViaTmdb(query, key) ?: emptyList() }
+        val aniDef = async {
+    try {
+        val raw = AniListApi.searchAnime(query, null)
+        val filtered = raw.filterNot { e ->
+            e.title.all().any { t -> RX_COUR.containsMatchIn(t) }
+        }
+        if (raw.size != filtered.size) {
+            BCLog.d("AniList: dropped ${raw.size - filtered.size} cour entr${if (raw.size - filtered.size == 1) "y" else "ies"}")
+        }
+        filtered.mapNotNull { it.toAniListSearchResponse() }
+    } catch (e: Exception) {
+        BCLog.e("AniList search failed: ${e.message}"); emptyList()
     }
+        }
+        val tmdb = tmdbDef.await()
+        val ani = aniDef.await()
+        BCLog.d("search '$query': TMDB=${tmdb.size} AniList=${ani.size}")
+        mergeSearchResults(tmdb, ani)
+    }
+}
+
+private val RX_SEASON_N = Regex("""\b(?:season|part|cour)\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+private val RX_EXTRA_MARKER = Regex(
+    """\b(?:ova|ona|special|specials|recap|short|shorts|spinoff|spin-off|picture\s+drama|movie)\b""",
+    RegexOption.IGNORE_CASE
+)
+private val GROUP_STOPWORDS = setOf(
+    "the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for", "with"
+)
+
+private fun isExtraTitle(name: String): Boolean = RX_EXTRA_MARKER.containsMatchIn(name)
+
+private fun seasonNumberOf(name: String): Int =
+    RX_SEASON_N.find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+
+private fun searchGroupKey(name: String): String {
+    // NFD decompose then strip combining marks so "Shippūden" → "shippuden",
+    // "Shingeki no Kyojin" variants collapse to the same key.
+    val normalized = java.text.Normalizer
+        .normalize(name, java.text.Normalizer.Form.NFD)
+        .replace(Regex("""\p{Mn}+"""), "")
+    val norm = normalized.lowercase().replace(Regex("""[^a-z0-9\s]"""), " ").trim()
+    return norm.split(Regex("""\s+"""))
+        .filter { it.isNotBlank() && it !in GROUP_STOPWORDS }
+        .take(2)
+        .joinToString(" ")
+}
+
+private suspend fun mergeSearchResults(
+    tmdb: List<SearchResponse>,
+    ani: List<SearchResponse>
+): List<SearchResponse> {
+    // 1. dedupe within each source
+    val tmdbSeen = mutableSetOf<String>()
+    val tmdbClean = tmdb.filter { tmdbSeen.add(searchDedupeKey(it)) }
+    val aniSeen = mutableSetOf<String>()
+    val aniClean = ani.filter { aniSeen.add(searchDedupeKey(it)) }
+
+    // 2. cross-dedupe extras only (TMDB wins on collision).
+    val tmdbExtraKeys = tmdbClean
+        .filter { isExtraTitle(it.name) }
+        .map { searchDedupeKey(it) }
+        .toSet()
+    val aniAfterExtra = aniClean.filter { r ->
+        if (!isExtraTitle(r.name)) true
+        else searchDedupeKey(r) !in tmdbExtraKeys
+    }
+
+// 2b. within AniList: drop "Part N" (N>=2) entries when the base
+//     title (with Part stripped) is also present as a separate
+//     AniList entry. AniList returns S3 and S3 Part 2 as siblings;
+//     the load path merges them, so showing both is a dup.
+val aniLowerNames = aniAfterExtra.map { it.name.lowercase().trim() }.toSet()
+val aniAfterPart = aniAfterExtra.filter { r ->
+    val partInfo = AniListApi.parsePartInfo(r.name) ?: return@filter true
+    if (partInfo.partNum < 2) return@filter true
+    val base = partInfo.baseTitle.lowercase().trim()
+    if (base.isNotBlank() && base in aniLowerNames) {
+        BCLog.d("AniList drop (Part base present): ${r.name}")
+        false
+    } else true
+}
+
+// 3. per-group: drop AniList TV season entries when TMDB has same season.
+//    TMDB's bundled card lists all its season_numbers; AniList's
+//    per-season entries for those numbers are redundant.
+val tmdbByGroup = tmdbClean
+    .filter { !isExtraTitle(it.name) }
+    .groupBy { searchGroupKey(it.name) }
+val aniKept = mutableListOf<SearchResponse>()
+for (r in aniAfterPart) {
+    if (isExtraTitle(r.name)) { aniKept.add(r); continue }
+    val group = searchGroupKey(r.name)
+    val sibling = tmdbByGroup[group]?.firstOrNull { !isExtraTitle(it.name) }
+    if (sibling == null) { aniKept.add(r); continue }
+    val tmdbId = Regex("""tmdb:(\d+)""").find(sibling.url)?.groupValues?.get(1)?.toIntOrNull()
+    if (tmdbId == null) { aniKept.add(r); continue }
+    val tmdbSeasons = tmdbSeasonNumbers(tmdbId)
+    val aniSeason = seasonNumberOf(r.name)
+    if (aniSeason in tmdbSeasons) {
+        BCLog.d("AniList drop (S$aniSeason in TMDB $tmdbId): ${r.name}")
+    } else {
+        aniKept.add(r)
+    }
+}
+
+    // 4. tag + group + sort
+    data class Tagged(val r: SearchResponse, val src: Int, val idx: Int)
+    val tagged = mutableListOf<Tagged>()
+    tmdbClean.forEachIndexed { i, r -> tagged.add(Tagged(r, 0, i)) }
+    aniKept.forEachIndexed { i, r -> tagged.add(Tagged(r, 1, i)) }
+
+    val groupOrder = LinkedHashSet<String>()
+    tagged.forEach { groupOrder.add(searchGroupKey(it.r.name)) }
+
+    val out = mutableListOf<SearchResponse>()
+    for (g in groupOrder) {
+        val entries = tagged.filter { searchGroupKey(it.r.name) == g }
+        val sorted = entries.sortedWith(
+            compareBy(
+                { isExtraTitle(it.r.name) },          // false (seasons) before true (extras)
+                { it.src },                            // TMDB (0) before AniList (1)
+                { seasonNumberOf(it.r.name) },         // S1 < S2 < S3...
+                { it.idx }                             // stable
+            )
+        )
+        sorted.forEach { out.add(it.r) }
+    }
+    return out
+}
+
+private fun searchDedupeKey(r: SearchResponse): String {
+    val n = r.name.lowercase().replace(Regex("""[^a-z0-9]"""), "").take(40)
+    return "$n|${r.type}"
+}
+
+// Fetch TMDB season numbers for a TV id. Cached 24h.
+// Used to drop AniList TV entries whose season already exists on TMDB.
+private suspend fun tmdbSeasonNumbers(tmdbId: Int): Set<Int> {
+    val key = BuildConfig.TMDB_API_KEY
+    if (key.isBlank()) return emptySet()
+    val ck = "tmdb:seasons:$tmdbId"
+    BCCache.get(ck, 24 * 60 * 60 * 1000L)?.let { cached ->
+        return try {
+            val arr = org.json.JSONArray(cached)
+            (0 until arr.length()).mapNotNull { i -> arr.optInt(i, 0).takeIf { it > 0 } }.toSet()
+        } catch (_: Exception) { emptySet() }
+    }
+    return try {
+        val url = "https://api.themoviedb.org/3/tv/$tmdbId?api_key=$key&language=en-US"
+        val json = app.get(url).text
+        val arr = org.json.JSONObject(json).optJSONArray("seasons") ?: return emptySet()
+        val nums = mutableSetOf<Int>()
+        for (i in 0 until arr.length()) {
+            val n = arr.optJSONObject(i)?.optInt("season_number", 0) ?: 0
+            if (n > 0) nums.add(n)
+        }
+        val cacheArr = org.json.JSONArray()
+        nums.sorted().forEach { cacheArr.put(it) }
+        BCCache.put(ck, cacheArr.toString())
+        BCLog.d("TMDB seasons($tmdbId): $nums")
+        nums
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BCLog.e("tmdbSeasonNumbers($tmdbId): ${e.message}")
+        emptySet()
+    }
+}
+private fun AniListApi.Entry.toAniListSearchResponse(): SearchResponse? {
+    val displayName = title.english ?: title.romaji ?: title.native ?: return null
+    val tvType = if (format == "MOVIE") TvType.Movie else TvType.Anime
+    return newMovieSearchResponse(displayName, "/anilist:$id", tvType) {
+        this.posterUrl = coverImage
+        this.year = seasonYear
+    }
+}
 
     private suspend fun searchViaTmdb(query: String, key: String): List<SearchResponse>? {
     val out = mutableListOf<SearchResponse>()
@@ -431,8 +620,14 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
 
     // ── load ──
     override suspend fun load(url: String): LoadResponse? {
-        val clean = url.removePrefix(mainUrl).removePrefix("/")
-        val parts = clean.split(SEP)
+    // AniList-sourced entry — bypass TMDB/Aiometa entirely
+    if (url.contains("anilist:")) {
+        val id = Regex("""anilist:(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull()
+        if (id != null) return loadFromAniList(id)
+    }
+
+    val clean = url.removePrefix(mainUrl).removePrefix("/")
+    val parts = clean.split(SEP)
         if (parts.size < 2) return null
         val type = parts[0]
         val metaId = parts[1]
@@ -466,19 +661,29 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
             BCLog.d("load() preview (no prefetch): ${name.take(40)} [${sinceHome}ms since home]")
         }
         if (Settings.isPrefetchEnabled() && !fromHomeBanner) {
-            val prefetchQuery: StreamQuery? = when {
-                tvType == TvType.Movie && videos.isEmpty() ->
-                    StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
-                videos.isNotEmpty() -> {
-                    val first = videos.firstOrNull()
-                    val s = first?.season
-                    val e = first?.episode
-                    if (s != null && e != null && s > 0)
-                        StreamQuery(name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e)
-                    else null
-                }
-                else -> null
-            }
+        val langForQuery = finalMeta.originalLanguage?.takeIf { it.isNotBlank() }
+            ?: if (tvType == TvType.Anime) "ja" else ""
+        val prefetchQuery: StreamQuery? = when {
+            tvType == TvType.Movie && videos.isEmpty() ->
+                StreamQuery(
+                    name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "",
+                    totalEpisodes = 1,
+                    originalLanguage = langForQuery
+                )
+            videos.isNotEmpty() -> {
+                val first = videos.firstOrNull()
+                val s = first?.season
+                val e = first?.episode
+                if (s != null && e != null && s > 0)
+            StreamQuery(
+                name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "", s, e,
+                totalEpisodes = videos.count { it.season == s },
+                originalLanguage = langForQuery
+            )
+        else null
+    }
+    else -> null
+}
             if (prefetchQuery != null) {
                 val key = prefetchQuery.cacheKey()
                 if (BCCache.getMirrors(key) == null) {
@@ -502,7 +707,12 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
         }
 
         return if (tvType == TvType.Movie && videos.isEmpty()) {
-        val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "")
+        val q = StreamQuery(
+            name, yearInt?.toString() ?: "", "movie", finalMeta.imdb_id ?: "",
+            totalEpisodes = 1,
+            originalLanguage = finalMeta.originalLanguage?.takeIf { it.isNotBlank() }
+                ?: if (tvType == TvType.Anime) "ja" else ""
+        )
         newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
              this.posterUrl = finalMeta.poster
              this.backgroundPosterUrl = finalMeta.background
@@ -520,7 +730,10 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
                 val q = StreamQuery(
                     name, yearInt?.toString() ?: "", "series", finalMeta.imdb_id ?: "",
                     s, e,
-                    next?.season ?: 0, next?.episode ?: 0
+                    next?.season ?: 0, next?.episode ?: 0,
+                    totalEpisodes = videos.count { it.season == s },
+                    originalLanguage = finalMeta.originalLanguage?.takeIf { it.isNotBlank() }
+                        ?: if (tvType == TvType.Anime) "ja" else ""
                 )
                 newEpisode(encodeQuery(q)) {
                     this.name = v.title ?: "Episode $e"
@@ -542,6 +755,111 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
             }
         }
     }
+
+
+     // ── load via AniList (no TMDB / Aiometa) ──
+private suspend fun loadFromAniList(id: Int): LoadResponse? {
+    val entry = try { AniListApi.getEntry(id) } catch (e: Exception) {
+        BCLog.e("AniList load failed: ${e.message}"); null
+    } ?: run {
+        BCLog.e("AniList entry $id returned null")
+        return null
+    }
+
+    val name = entry.title.english ?: entry.title.romaji ?: entry.title.native
+        ?: run { BCLog.e("AniList entry $id has no title"); return null }
+    val yearInt = entry.seasonYear
+    val baseEpCount = entry.episodes ?: 0
+    val poster = entry.coverImage
+    val plot = entry.description ?: ""
+    val isMovie = entry.format == "MOVIE"
+
+// Combine S1 with its cour-split sequel ("... Part 2") so one card
+// carries the combined episode count. Only when the current entry
+// is unsuffixed (no "Part N") and the sequel is a "Part 2" of the
+// same base title.
+var combinedExtra = 0
+if (!isMovie && baseEpCount > 0 && AniListApi.parsePartInfo(name) == null) {
+    for (rel in entry.relations) {
+        if (rel.type != "SEQUEL") continue
+        val seqName = rel.entry.title.english
+            ?: rel.entry.title.romaji
+            ?: rel.entry.title.native
+            ?: continue
+        val p = AniListApi.parsePartInfo(seqName) ?: continue
+        if (p.partNum != 2) continue
+        if (!AniListApi.sameBaseTitle(seqName, name)) continue
+        val seqEps = rel.entry.episodes ?: 0
+        if (seqEps <= 0) continue
+        combinedExtra = seqEps
+        BCLog.d("AniList: combine '$name' + '$seqName' → ${baseEpCount + seqEps} eps")
+        break
+    }
+}
+val totalEps = baseEpCount + combinedExtra
+
+BCLog.d("AniList load: '$name' (${entry.format}) eps=$totalEps year=$yearInt")
+    val score10 = entry.averageScore?.let { it / 10.0 }
+val statusTag = when (entry.status) {
+    "RELEASING" -> "Ongoing"
+    "FINISHED" -> "Completed"
+    "NOT_YET_RELEASED" -> "Upcoming"
+    "CANCELLED" -> "Cancelled"
+    "HIATUS" -> "On Hiatus"
+    else -> ""
+}
+val plotWithStatus = when {
+    statusTag.isNotBlank() && plot.isNotBlank() -> "<b>$statusTag</b><br><br>$plot"
+    statusTag.isNotBlank() -> "<b>$statusTag</b>"
+    else -> plot
+}
+
+if (isMovie) {
+    val q = StreamQuery(
+        name, yearInt?.toString() ?: "", "movie", "",
+        totalEpisodes = 1,
+        originalLanguage = "ja"
+    )
+    return newMovieLoadResponse(name, "/anilist:$id", TvType.Movie, encodeQuery(q)) {
+        this.posterUrl = poster
+        this.plot = plotWithStatus
+        this.year = yearInt
+        this.tags = entry.genres
+        if (score10 != null) this.score = Score.from10(score10)
+    }
+}
+
+    if (totalEps <= 0) {
+    BCLog.d("AniList: series '$name' has no episode count — skipping")
+    return null
+    }
+
+val episodes = (1..totalEps).map { epNum ->
+    val next = if (epNum < totalEps) epNum + 1 else 0
+    val q = StreamQuery(
+        name, yearInt?.toString() ?: "", "series", "",
+        1, epNum,
+        1, next,
+        totalEpisodes = totalEps,
+        originalLanguage = "ja"
+    )
+        newEpisode(encodeQuery(q)) {
+            this.name = "Episode $epNum"
+            this.season = 1
+            this.episode = epNum
+            this.posterUrl = poster
+        }
+    }
+
+    return newTvSeriesLoadResponse(name, "/anilist:$id", TvType.Anime, episodes) {
+    this.posterUrl = poster
+    this.plot = plotWithStatus
+    this.year = yearInt
+    this.tags = entry.genres
+    if (score10 != null) this.score = Score.from10(score10)
+    }
+}
+
 
     // ── loadLinks ──
     override suspend fun loadLinks(
@@ -649,7 +967,21 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
                                     try { subtitleCallback(SubtitleFile(lang, subUrl)) } catch (_: Exception) {}
                                     }
                                 }
-                                    "SHOWBOX" -> {
+                                    "ANIZONE" -> {
+                                      val linkType = if (m.url.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                      val display = "$emoji${m.quality} •${m.mirror}"
+                                      val link = newExtractorLink("AniZone", display, m.url, linkType) {
+                                          this.referer = "https://anizone.to/"
+                                          this.headers = m.headers ?: mapOf("Referer" to "https://anizone.to/")
+                                      }
+                                      callback.invoke(link)
+                                      emittedCount.incrementAndGet()
+                                      HostHealth.recordSuccess(host)
+                                      m.captions.forEach { (lang, subUrl) ->
+                                          try { subtitleCallback(SubtitleFile(lang, subUrl)) } catch (_: Exception) {}
+                                        }
+                                      }
+                                      "SHOWBOX" -> {
                                         val linkType = when {
                                             m.url.contains(".mp4", true) -> ExtractorLinkType.VIDEO
                                             m.url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
@@ -738,7 +1070,9 @@ private suspend fun validateHindiSeries(items: List<AioMeta>): List<AioMeta> = c
         && query.nextSeason > 0 && query.nextEpisode > 0) {
         val nextQ = StreamQuery(
             query.title, query.year, "series", query.imdbId,
-            query.nextSeason, query.nextEpisode
+            query.nextSeason, query.nextEpisode,
+            totalEpisodes = query.totalEpisodes,
+            originalLanguage = query.originalLanguage
         )
         val nextKey = nextQ.cacheKey()
         if (BCCache.getMirrors(nextKey) == null) {
@@ -808,6 +1142,8 @@ private fun encodeQuery(q: StreamQuery): String {
     o.put("t", q.title); o.put("y", q.year); o.put("ty", q.type)
     o.put("s", q.season); o.put("e", q.episode); o.put("i", q.imdbId)
     o.put("ns", q.nextSeason); o.put("ne", q.nextEpisode)
+    o.put("te", q.totalEpisodes)
+    o.put("ol", q.originalLanguage)
     return o.toString()
 }
 
@@ -817,7 +1153,9 @@ private fun decodeQuery(s: String): StreamQuery? = try {
         o.optString("t"), o.optString("y"),
         o.optString("ty", "movie"), o.optString("i"),
         o.optInt("s", 0), o.optInt("e", 0),
-        o.optInt("ns", 0), o.optInt("ne", 0)
+        o.optInt("ns", 0), o.optInt("ne", 0),
+        o.optInt("te", 0),
+        o.optString("ol", "")
     )
 } catch (e: Exception) { null }
 
