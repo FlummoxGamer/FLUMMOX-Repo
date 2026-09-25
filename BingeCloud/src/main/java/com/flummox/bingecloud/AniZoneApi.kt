@@ -340,6 +340,10 @@ private suspend fun tryNextPartInChain(
 
 // ── main entry ──
 suspend fun resolve(q: StreamQuery): List<ScrapedMirror> {
+    // AniZone indexes series only — no movie entries. Playing "E1 of
+    // the parent series" for a movie request is worse than returning
+    // nothing. MB / ShowBox / MD handle movies properly.
+    if (q.type == "movie") return emptyList()
     val start = System.currentTimeMillis()
     val isAnime = q.originalLanguage in setOf("ja", "ko", "zh")
 
