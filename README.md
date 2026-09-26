@@ -24,8 +24,7 @@ A CloudStream plugin repository hosting extensions for streaming Movies, TV Seri
 | Extension | Content | Status |
 |-----------|---------|--------|
 | **BingeCloud** | Movies, TV Series, Anime | ✅ Working |
-
-*More extensions coming soon.*
+| **Otakutsu** | Anime | ✅ Working |
 
 ---
 
