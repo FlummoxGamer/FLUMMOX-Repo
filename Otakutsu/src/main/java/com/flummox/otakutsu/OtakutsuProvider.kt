@@ -251,16 +251,29 @@ class OtakutsuProvider : MainAPI() {
             put(animeId); put(ep); put(streamToken)
         }.toString().toRequestBody("text/plain;charset=UTF-8".toMediaType())
 
-        val rsc = app.post(
-            "$mainUrl/watch/$animeId?ep=$ep",
-            headers = baseHeaders + mapOf(
-                "Accept" to "text/x-component",
-                "Content-Type" to "text/plain;charset=UTF-8",
-                "next-action" to NEXT_ACTION_ID,
-                "next-router-state-tree" to stateTree,
-            ),
-            requestBody = actionBody
-        ).text
+        val watchUrl = "$mainUrl/watch/$animeId?ep=$ep"
+        val rscHeaders = mapOf(
+            "User-Agent" to UA,
+            "Accept" to "text/x-component",
+            "Accept-Language" to "en-US,en;q=0.9",
+            "Content-Type" to "text/plain;charset=UTF-8",
+            "Origin" to mainUrl,
+            "Referer" to watchUrl,
+            "next-action" to NEXT_ACTION_ID,
+            "next-router-state-tree" to stateTree,
+            "sec-ch-ua" to "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
+            "sec-ch-ua-mobile" to "?1",
+            "sec-ch-ua-platform" to "\"Android\"",
+            "sec-fetch-dest" to "empty",
+            "sec-fetch-mode" to "cors",
+            "sec-fetch-site" to "same-origin",
+         )
+
+         val rsc = app.post(
+             watchUrl,
+             headers = rscHeaders,
+             requestBody = actionBody
+         ).text
         OLog.d("RSC resp len=${rsc.length}")
         OLog.d("RSC state-tree len=${stateTree.length}")
         if (rsc.length < 200) OLog.e("RSC suspiciously short: ${rsc.take(300)}")
