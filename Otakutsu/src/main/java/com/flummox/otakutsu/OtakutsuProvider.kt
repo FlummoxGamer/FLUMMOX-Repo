@@ -6,6 +6,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.Jsoup
 import java.net.URLEncoder
 
 class OtakutsuProvider : MainAPI() {
@@ -37,70 +38,84 @@ class OtakutsuProvider : MainAPI() {
         "Referer" to "$mainUrl/",
     )
 
-    override val mainPage = mainPageOf(
-        "home" to "Latest",
-        "trending" to "Trending",
-    )
+    // ── home cache ──
+    private var homeHtml: String? = null
+    private var homeTime: Long = 0L
+    private val HOME_TTL = 10 * 60 * 1000L
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val url = when (request.data) {
-            "trending" -> "$mainUrl/discover/trending"
-            else -> mainUrl
-        }
-        OLog.section("mainPage: ${request.data} $url")
+    private suspend fun getHomeHtml(): String? {
+        val now = System.currentTimeMillis()
+        val cached = homeHtml
+        if (cached != null && now - homeTime < HOME_TTL) return cached
         return try {
-            val html = app.get(url, headers = browserHeaders).text
-            OLog.d("home html len=${html.length}")
-            val cards = parseCards(html)
-            OLog.d("home parsed ${cards.size} cards")
-            newHomePageResponse(request.name, cards, hasNext = false)
+            val html = app.get(mainUrl, headers = browserHeaders).text
+            homeHtml = html
+            homeTime = now
+            html
         } catch (e: Exception) {
-            OLog.e("mainPage failed: ${e.message}")
+            OLog.e("getHomeHtml failed: ${e.message}")
             null
         }
     }
 
-    private fun parseCards(html: String): List<SearchResponse> {
-        val out = mutableListOf<SearchResponse>()
-        val cardRx = Regex(
-            """<a[^>]+href="(/anime/([a-f0-9]{24}))"[^>]*>([\s\S]*?)</a>""",
-            RegexOption.DOT_MATCHES_ALL
-        )
-        val titleRx = Regex("""<span[^>]*class="[^"]*hc-title[^"]*"[^>]*>([^<]+)</span>""")
-        val imgRx = Regex("""<img[^>]+src="(https?://[^"]+)""")
-        cardRx.findAll(html).forEach { m ->
-            val id = m.groupValues[2]
-            val inner = m.groupValues[3]
-            val title = titleRx.find(inner)?.groupValues?.get(1)?.trim() ?: return@forEach
-            val poster = imgRx.find(inner)?.groupValues?.get(1)
-            out.add(newMovieSearchResponse(title, "$mainUrl/watch/$id?ep=1", TvType.Anime) {
+    override val mainPage = mainPageOf(
+        "new"       to "Fresh Episodes",
+        "trending"  to "Top 10 Trending",
+        "gems"      to "Hidden Gems",
+        "weekend"   to "Short & Complete",
+        "movies"    to "Feature-Length Favourites",
+        "originals" to "Original Stories",
+        "classics"  to "Timeless Classics",
+        "beyond"    to "Donghua Worth Discovering",
+        "wildcard"  to "Pulled From the Vault",
+        "upcoming"  to "Coming Soon",
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        OLog.section("mainPage: ${request.data}")
+        val html = getHomeHtml() ?: return null
+        val doc = Jsoup.parse(html, mainUrl)
+        val section = doc.selectFirst("section#${request.data}")
+        if (section == null) {
+            OLog.e("section #${request.data} not found")
+            return null
+        }
+        val cards = mutableListOf<SearchResponse>()
+        val seen = mutableSetOf<String>()
+        for (a in section.select("a[href^=/anime/]")) {
+            val href = a.attr("href")
+            val id = Regex("""/anime/([a-f0-9]{24})""").find(href)?.groupValues?.get(1) ?: continue
+            if (!seen.add(id)) continue
+            val title = a.selectFirst(".hc-title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: continue
+            val poster = a.selectFirst("img")?.attr("src")?.takeIf { it.startsWith("http") }
+            cards.add(newMovieSearchResponse(title, "$mainUrl/watch/$id?ep=1", TvType.Anime) {
                 this.posterUrl = poster
             })
         }
-        return out.distinctBy { it.url }
+        OLog.d("section #${request.data} → ${cards.size} cards")
+        return newHomePageResponse(request.name, cards, hasNext = false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         OLog.section("search: $query")
-        val q = URLEncoder.encode(query.trim(), "UTF-8")
-        val urls = listOf(
-            "$mainUrl/browse?q=$q",
-            "$mainUrl/search?q=$q",
-            "$mainUrl/?q=$q",
-        )
-        for (u in urls) {
-            try {
-                val res = app.get(u, headers = browserHeaders)
-                OLog.d("search HTTP ${res.code} $u len=${res.text.length}")
-                val cards = parseCards(res.text)
-                OLog.d("search parsed ${cards.size} cards")
-                if (cards.isNotEmpty()) return cards
-            } catch (e: Exception) {
-                OLog.e("search try failed: ${e.message}")
-            }
+        val html = getHomeHtml() ?: return emptyList()
+        val doc = Jsoup.parse(html, mainUrl)
+        val q = query.trim().lowercase()
+        val out = mutableListOf<SearchResponse>()
+        val seen = mutableSetOf<String>()
+        for (a in doc.select("a[href^=/anime/]")) {
+            val href = a.attr("href")
+            val id = Regex("""/anime/([a-f0-9]{24})""").find(href)?.groupValues?.get(1) ?: continue
+            if (!seen.add(id)) continue
+            val title = a.selectFirst(".hc-title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: continue
+            if (!title.lowercase().contains(q)) continue
+            val poster = a.selectFirst("img")?.attr("src")?.takeIf { it.startsWith("http") }
+            out.add(newMovieSearchResponse(title, "$mainUrl/watch/$id?ep=1", TvType.Anime) {
+                this.posterUrl = poster
+            })
         }
-        OLog.e("search returned 0 for '$query'")
-        return emptyList()
+        OLog.d("search '$query' → ${out.size} matches (catalog filtered)")
+        return out
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -111,13 +126,42 @@ class OtakutsuProvider : MainAPI() {
         OLog.d("anime html len=${animeHtml.length}")
 
         val title = Regex("""<h1[^>]*>([^<]+)</h1>""")
-            .find(animeHtml)?.groupValues?.get(1)?.trim() ?: return null
+            .find(animeHtml)?.groupValues?.get(1)?.trim()?.let {
+                it.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", "\"")
+            } ?: return null
+
         val poster = Regex("""<img[^>]+src="(https://s4\.anilist\.co/[^"]+)""")
             .find(animeHtml)?.groupValues?.get(1)
+
         val plot = Regex("""<p[^>]*class="[^"]*line-clamp-3[^"]*"[^>]*>([\s\S]*?)</p>""")
-            .find(animeHtml)?.groupValues?.get(1)?.trim()
+            .find(animeHtml)?.groupValues?.get(1)?.trim()?.let {
+                it.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", "\"")
+                  .replace(Regex("<[^>]+>"), "")
+            }
+
         val year = Regex("""\b(19|20)\d{2}\b""").find(animeHtml)?.value?.toIntOrNull()
 
+        // Status
+        val statuses = listOf("Finished", "Ongoing", "Releasing", "Upcoming", "Cancelled", "On Hiatus", "Not Yet Aired")
+        val statusStr = statuses.firstOrNull { animeHtml.contains(">$it<") }
+        val csStatus = when (statusStr) {
+            "Finished" -> TvSeriesLoadResponse.Status.Completed
+            "Ongoing", "Releasing" -> TvSeriesLoadResponse.Status.Ongoing
+            "Upcoming", "Not Yet Aired" -> TvSeriesLoadResponse.Status.Ongoing
+            else -> null
+        }
+
+        // Score — look for ★N.N in the page
+        val score = Regex("""★</i>\s*([0-9]+(?:\.[0-9]+)?)""")
+            .find(animeHtml)?.groupValues?.get(1)?.toDoubleOrNull()
+
+        // Genres from /browse?genre= links
+        val genres = Regex("""href="/browse\?genre=([^"]+)"""")
+            .findAll(animeHtml)
+            .map { it.groupValues[1].replace("%20", " ") }
+            .distinct().take(8).toList()
+
+        // ── watch page → episodes ──
         val watchHtml = app.get("$mainUrl/watch/$id?ep=1", headers = browserHeaders).text
         OLog.d("watch html len=${watchHtml.length}")
         val eps = Regex("""/watch/$id\?ep=(\d+)""").findAll(watchHtml)
@@ -131,6 +175,9 @@ class OtakutsuProvider : MainAPI() {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
+                this.tags = genres.takeIf { it.isNotEmpty() }
+                if (csStatus != null) this.status = csStatus
+                if (score != null) this.score = Score.from10(score)
             }
         }
 
@@ -148,7 +195,15 @@ class OtakutsuProvider : MainAPI() {
             this.posterUrl = poster
             this.plot = plot
             this.year = year
+            this.tags = genres.takeIf { it.isNotEmpty() }
+            if (csStatus != null) this.status = csStatus
+            if (score != null) this.score = Score.from10(score)
         }
+    }
+
+    private fun buildStateTree(animeId: String, ep: Int): String {
+        val raw = """["",{"children":["watch",{"children":[["id","$animeId","d",null],{"children":[["ep","$ep","d",null],{"children":["__PAGE__",{},null,null,5120]}],null,null,5124]}],null,null,5128]}],null,null,5144]"""
+        return URLEncoder.encode(raw, "UTF-8")
     }
 
     override suspend fun loadLinks(
@@ -163,56 +218,49 @@ class OtakutsuProvider : MainAPI() {
         val ep = payload.optInt("ep", 1).coerceAtLeast(1)
         OLog.d("animeId=$animeId ep=$ep")
 
-        // Warm up — puts cookies into the shared client jar
-try {
-    val warm = app.get(mainUrl, headers = browserHeaders)
-    OLog.d("warmup code=${warm.code}")
-} catch (e: Exception) {
-    OLog.e("warmup failed: ${e.message}")
-}
+        try { app.get(mainUrl, headers = browserHeaders) } catch (_: Exception) {}
 
+        val apiHeaders = baseHeaders + mapOf(
+            "Content-Type" to "application/json",
+            "Accept" to "application/json, text/plain, */*",
+            "Accept-Language" to "en-US,en;q=0.9",
+            "sec-ch-ua" to "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
+            "sec-ch-ua-mobile" to "?1",
+            "sec-ch-ua-platform" to "\"Android\"",
+            "sec-fetch-dest" to "empty",
+            "sec-fetch-mode" to "cors",
+            "sec-fetch-site" to "same-origin",
+        )
 
-val apiHeaders = baseHeaders + mapOf(
-    "Content-Type" to "application/json",
-    "Accept" to "application/json, text/plain, */*",
-    "Accept-Language" to "en-US,en;q=0.9",
-    "sec-ch-ua" to "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
-    "sec-ch-ua-mobile" to "?1",
-    "sec-ch-ua-platform" to "\"Android\"",
-    "sec-fetch-dest" to "empty",
-    "sec-fetch-mode" to "cors",
-    "sec-fetch-site" to "same-origin",
-)
+        val bootResp = app.post(
+            "$mainUrl/api/media/bootstrap",
+            headers = apiHeaders,
+            requestBody = JSONObject()
+                .put("animeId", animeId).put("ep", ep)
+                .toString().toRequestBody("application/json".toMediaType())
+        )
+        val bootText = bootResp.text
+        OLog.d("bootstrap code=${bootResp.code} len=${bootText.length}")
+        if (bootText.length < 100) OLog.e("bootstrap body: $bootText")
+        val streamToken = JSONObject(bootText).optString("streamToken")
+            .takeIf { it.isNotBlank() } ?: return false
+        OLog.d("streamToken len=${streamToken.length}")
 
-val bootResp = app.post(
-    "$mainUrl/api/media/bootstrap",
-    headers = apiHeaders,
-    requestBody = JSONObject()
-        .put("animeId", animeId).put("ep", ep)
-        .toString().toRequestBody("application/json".toMediaType())
-)
-val bootText = bootResp.text
-OLog.d("bootstrap code=${bootResp.code} len=${bootText.length}")
-if (bootText.length < 100) OLog.e("bootstrap body: $bootText")
-val streamToken = JSONObject(bootText).optString("streamToken")
-    .takeIf { it.isNotBlank() } ?: return false
-OLog.d("streamToken len=${streamToken.length}")
+        try {
+            val sesResp = app.post(
+                "$mainUrl/api/media/session",
+                headers = apiHeaders,
+                requestBody = JSONObject().put("streamToken", streamToken)
+                    .toString().toRequestBody("application/json".toMediaType())
+            )
+            OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
+        } catch (e: Exception) {
+            OLog.e("session failed: ${e.message}")
+        }
 
-try {
-    val sesResp = app.post(
-        "$mainUrl/api/media/session",
-        headers = apiHeaders,
-        requestBody = JSONObject().put("streamToken", streamToken)
-            .toString().toRequestBody("application/json".toMediaType())
-    )
-    OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
-} catch (e: Exception) {
-    OLog.e("session failed: ${e.message}")
-}
-
+        val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
-            put(JSONObject().put("force", "\$undefined"))
         }.toString().toRequestBody("text/plain;charset=UTF-8".toMediaType())
 
         val rsc = app.post(
@@ -221,6 +269,7 @@ try {
                 "Accept" to "text/x-component",
                 "Content-Type" to "text/plain;charset=UTF-8",
                 "next-action" to NEXT_ACTION_ID,
+                "next-router-state-tree" to stateTree,
             ),
             requestBody = actionBody
         ).text
@@ -274,4 +323,4 @@ try {
         OLog.d("loadLinks emitted=$emitted")
         return emitted > 0
     }
-}
+                           }
