@@ -343,51 +343,42 @@ try {
     continue
 }
 
-// extract variant URLs from master
-val variantUrls = masterBody.lines()
-    .map { it.trim() }
-    .filter { it.isNotBlank() && !it.startsWith("#") }
-    .map { line -> if (line.startsWith("http")) line else "$mainUrl$line" }
+// Emit master FIRST (has audio + quality ladder)
+val hasMediaTracks = masterBody.contains("#EXT-X-MEDIA") || masterBody.contains("#EXT-X-STREAM-INF")
+OLog.d("master hasMediaTracks=$hasMediaTracks")
 
-if (variantUrls.isNotEmpty()) {
-    // probe variants, emit ones that work
-    var variantsEmitted = 0
-    for (vu in variantUrls) {
-        try {
-            val vp = app.get(vu, headers = playbackHeadersFn())
-            val vOk = vp.code == 200 && vp.text.trimStart().startsWith("#EXTM3U")
-            OLog.d("variant probe code=${vp.code} len=${vp.text.length} isM3u8=$vOk url=${vu.take(80)}")
-            if (!vOk) continue
-        } catch (e: Exception) {
-            OLog.e("variant probe failed: ${e.message}")
-            continue
-        }
-        callback.invoke(
-            newExtractorLink("Otakutsu", "$label v$variantsEmitted [$server/$subType]", vu, ExtractorLinkType.M3U8) {
-                this.referer = "$mainUrl/"
-                this.headers = playbackHeadersFn()
-            }
-        )
-        variantsEmitted++
-    }
-    if (variantsEmitted > 0) {
-        OLog.d("emitted $variantsEmitted variants for [$label]")
-        emitted += variantsEmitted
-        continue
-    }
-    // fall through if no variant worked
-}
-
-// fallback: emit the master
-OLog.d("emitting master for [$label]")
 callback.invoke(
-    newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
+    newExtractorLink("Otakutsu", "$label MASTER [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
         this.referer = "$mainUrl/"
         this.headers = playbackHeadersFn()
     }
 )
 emitted++
 
+// Variants as fallback (single-quality, often silent)
+val variantUrls = masterBody.lines()
+    .map { it.trim() }
+    .filter { it.isNotBlank() && !it.startsWith("#") }
+    .map { line -> if (line.startsWith("http")) line else "$mainUrl$line" }
+
+var vCount = 0
+for (vu in variantUrls) {
+    if (vCount >= 2) break
+    try {
+        val vp = app.get(vu, headers = playbackHeadersFn())
+        val vOk = vp.code == 200 && vp.text.trimStart().startsWith("#EXTM3U")
+        if (!vOk) continue
+    } catch (_: Exception) { continue }
+    callback.invoke(
+        newExtractorLink("Otakutsu", "$label v$vCount [$server/$subType]", vu, ExtractorLinkType.M3U8) {
+            this.referer = "$mainUrl/"
+            this.headers = playbackHeadersFn()
+        }
+    )
+    vCount++
+}
+OLog.d("emitted master + $vCount variants for [$label]")
+emitted += vCount
             val tracks = s.optJSONArray("tracks")
             if (tracks != null) {
                 for (j in 0 until tracks.length()) {
