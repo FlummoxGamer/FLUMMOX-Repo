@@ -330,10 +330,16 @@ class OtakutsuProvider : MainAPI() {
 
             try {
                 val probe = app.get(fullUrl, headers = playbackHeadersFn())
-                OLog.d("probe code=${probe.code} len=${probe.text.length}")
-           } catch (e: Exception) {
+                val ok = probe.code == 200 && probe.text.trimStart().startsWith("#EXTM3U")
+                OLog.d("probe code=${probe.code} len=${probe.text.length} isM3u8=$ok")
+                if (!ok) {
+                    OLog.d("skip [$label] — not a valid m3u8")
+                    continue
+                }
+            } catch (e: Exception) {
                 OLog.e("probe failed: ${e.message}")
-           }
+                continue
+            }
 
            callback.invoke(
                newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
