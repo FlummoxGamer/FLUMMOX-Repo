@@ -30,18 +30,21 @@ class OtakutsuProvider : MainAPI() {
     )
 
     // Playback headers — no Origin (browser doesn't send it on same-origin GET).
-    private val playbackHeaders get() = mapOf(
-        "User-Agent" to UA,
-        "Accept" to "*/*",
-        "Accept-Language" to "en-US,en;q=0.9",         
-        "Referer" to "$mainUrl/",
-        "sec-ch-ua" to "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
-        "sec-ch-ua-mobile" to "?1",
-        "sec-ch-ua-platform" to "\"Android\"",
-        "sec-fetch-dest" to "empty",
-        "sec-fetch-mode" to "cors",
-        "sec-fetch-site" to "same-origin",
-    )
+    private var playbackCookie: String = ""
+
+    private fun playbackHeadersFn(): Map<String, String> = buildMap {
+        put("User-Agent", UA)
+        put("Accept", "*/*")
+        put("Accept-Language", "en-US,en;q=0.9")
+        put("Referer", "$mainUrl/")
+        put("sec-ch-ua", "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"")
+        put("sec-ch-ua-mobile", "?1")
+        put("sec-ch-ua-platform", "\"Android\"")
+        put("sec-fetch-dest", "empty")
+        put("sec-fetch-mode", "cors")
+        put("sec-fetch-site", "same-origin")
+        if (playbackCookie.isNotBlank()) put("Cookie", playbackCookie)
+    }
     private val browserHeaders get() = mapOf(
         "User-Agent" to UA,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -268,7 +271,7 @@ class OtakutsuProvider : MainAPI() {
 
     val cookieHeader = cookieJar.distinct().joinToString("; ")
     OLog.d("cookie count=${cookieJar.size} headerLen=${cookieHeader.length}")
-
+    playbackCookie = cookieHeader
         val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
@@ -325,21 +328,20 @@ class OtakutsuProvider : MainAPI() {
 
             OLog.d("emit [$label] [$server/$subType] $fullUrl")
 
-           // probe the m3u8 with our own client to see what it returns
-           try {
-               val probe = app.get(fullUrl, headers = playbackHeaders)
-               OLog.d("probe code=${probe.code} len=${probe.text.length}")
+            try {
+                val probe = app.get(fullUrl, headers = playbackHeadersFn())
+                OLog.d("probe code=${probe.code} len=${probe.text.length}")
            } catch (e: Exception) {
-               OLog.e("probe failed: ${e.message}")
+                OLog.e("probe failed: ${e.message}")
            }
 
            callback.invoke(
                newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
                    this.referer = "$mainUrl/"
-                   this.headers = playbackHeaders
+                   this.headers = playbackHeadersFn()
                }
-           )
-           emitted++
+            )
+            emitted++
 
             val tracks = s.optJSONArray("tracks")
             if (tracks != null) {
