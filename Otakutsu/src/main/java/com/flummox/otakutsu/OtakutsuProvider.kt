@@ -29,7 +29,15 @@ class OtakutsuProvider : MainAPI() {
         "Origin" to mainUrl,
     )
 
-    // Playback headers — no Origin (browser doesn't send it on same-origin GET).
+    private val browserHeaders get() = mapOf(
+        "User-Agent" to UA,
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language" to "en-US,en;q=0.9",
+        "Cache-Control" to "no-cache",
+        "Pragma" to "no-cache",
+        "Referer" to "$mainUrl/",
+    )
+
     private var playbackCookie: String = ""
 
     private fun playbackHeadersFn(): Map<String, String> = buildMap {
@@ -45,14 +53,6 @@ class OtakutsuProvider : MainAPI() {
         put("sec-fetch-site", "same-origin")
         if (playbackCookie.isNotBlank()) put("Cookie", playbackCookie)
     }
-    private val browserHeaders get() = mapOf(
-        "User-Agent" to UA,
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language" to "en-US,en;q=0.9",
-        "Cache-Control" to "no-cache",
-        "Pragma" to "no-cache",
-        "Referer" to "$mainUrl/",
-    )
 
     // ── home cache ──
     private var homeHtml: String? = null
@@ -83,7 +83,7 @@ class OtakutsuProvider : MainAPI() {
         "classics"  to "Timeless Classics",
         "beyond"    to "Donghua Worth Discovering",
         "wildcard"  to "Pulled From the Vault",
-   )
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         OLog.section("mainPage: ${request.data}")
@@ -147,6 +147,13 @@ class OtakutsuProvider : MainAPI() {
         val poster = Regex("""<img[^>]+src="(https://s4\.anilist\.co/[^"]+)""")
             .find(animeHtml)?.groupValues?.get(1)
 
+        // extract season number from title (defaults to 1)
+        val seasonNum = run {
+            val m = Regex("""\b(?:season|s)\s*(\d+)\b""", RegexOption.IGNORE_CASE).find(title)
+            m?.groupValues?.get(1)?.toIntOrNull() ?: 1
+        }
+        OLog.d("parsed season=$seasonNum from title='$title'")
+
         val plot = Regex("""<p[^>]*class="[^"]*line-clamp-3[^"]*"[^>]*>([\s\S]*?)</p>""")
             .find(animeHtml)?.groupValues?.get(1)?.trim()?.let {
                 it.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", "\"")
@@ -155,10 +162,11 @@ class OtakutsuProvider : MainAPI() {
 
         val year = Regex("""\b(19|20)\d{2}\b""").find(animeHtml)?.value?.toIntOrNull()
 
-        // Score — look for ★N.N in the page
-        val score = Regex("""★</i>\s*([0-9]+(?:\.[0-9]+)?)""")
+        // Score — ★N.N anywhere in the HTML
+        val score = Regex("""★\s*(\d+(?:\.\d+)?)""")
             .find(animeHtml)?.groupValues?.get(1)?.toDoubleOrNull()
-    
+        OLog.d("parsed score=$score")
+
         // Genres from /browse?genre= links
         val genres = Regex("""href="/browse\?genre=([^"]+)"""")
             .findAll(animeHtml)
@@ -189,7 +197,7 @@ class OtakutsuProvider : MainAPI() {
             newEpisode(q) {
                 this.name = "Episode $ep"
                 this.episode = ep
-                this.season = 1
+                this.season = seasonNum
                 this.posterUrl = poster
             }
         }
@@ -260,18 +268,19 @@ class OtakutsuProvider : MainAPI() {
                 headers = apiHeaders,
                 requestBody = JSONObject().put("streamToken", streamToken)
                     .toString().toRequestBody("application/json".toMediaType())
-        )
-        OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
-        sesResp.headers.values("Set-Cookie").forEach { c ->
-            c.substringBefore(";").trim().takeIf { it.contains("=") }?.let { cookieJar.add(it) }
+            )
+            OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
+            sesResp.headers.values("Set-Cookie").forEach { c ->
+                c.substringBefore(";").trim().takeIf { it.contains("=") }?.let { cookieJar.add(it) }
+            }
+        } catch (e: Exception) {
+            OLog.e("session failed: ${e.message}")
         }
-    } catch (e: Exception) {
-        OLog.e("session failed: ${e.message}")
-    }
 
-    val cookieHeader = cookieJar.distinct().joinToString("; ")
-    OLog.d("cookie count=${cookieJar.size} headerLen=${cookieHeader.length}")
-    playbackCookie = cookieHeader
+        val cookieHeader = cookieJar.distinct().joinToString("; ")
+        OLog.d("cookie count=${cookieJar.size} headerLen=${cookieHeader.length}")
+        playbackCookie = cookieHeader
+
         val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
@@ -294,12 +303,13 @@ class OtakutsuProvider : MainAPI() {
             put("sec-fetch-mode", "cors")
             put("sec-fetch-site", "same-origin")
             if (cookieHeader.isNotBlank()) put("Cookie", cookieHeader)
-         }
-         val rsc = app.post(
-             watchUrl,
-             headers = rscHeaders,
-             requestBody = actionBody
-         ).text
+        }
+
+        val rsc = app.post(
+            watchUrl,
+            headers = rscHeaders,
+            requestBody = actionBody
+        ).text
         OLog.d("RSC resp len=${rsc.length}")
         OLog.d("RSC state-tree len=${stateTree.length}")
         if (rsc.length < 200) OLog.e("RSC suspiciously short: ${rsc.take(300)}")
@@ -329,56 +339,64 @@ class OtakutsuProvider : MainAPI() {
             OLog.d("emit [$label] [$server/$subType] $fullUrl")
 
             val masterBody: String
-try {
-    val probe = app.get(fullUrl, headers = playbackHeadersFn())
-    val ok = probe.code == 200 && probe.text.trimStart().startsWith("#EXTM3U")
-    OLog.d("probe code=${probe.code} len=${probe.text.length} isM3u8=$ok")
-    if (!ok) {
-        OLog.d("skip [$label] — not a valid m3u8")
-        continue
-    }
-    masterBody = probe.text
-} catch (e: Exception) {
-    OLog.e("probe failed: ${e.message}")
-    continue
-}
+            try {
+                val probe = app.get(fullUrl, headers = playbackHeadersFn())
+                val ok = probe.code == 200 && probe.text.trimStart().startsWith("#EXTM3U")
+                OLog.d("probe code=${probe.code} len=${probe.text.length} isM3u8=$ok")
+                if (!ok) {
+                    OLog.d("skip [$label] — not a valid m3u8")
+                    continue
+                }
+                masterBody = probe.text
+            } catch (e: Exception) {
+                OLog.e("probe failed: ${e.message}")
+                continue
+            }
 
-// Emit master FIRST (has audio + quality ladder)
-val hasMediaTracks = masterBody.contains("#EXT-X-MEDIA") || masterBody.contains("#EXT-X-STREAM-INF")
-OLog.d("master hasMediaTracks=$hasMediaTracks")
+            val hasMediaTracks = masterBody.contains("#EXT-X-MEDIA") || masterBody.contains("#EXT-X-STREAM-INF")
+            val isStub = masterBody.length < 800 && !hasMediaTracks
+            OLog.d("master hasMediaTracks=$hasMediaTracks len=${masterBody.length} isStub=$isStub")
 
-callback.invoke(
-    newExtractorLink("Otakutsu", "$label MASTER [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
-        this.referer = "$mainUrl/"
-        this.headers = playbackHeadersFn()
-    }
-)
-emitted++
+            if (isStub) {
+                OLog.d("skip stub [$label] — no tracks and too short")
+                continue
+            }
 
-// Variants as fallback (single-quality, often silent)
-val variantUrls = masterBody.lines()
-    .map { it.trim() }
-    .filter { it.isNotBlank() && !it.startsWith("#") }
-    .map { line -> if (line.startsWith("http")) line else "$mainUrl$line" }
+            // Master first — has audio + quality ladder
+            val audioTag = if (hasMediaTracks) "🎧 " else ""
+            callback.invoke(
+                newExtractorLink("Otakutsu", "$audioTag$label MASTER [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
+                    this.referer = "$mainUrl/"
+                    this.headers = playbackHeadersFn()
+                }
+            )
+            emitted++
 
-var vCount = 0
-for (vu in variantUrls) {
-    if (vCount >= 2) break
-    try {
-        val vp = app.get(vu, headers = playbackHeadersFn())
-        val vOk = vp.code == 200 && vp.text.trimStart().startsWith("#EXTM3U")
-        if (!vOk) continue
-    } catch (_: Exception) { continue }
-    callback.invoke(
-        newExtractorLink("Otakutsu", "$label v$vCount [$server/$subType]", vu, ExtractorLinkType.M3U8) {
-            this.referer = "$mainUrl/"
-            this.headers = playbackHeadersFn()
-        }
-    )
-    vCount++
-}
-OLog.d("emitted master + $vCount variants for [$label]")
-emitted += vCount
+            // Variants — often silent, kept as last-resort fallback
+            val variantUrls = masterBody.lines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !it.startsWith("#") }
+                .map { line -> if (line.startsWith("http")) line else "$mainUrl$line" }
+
+            var vCount = 0
+            for (vu in variantUrls) {
+                if (vCount >= 2) break
+                try {
+                    val vp = app.get(vu, headers = playbackHeadersFn())
+                    val vOk = vp.code == 200 && vp.text.trimStart().startsWith("#EXTM3U")
+                    if (!vOk) continue
+                } catch (_: Exception) { continue }
+                callback.invoke(
+                    newExtractorLink("Otakutsu", "🔇 $label v$vCount [$server/$subType]", vu, ExtractorLinkType.M3U8) {
+                        this.referer = "$mainUrl/"
+                        this.headers = playbackHeadersFn()
+                    }
+                )
+                vCount++
+            }
+            OLog.d("emitted master + $vCount variants for [$label]")
+            emitted += vCount
+
             val tracks = s.optJSONArray("tracks")
             if (tracks != null) {
                 for (j in 0 until tracks.length()) {
