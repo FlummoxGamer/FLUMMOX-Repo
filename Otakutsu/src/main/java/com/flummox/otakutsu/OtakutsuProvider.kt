@@ -98,7 +98,7 @@ class OtakutsuProvider : MainAPI() {
         val seen = mutableSetOf<String>()
         for (a in section.select("a[href^=/anime/]")) {
             val href = a.attr("href")
-            val id = Regex("""/anime/([a-f0-9]{24})""").find(href)?.groupValues?.get(1) ?: continue
+            val id = Regex("""/anime/((?:[a-f0-9]{24}|al-\d+))""").find(href)?.groupValues?.get(1) ?: continue
             if (!seen.add(id)) continue
             val title = a.selectFirst(".hc-title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: continue
             val poster = a.selectFirst("img")?.attr("src")?.takeIf { it.startsWith("http") }
@@ -119,7 +119,7 @@ class OtakutsuProvider : MainAPI() {
         val seen = mutableSetOf<String>()
         for (a in doc.select("a[href^=/anime/]")) {
             val href = a.attr("href")
-            val id = Regex("""/anime/([a-f0-9]{24})""").find(href)?.groupValues?.get(1) ?: continue
+            val id = Regex("""/anime/((?:[a-f0-9]{24}|al-\d+))""").find(href)?.groupValues?.get(1) ?: continue
             if (!seen.add(id)) continue
             val title = a.selectFirst(".hc-title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: continue
             if (!title.lowercase().contains(q)) continue
@@ -133,7 +133,7 @@ class OtakutsuProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val id = Regex("""/(?:watch|anime)/([a-f0-9]{24})""").find(url)?.groupValues?.get(1) ?: return null
+        val id = Regex("""/(?:watch|anime)/((?:[a-f0-9]{24}|al-\d+))""").find(url)?.groupValues?.get(1) ?: return null
         OLog.section("load: $id")
 
         val animeHtml = app.get("$mainUrl/anime/$id", headers = browserHeaders).text
