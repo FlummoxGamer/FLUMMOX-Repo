@@ -1,11 +1,4 @@
 
----
-
-## 2. New Otakutsu `OSettings.kt`
-
-Minimal. Only LOGS, centered. Charcoal theme, entrance animation kept. Log window unchanged.
-
-```kotlin
 package com.flummox.otakutsu
 
 import android.animation.ObjectAnimator
