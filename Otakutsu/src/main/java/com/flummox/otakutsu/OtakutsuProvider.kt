@@ -171,6 +171,14 @@ try {
     OLog.e("warmup failed: ${e.message}")
 }
 
+// DEBUG — delete after we diagnose the bootstrap 404
+try {
+    val echo = app.get("https://httpbin.org/headers", headers = browserHeaders).text
+    OLog.d("httpbin: ${echo.replace("\n", " ").replace(Regex("\\s+"), " ").take(500)}")
+} catch (e: Exception) {
+    OLog.e("httpbin failed: ${e.message}")
+}
+
 val apiHeaders = baseHeaders + mapOf(
     "Content-Type" to "application/json",
     "Accept" to "application/json, text/plain, */*",
