@@ -29,6 +29,19 @@ class OtakutsuProvider : MainAPI() {
         "Origin" to mainUrl,
     )
 
+    // Playback headers — no Origin (browser doesn't send it on same-origin GET).
+    private val playbackHeaders get() = mapOf(
+        "User-Agent" to UA,
+        "Accept" to "*/*",
+        "Accept-Language" to "en-US,en;q=0.9",         
+        "Referer" to "$mainUrl/",
+        "sec-ch-ua" to "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
+        "sec-ch-ua-mobile" to "?1",
+        "sec-ch-ua-platform" to "\"Android\"",
+        "sec-fetch-dest" to "empty",
+        "sec-fetch-mode" to "cors",
+        "sec-fetch-site" to "same-origin",
+    )
     private val browserHeaders get() = mapOf(
         "User-Agent" to UA,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -310,14 +323,23 @@ class OtakutsuProvider : MainAPI() {
             val server = s.optString("server").ifBlank { "otakutsu" }
             val subType = s.optString("subType").ifBlank { "sub" }
 
-            OLog.d("emit [$label] [$server/$subType]")
-            callback.invoke(
-                newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
-                    this.referer = "$mainUrl/"
-                    this.headers = baseHeaders
-                }
-            )
-            emitted++
+            OLog.d("emit [$label] [$server/$subType] $fullUrl")
+
+           // probe the m3u8 with our own client to see what it returns
+           try {
+               val probe = app.get(fullUrl, headers = playbackHeaders)
+               OLog.d("probe code=${probe.code} len=${probe.text.length}")
+           } catch (e: Exception) {
+               OLog.e("probe failed: ${e.message}")
+           }
+
+           callback.invoke(
+               newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
+                   this.referer = "$mainUrl/"
+                   this.headers = playbackHeaders
+               }
+           )
+           emitted++
 
             val tracks = s.optJSONArray("tracks")
             if (tracks != null) {
