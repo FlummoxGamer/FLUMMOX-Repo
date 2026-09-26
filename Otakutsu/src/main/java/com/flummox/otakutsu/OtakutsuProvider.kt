@@ -111,25 +111,42 @@ class OtakutsuProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        OLog.section("search: $query")
-        val html = getHomeHtml() ?: return emptyList()
-        val doc = Jsoup.parse(html, mainUrl)
-        val q = query.trim().lowercase()
-        val out = mutableListOf<SearchResponse>()
-        val seen = mutableSetOf<String>()
-        for (a in doc.select("a[href^=/anime/]")) {
-            val href = a.attr("href")
-            val id = Regex("""/anime/((?:[a-f0-9]{24}|al-\d+))""").find(href)?.groupValues?.get(1) ?: continue
+    OLog.section("search: $query")
+    val out = mutableListOf<SearchResponse>()
+    val seen = mutableSetOf<String>()
+    try {
+        val q = URLEncoder.encode(query.trim(), "UTF-8")
+        val url = "$mainUrl/api/feed/search?query=$q&per_page=30&page=1&sort=popularity"
+        val json = app.get(url, headers = baseHeaders + mapOf(
+            "Accept" to "application/json, text/plain, */*",
+            "Referer" to "$mainUrl/",
+            "sec-fetch-dest" to "empty",
+            "sec-fetch-mode" to "cors",
+            "sec-fetch-site" to "same-origin",
+        )).text
+        OLog.d("search HTTP len=${json.length}")
+        val root = JSONObject(json)
+        val results = root.optJSONArray("results") ?: return emptyList()
+        for (i in 0 until results.length()) {
+            val o = results.optJSONObject(i) ?: continue
+            val id = o.optString("id").takeIf { it.isNotBlank() } ?: continue
             if (!seen.add(id)) continue
-            val title = a.selectFirst(".hc-title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: continue
-            if (!title.lowercase().contains(q)) continue
-            val poster = a.selectFirst("img")?.attr("src")?.takeIf { it.startsWith("http") }
+            val titleObj = o.optJSONObject("title")
+            val title = titleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
+                ?: titleObj?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" }
+                ?: titleObj?.optString("native")?.takeIf { it.isNotBlank() && it != "null" }
+                ?: continue
+            val poster = o.optJSONObject("cover_image")?.optString("large")
+                ?.takeIf { it.startsWith("http") }
             out.add(newMovieSearchResponse(title, "$mainUrl/watch/$id?ep=1", TvType.Anime) {
                 this.posterUrl = poster
             })
         }
-        OLog.d("search '$query' → ${out.size} matches (catalog filtered)")
-        return out
+        OLog.d("search '$query' → ${out.size} results")
+    } catch (e: Exception) {
+        OLog.e("search failed: ${e.message}")
+    }
+    return out
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -163,8 +180,16 @@ class OtakutsuProvider : MainAPI() {
         val year = Regex("""\b(19|20)\d{2}\b""").find(animeHtml)?.value?.toIntOrNull()
 
         // Score — ★N.N anywhere in the HTML
-        val score = Regex("""★\s*(\d+(?:\.\d+)?)""")
-            .find(animeHtml)?.groupValues?.get(1)?.toDoubleOrNull()
+        val score = run {
+            val patterns = listOf(
+                Regex("""★\s*</i>\s*(\d+(?:\.\d+)?)"""),
+                Regex("""★\D{0,20}?(\d+(?:\.\d+)?)"""),
+                Regex("""&#9733;\D{0,20}?(\d+(?:\.\d+)?)"""),
+           )
+           patterns.firstNotNullOfOrNull { rx ->
+               rx.find(animeHtml)?.groupValues?.get(1)?.toDoubleOrNull()
+           }
+        }
         OLog.d("parsed score=$score")
 
         // Genres from /browse?genre= links
