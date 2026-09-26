@@ -76,7 +76,6 @@ class OtakutsuProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "trending"   to "Top 10 Trending",
-        "discover"   to "Popular",
         "weekend"    to "Short & Complete",
         "movies"     to "Movies",
         "beyond"     to "Donghua",
