@@ -177,8 +177,18 @@ class OtakutsuProvider : MainAPI() {
                   .replace(Regex("<[^>]+>"), "")
             }
 
-        val year = Regex("""\b(19|20)\d{2}\b""").find(animeHtml)?.value?.toIntOrNull()
-
+        val year = run {
+            val patterns = listOf(
+                Regex("""</span>\s*<span[^>]*>\s*(19\d{2}|20\d{2})\s*</span>"""),
+                Regex("""\bReleased?\s*[:\-]\s*(19\d{2}|20\d{2})\b""", RegexOption.IGNORE_CASE),
+                Regex("""\b(19\d{2}|20\d{2})\b(?=[^<]*</span>)"""),
+            )
+            patterns.firstNotNullOfOrNull { rx ->
+                rx.find(animeHtml)?.groupValues?.get(1)?.toIntOrNull()
+            }
+        }
+        OLog.d("parsed year=$year")
+        
         // Score — ★N.N anywhere in the HTML
         val score = run {
             val patterns = listOf(
@@ -193,10 +203,21 @@ class OtakutsuProvider : MainAPI() {
         OLog.d("parsed score=$score")
 
         // Genres from /browse?genre= links
-        val genres = Regex("""href="/browse\?genre=([^"]+)"""")
+        val baseGenres = Regex("""href="/browse\?genre=([^"]+)"""")
             .findAll(animeHtml)
             .map { it.groupValues[1].replace("%20", " ") }
             .distinct().take(8).toList()
+
+        // Status — look for common labels in HTML
+        val statusLabels = listOf("Finished", "Ongoing", "Releasing", "Completed", "Upcoming", "Cancelled", "On Hiatus")
+        val statusStr = statusLabels.firstOrNull { s ->
+            Regex(""">\s*${Regex.escape(s)}\s*<""").containsMatchIn(animeHtml)
+        }
+        OLog.d("parsed status=$statusStr")
+
+        val genres = if (statusStr != null) {
+            (listOf(statusStr) + baseGenres).take(9)
+        } else baseGenres
 
         // ── watch page → episodes ──
         val watchHtml = app.get("$mainUrl/watch/$id?ep=1", headers = browserHeaders).text
@@ -378,28 +399,21 @@ class OtakutsuProvider : MainAPI() {
                 continue
             }
 
-            val hasAudioTrack = masterBody.contains("TYPE=AUDIO")
-            val hasVariants = masterBody.contains("#EXT-X-STREAM-INF")
-            val tooShort = masterBody.length < 500
+            val hasAudioTag = masterBody.contains("TYPE=AUDIO")
+            OLog.d("master hasAudioTag=$hasAudioTag len=${masterBody.length}")
 
-           OLog.d("master len=${masterBody.length} hasAudio=$hasAudioTrack hasVariants=$hasVariants")
-
-           if (!hasAudioTrack) {
+            if (!hasAudioTag) {
                OLog.d("skip [$label] — no TYPE=AUDIO in master (silent)")
                continue
-           }
-           if (tooShort && !hasVariants) {
-               OLog.d("skip [$label] — too short, no variants")
-               continue
-           }
+            }
 
-           callback.invoke(
-               newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
-                   this.referer = "$mainUrl/"
-                   this.headers = playbackHeadersFn()
-               }
-           )
-           emitted++
+            callback.invoke(
+                newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
+                    this.referer = "$mainUrl/"
+                    this.headers = playbackHeadersFn()
+                }
+            )
+            emitted++
             val tracks = s.optJSONArray("tracks")
             if (tracks != null) {
                 for (j in 0 until tracks.length()) {
