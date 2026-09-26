@@ -227,11 +227,16 @@ class OtakutsuProvider : MainAPI() {
         )
         val bootText = bootResp.text
         OLog.d("bootstrap code=${bootResp.code} len=${bootText.length}")
-        OLog.d("bootstrap set-cookie=${bootResp.headers["Set-Cookie"]?.take(200) ?: "none"}")
         if (bootText.length < 100) OLog.e("bootstrap body: $bootText")
         val streamToken = JSONObject(bootText).optString("streamToken")
             .takeIf { it.isNotBlank() } ?: return false
         OLog.d("streamToken len=${streamToken.length}")
+
+        // collect cookies set by bootstrap + session
+        val cookieJar = mutableListOf<String>()
+        bootResp.headers.values("Set-Cookie").forEach { c ->
+            c.substringBefore(";").trim().takeIf { it.contains("=") }?.let { cookieJar.add(it) }
+        }
 
         try {
             val sesResp = app.post(
@@ -239,12 +244,17 @@ class OtakutsuProvider : MainAPI() {
                 headers = apiHeaders,
                 requestBody = JSONObject().put("streamToken", streamToken)
                     .toString().toRequestBody("application/json".toMediaType())
-            )
-            OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
-            OLog.d("session set-cookie=${sesResp.headers["Set-Cookie"]?.take(200) ?: "none"}")
-        } catch (e: Exception) {
-            OLog.e("session failed: ${e.message}")
+        )
+        OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
+        sesResp.headers.values("Set-Cookie").forEach { c ->
+            c.substringBefore(";").trim().takeIf { it.contains("=") }?.let { cookieJar.add(it) }
         }
+    } catch (e: Exception) {
+        OLog.e("session failed: ${e.message}")
+    }
+
+    val cookieHeader = cookieJar.distinct().joinToString("; ")
+    OLog.d("cookie count=${cookieJar.size} headerLen=${cookieHeader.length}")
 
         val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
@@ -252,23 +262,23 @@ class OtakutsuProvider : MainAPI() {
         }.toString().toRequestBody("text/plain;charset=UTF-8".toMediaType())
 
         val watchUrl = "$mainUrl/watch/$animeId?ep=$ep"
-        val rscHeaders = mapOf(
-            "User-Agent" to UA,
-            "Accept" to "text/x-component",
-            "Accept-Language" to "en-US,en;q=0.9",
-            "Content-Type" to "text/plain;charset=UTF-8",
-            "Origin" to mainUrl,
-            "Referer" to watchUrl,
-            "next-action" to NEXT_ACTION_ID,
-            "next-router-state-tree" to stateTree,
-            "sec-ch-ua" to "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
-            "sec-ch-ua-mobile" to "?1",
-            "sec-ch-ua-platform" to "\"Android\"",
-            "sec-fetch-dest" to "empty",
-            "sec-fetch-mode" to "cors",
-            "sec-fetch-site" to "same-origin",
-         )
-
+        val rscHeaders = buildMap {
+            put("User-Agent", UA)
+            put("Accept", "text/x-component")
+            put("Accept-Language", "en-US,en;q=0.9")
+            put("Content-Type", "text/plain;charset=UTF-8")
+            put("Origin", mainUrl)
+            put("Referer", watchUrl)
+            put("next-action", NEXT_ACTION_ID)
+            put("next-router-state-tree", stateTree)
+            put("sec-ch-ua", "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"")
+            put("sec-ch-ua-mobile", "?1")
+            put("sec-ch-ua-platform", "\"Android\"")
+            put("sec-fetch-dest", "empty")
+            put("sec-fetch-mode", "cors")
+            put("sec-fetch-site", "same-origin")
+            if (cookieHeader.isNotBlank()) put("Cookie", cookieHeader)
+         }
          val rsc = app.post(
              watchUrl,
              headers = rscHeaders,
