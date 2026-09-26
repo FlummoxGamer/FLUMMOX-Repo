@@ -101,6 +101,11 @@ object OLog {
 
     fun count(): Int = synchronized(lock) { buffer.size }
 
+    fun recent(n: Int): List<String> = synchronized(lock) {
+        if (buffer.isEmpty()) emptyList()
+        else buffer.takeLast(n).toList()
+    }
+
     fun clear() {
         synchronized(lock) {
             buffer.clear()
