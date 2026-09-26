@@ -1,3 +1,11 @@
+
+---
+
+## 2. New Otakutsu `OSettings.kt`
+
+Minimal. Only LOGS, centered. Charcoal theme, entrance animation kept. Log window unchanged.
+
+```kotlin
 package com.flummox.otakutsu
 
 import android.animation.ObjectAnimator
@@ -49,14 +57,13 @@ object OSettings {
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             background = shape(BG, 0, ctx)
-            setPadding(dp(ctx, 20), dp(ctx, 40), dp(ctx, 20), dp(ctx, 20))
+            setPadding(dp(ctx, 24), dp(ctx, 40), dp(ctx, 24), dp(ctx, 24))
         }
 
-        // ── title ──
         val title = TextView(ctx).apply {
             text = "OTAKUTSU"
             setTextColor(TEXT)
-            textSize = 36f
+            textSize = 32f
             setTypeface(typeface, Typeface.BOLD)
             letterSpacing = 0.06f
         }
@@ -67,162 +74,59 @@ object OSettings {
             setTextColor(SUBTEXT)
             textSize = 10f
             letterSpacing = 0.22f
-            setPadding(0, dp(ctx, 8), 0, dp(ctx, 28))
+            setPadding(0, dp(ctx, 8), 0, 0)
         }
         root.addView(subtitle)
 
-        // ── status pill ──
-        val statusPill = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = shape(SURFACE, 18, ctx, 1, BORDER)
-            setPadding(dp(ctx, 18), dp(ctx, 16), dp(ctx, 18), dp(ctx, 16))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(ctx, 18) }
-        }
-        statusPill.addView(TextView(ctx).apply {
-            text = "EXTENSION"
-            setTextColor(TEXT)
-            textSize = 12f
-            letterSpacing = 0.18f
-            setTypeface(typeface, Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
+        root.addView(View(ctx), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
         val activeDot = View(ctx).apply {
             background = shape(ACTIVE, 5, ctx)
             layoutParams = LinearLayout.LayoutParams(dp(ctx, 9), dp(ctx, 9)).apply {
-                rightMargin = dp(ctx, 10)
+                rightMargin = dp(ctx, 12)
             }
         }
-        statusPill.addView(activeDot)
-        statusPill.addView(TextView(ctx).apply {
-            text = "ACTIVE"
-            setTextColor(ACTIVE)
-            textSize = 12f
-            letterSpacing = 0.18f
-            setTypeface(typeface, Typeface.BOLD)
-        })
-        root.addView(statusPill)
 
-        // ── hero box (empty) ──
-        val hero = View(ctx).apply {
-            background = shape(SURFACE, 18, ctx, 1, BORDER)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 170)
-            ).apply { bottomMargin = dp(ctx, 18) }
-        }
-        root.addView(hero)
-
-        // ── tile factory 
-   fun makeTile(label: String? = null, tappable: Boolean = false, onClick: (() -> Unit)? = null): FrameLayout {
-    return FrameLayout(ctx).apply {
-        background = shape(SURFACE, 18, ctx, 1, if (tappable) BORDER_HI else BORDER)
-        if (onClick != null) {
+        val logsTile = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(SURFACE, 20, ctx, 1, BORDER_HI)
             isClickable = true
-            setOnClickListener { onClick() }
-        }
-        if (label != null) {
-            addView(TextView(ctx).apply {
-                text = label
-                setTextColor(TEXT)
-                textSize = 11f
-                letterSpacing = 0.18f
-                setTypeface(typeface, Typeface.BOLD)
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM or Gravity.START
-                ).apply {
-                    leftMargin = dp(ctx, 16)
-                    bottomMargin = dp(ctx, 14)
-                }
-            })
-        }
-    }
-}
-        // ── 2x2 grid ──
-        val gridRow1 = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(ctx, 14) }
-        }
-
-        // preview holder — rebuild content without recreating the tile
-val previewBox = LinearLayout(ctx).apply {
-    orientation = LinearLayout.VERTICAL
-    layoutParams = FrameLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT,
-        Gravity.TOP or Gravity.START
-    ).apply {
-        leftMargin = dp(ctx, 16)
-        rightMargin = dp(ctx, 16)
-        topMargin = dp(ctx, 16)
-    }
-}
-fun refreshPreview() {
-    previewBox.removeAllViews()
-    OLog.recent(3).forEach { raw ->
-        val cut = raw.indexOf("] ")
-        val line = if (cut in 0 until raw.length - 2) raw.substring(cut + 2).take(26)
-                   else raw.take(26)
-        previewBox.addView(TextView(ctx).apply {
-            text = line
-            setTextColor(0x99EDEDED.toInt())
-            textSize = 9f
-            typeface = Typeface.MONOSPACE
-            maxLines = 1
-            isSingleLine = true
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        })
-    }
-}
-refreshPreview()
-
-val logsTile = FrameLayout(ctx).apply {
-    background = shape(SURFACE, 18, ctx, 1, BORDER_HI)
-    isClickable = true
-    setOnClickListener { showLogWindow(ctx) { refreshPreview() } }
-    addView(previewBox)
-    addView(TextView(ctx).apply {
-        text = "LOGS"
-        setTextColor(TEXT)
-        textSize = 11f
-        letterSpacing = 0.18f
-        setTypeface(typeface, Typeface.BOLD)
-        layoutParams = FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM or Gravity.START
-        ).apply {
-            leftMargin = dp(ctx, 16)
-            bottomMargin = dp(ctx, 14)
-        }
-    })
-}
-        val emptyTile1 = makeTile()
-        gridRow1.addView(logsTile, LinearLayout.LayoutParams(0, dp(ctx, 118), 1f).apply { rightMargin = dp(ctx, 14) })
-        gridRow1.addView(emptyTile1, LinearLayout.LayoutParams(0, dp(ctx, 118), 1f))
-        root.addView(gridRow1)
-
-        val gridRow2 = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(ctx, 24), dp(ctx, 28), dp(ctx, 24), dp(ctx, 28))
+            setOnClickListener { showLogWindow(ctx) }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
-        val emptyTile2 = makeTile()
-        val emptyTile3 = makeTile()
-        gridRow2.addView(emptyTile2, LinearLayout.LayoutParams(0, dp(ctx, 118), 1f).apply { rightMargin = dp(ctx, 14) })
-        gridRow2.addView(emptyTile3, LinearLayout.LayoutParams(0, dp(ctx, 118), 1f))
-        root.addView(gridRow2)
+        logsTile.addView(activeDot)
+        val logsText = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        logsText.addView(TextView(ctx).apply {
+            text = "LOGS"
+            setTextColor(TEXT)
+            textSize = 16f
+            letterSpacing = 0.18f
+            setTypeface(typeface, Typeface.BOLD)
+        })
+        logsText.addView(TextView(ctx).apply {
+            text = "${OLog.count()} lines"
+            setTextColor(SUBTEXT)
+            textSize = 11f
+            letterSpacing = 0.12f
+            setPadding(0, dp(ctx, 6), 0, 0)
+        })
+        logsTile.addView(logsText)
+        logsTile.addView(TextView(ctx).apply {
+            text = "›"
+            setTextColor(SUBTEXT)
+            textSize = 22f
+        })
+        root.addView(logsTile)
 
-        // spacer
         root.addView(View(ctx), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // ── close ──
         val closeBtn = Button(ctx).apply {
             text = "CLOSE"
             textSize = 13f
@@ -233,7 +137,7 @@ val logsTile = FrameLayout(ctx).apply {
             setTypeface(typeface, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 52)
-            ).apply { topMargin = dp(ctx, 24) }
+            )
             setOnClickListener { dlg.dismiss() }
         }
         root.addView(closeBtn)
@@ -243,7 +147,6 @@ val logsTile = FrameLayout(ctx).apply {
         dlg.window?.setBackgroundDrawable(shape(BG, 0, ctx))
 
         dlg.setOnShowListener {
-            // pulsing ACTIVE dot
             ObjectAnimator.ofFloat(activeDot, "alpha", 0.25f, 1f).apply {
                 duration = 1200
                 repeatCount = ValueAnimator.INFINITE
@@ -251,9 +154,7 @@ val logsTile = FrameLayout(ctx).apply {
                 interpolator = AccelerateDecelerateInterpolator()
                 start()
             }
-            // staggered entrance
-            val entrance = listOf(title, subtitle, statusPill, hero, gridRow1, gridRow2, closeBtn)
-            entrance.forEachIndexed { i, v ->
+            listOf(title, subtitle, logsTile, closeBtn).forEachIndexed { i, v ->
                 v.alpha = 0f
                 v.translationY = 28f
                 v.animate()
@@ -268,7 +169,7 @@ val logsTile = FrameLayout(ctx).apply {
         dlg.show()
     }
 
-    // ── log window ──
+    // ── log window (unchanged) ──
     private fun showLogWindow(ctx: Context, onClose: () -> Unit = {}) {
         val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
         val root = LinearLayout(ctx).apply {
@@ -276,7 +177,6 @@ val logsTile = FrameLayout(ctx).apply {
             background = shape(BG, 0, ctx)
         }
 
-        // header
         val header = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -301,7 +201,6 @@ val logsTile = FrameLayout(ctx).apply {
         header.addView(countText)
         root.addView(header)
 
-        // body
         val logView = TextView(ctx).apply {
             typeface = Typeface.MONOSPACE
             textSize = 11f
@@ -336,7 +235,6 @@ val logsTile = FrameLayout(ctx).apply {
         })
         root.addView(logRow)
 
-        // buttons
         val btnRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(ctx, 16), dp(ctx, 14), dp(ctx, 16), dp(ctx, 8))
@@ -400,7 +298,6 @@ val logsTile = FrameLayout(ctx).apply {
         })
         root.addView(btnRow)
 
-        // close
         val close = Button(ctx).apply {
             text = "CLOSE"
             textSize = 13f
