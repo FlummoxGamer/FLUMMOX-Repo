@@ -141,20 +141,10 @@ class OtakutsuProvider : MainAPI() {
 
         val year = Regex("""\b(19|20)\d{2}\b""").find(animeHtml)?.value?.toIntOrNull()
 
-        // Status
-        val statuses = listOf("Finished", "Ongoing", "Releasing", "Upcoming", "Cancelled", "On Hiatus", "Not Yet Aired")
-        val statusStr = statuses.firstOrNull { animeHtml.contains(">$it<") }
-        val csStatus = when (statusStr) {
-            "Finished" -> TvSeriesLoadResponse.Status.Completed
-            "Ongoing", "Releasing" -> TvSeriesLoadResponse.Status.Ongoing
-            "Upcoming", "Not Yet Aired" -> TvSeriesLoadResponse.Status.Ongoing
-            else -> null
-        }
-
         // Score — look for ★N.N in the page
         val score = Regex("""★</i>\s*([0-9]+(?:\.[0-9]+)?)""")
             .find(animeHtml)?.groupValues?.get(1)?.toDoubleOrNull()
-
+    
         // Genres from /browse?genre= links
         val genres = Regex("""href="/browse\?genre=([^"]+)"""")
             .findAll(animeHtml)
@@ -176,7 +166,6 @@ class OtakutsuProvider : MainAPI() {
                 this.plot = plot
                 this.year = year
                 this.tags = genres.takeIf { it.isNotEmpty() }
-                if (csStatus != null) this.status = csStatus
                 if (score != null) this.score = Score.from10(score)
             }
         }
@@ -196,7 +185,6 @@ class OtakutsuProvider : MainAPI() {
             this.plot = plot
             this.year = year
             this.tags = genres.takeIf { it.isNotEmpty() }
-            if (csStatus != null) this.status = csStatus
             if (score != null) this.score = Score.from10(score)
         }
     }
