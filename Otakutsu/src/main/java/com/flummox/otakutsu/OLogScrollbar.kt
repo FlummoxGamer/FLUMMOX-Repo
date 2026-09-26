@@ -11,7 +11,7 @@ import kotlin.math.max
 class OLogScrollbar(
     context: Context,
     private val scrollView: ScrollView,
-    thumbColor: Int = 0x8C38BDF8.toInt(),
+    thumbColor: Int = 0x8C7A7A7A.toInt(),
     private val horizontalInsetDp: Int = 2,
     private val verticalInsetDp: Int = 6
 ) : View(context) {
