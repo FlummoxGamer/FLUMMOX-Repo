@@ -2,6 +2,9 @@ package com.flummox.otakutsu
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -21,7 +24,10 @@ class OtakutsuProvider : MainAPI() {
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
-    private val NEXT_ACTION_ID = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
+    // Fallback if auto-extract fails
+    private val NEXT_ACTION_ID_FALLBACK = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
+
+    private var cachedActionId: String? = null
 
     private val baseHeaders get() = mapOf(
         "User-Agent" to UA,
@@ -68,9 +74,58 @@ class OtakutsuProvider : MainAPI() {
             homeHtml = html
             homeTime = now
             html
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             OLog.e("getHomeHtml failed: ${e.message}")
             null
+        }
+    }
+
+    // ── auto-extract NEXT_ACTION_ID from Otakutsu's JS chunks ──
+    private suspend fun resolveActionId(): String {
+        cachedActionId?.let { return it }
+        return try {
+            val homeHtml = app.get(mainUrl, headers = browserHeaders).text
+            val doc = Jsoup.parse(homeHtml, mainUrl)
+            val chunks = doc.select("script[src]").mapNotNull { it.attr("src") }
+                .filter { it.contains("/_next/static/chunks/") }
+                .distinct()
+                .take(40)
+            OLog.d("scanning ${chunks.size} chunks for action id")
+
+            val rxPrimary = Regex("""createServerReference\(["']([a-f0-9]{40})["']""")
+            val rxAlt = Regex("""["']([a-f0-9]{40})["']""")
+
+            val found = coroutineScope {
+                chunks.map { src ->
+                    async {
+                        try {
+                            val url = if (src.startsWith("http")) src else "$mainUrl$src"
+                            val body = app.get(url, timeout = 6000L).text
+                            val m = rxPrimary.find(body) ?: rxAlt.find(body)
+                            if (m != null) src to m.groupValues[1] else null
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) { null }
+                    }
+                }.awaitAll().filterNotNull()
+            }
+
+            val hit = found.firstOrNull()
+            if (hit != null) {
+                OLog.d("action id extracted: ${hit.second} from ${hit.first}")
+                cachedActionId = hit.second
+                hit.second
+            } else {
+                OLog.e("no action id in chunks, using fallback")
+                NEXT_ACTION_ID_FALLBACK
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            OLog.e("resolveActionId failed: ${e.message}")
+            NEXT_ACTION_ID_FALLBACK
         }
     }
 
@@ -141,6 +196,8 @@ class OtakutsuProvider : MainAPI() {
                 })
             }
             OLog.d("search '$query' → ${out.size} results")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             OLog.e("search failed: ${e.message}")
         }
@@ -213,7 +270,6 @@ class OtakutsuProvider : MainAPI() {
             (listOf(statusStr) + baseGenres).take(9)
         } else baseGenres
 
-        // ── watch page → episodes (with names + thumbnails) ──
         val watchHtml = app.get("$mainUrl/watch/$id?ep=1", headers = browserHeaders).text
         OLog.d("watch html len=${watchHtml.length}")
 
@@ -332,6 +388,9 @@ class OtakutsuProvider : MainAPI() {
         OLog.d("cookie count=${cookieJar.size} headerLen=${cookieHeader.length}")
         playbackCookie = cookieHeader
 
+        val actionId = resolveActionId()
+        OLog.d("using action id=$actionId")
+
         val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
@@ -345,7 +404,7 @@ class OtakutsuProvider : MainAPI() {
             put("Content-Type", "text/plain;charset=UTF-8")
             put("Origin", mainUrl)
             put("Referer", watchUrl)
-            put("next-action", NEXT_ACTION_ID)
+            put("next-action", actionId)
             put("next-router-state-tree", stateTree)
             put("sec-ch-ua", "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"")
             put("sec-ch-ua-mobile", "?1")
@@ -369,10 +428,19 @@ class OtakutsuProvider : MainAPI() {
                 if (idx < 1) return@mapNotNull null
                 try { JSONObject(line.substring(idx + 1)) } catch (_: Exception) { null }
             }
-            .firstOrNull { it.has("sources") } ?: run {
-                OLog.e("RSC had no 'sources' key. First 500: ${rsc.take(500)}")
-                return false
+            .firstOrNull { it.has("sources") }
+
+        if (sourcesObj == null) {
+            // Distinguish "server returned page instead of action" from "no sources for this episode"
+            if (rsc.length > 20000 && rsc.contains("\"\$Sreact.fragment\"")) {
+                OLog.e("OTAKUTSU UPDATED — plugin needs update (action id likely stale, extraction may have failed)")
+                OLog.e("current action id=$actionId")
+            } else {
+                OLog.e("RSC had no 'sources' key. len=${rsc.length}. First 500: ${rsc.take(500)}")
             }
+            return false
+        }
+
         val sources = sourcesObj.optJSONArray("sources") ?: return false
         OLog.d("sources count=${sources.length()}")
 
@@ -435,4 +503,4 @@ class OtakutsuProvider : MainAPI() {
         OLog.d("loadLinks emitted=$emitted")
         return emitted > 0
     }
-}
+                               }
