@@ -59,7 +59,6 @@ class OtakutsuProvider : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "new"       to "Fresh Episodes",
         "trending"  to "Top 10 Trending",
         "gems"      to "Hidden Gems",
         "weekend"   to "Short & Complete",
@@ -68,8 +67,7 @@ class OtakutsuProvider : MainAPI() {
         "classics"  to "Timeless Classics",
         "beyond"    to "Donghua Worth Discovering",
         "wildcard"  to "Pulled From the Vault",
-        "upcoming"  to "Coming Soon",
-    )
+   )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         OLog.section("mainPage: ${request.data}")
@@ -229,6 +227,7 @@ class OtakutsuProvider : MainAPI() {
         )
         val bootText = bootResp.text
         OLog.d("bootstrap code=${bootResp.code} len=${bootText.length}")
+        OLog.d("bootstrap set-cookie=${bootResp.headers["Set-Cookie"]?.take(200) ?: "none"}")
         if (bootText.length < 100) OLog.e("bootstrap body: $bootText")
         val streamToken = JSONObject(bootText).optString("streamToken")
             .takeIf { it.isNotBlank() } ?: return false
@@ -242,6 +241,7 @@ class OtakutsuProvider : MainAPI() {
                     .toString().toRequestBody("application/json".toMediaType())
             )
             OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
+            OLog.d("session set-cookie=${sesResp.headers["Set-Cookie"]?.take(200) ?: "none"}")
         } catch (e: Exception) {
             OLog.e("session failed: ${e.message}")
         }
@@ -262,6 +262,7 @@ class OtakutsuProvider : MainAPI() {
             requestBody = actionBody
         ).text
         OLog.d("RSC resp len=${rsc.length}")
+        OLog.d("RSC state-tree len=${stateTree.length}")
         if (rsc.length < 200) OLog.e("RSC suspiciously short: ${rsc.take(300)}")
 
         val sourcesObj = rsc.lines()
