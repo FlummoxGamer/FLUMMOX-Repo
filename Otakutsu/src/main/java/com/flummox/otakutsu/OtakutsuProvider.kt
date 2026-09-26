@@ -353,50 +353,28 @@ class OtakutsuProvider : MainAPI() {
                 continue
             }
 
-            val hasMediaTracks = masterBody.contains("#EXT-X-MEDIA") || masterBody.contains("#EXT-X-STREAM-INF")
-            val isStub = masterBody.length < 800 && !hasMediaTracks
-            OLog.d("master hasMediaTracks=$hasMediaTracks len=${masterBody.length} isStub=$isStub")
+            val hasAudioTrack = masterBody.contains("TYPE=AUDIO")
+            val hasVariants = masterBody.contains("#EXT-X-STREAM-INF")
+            val tooShort = masterBody.length < 500
 
-            if (isStub) {
-                OLog.d("skip stub [$label] — no tracks and too short")
-                continue
-            }
+           OLog.d("master len=${masterBody.length} hasAudio=$hasAudioTrack hasVariants=$hasVariants")
 
-            // Master first — has audio + quality ladder
-            val audioTag = if (hasMediaTracks) "🎧 " else ""
-            callback.invoke(
-                newExtractorLink("Otakutsu", "$audioTag$label MASTER [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
-                    this.referer = "$mainUrl/"
-                    this.headers = playbackHeadersFn()
-                }
-            )
-            emitted++
+           if (!hasAudioTrack) {
+               OLog.d("skip [$label] — no TYPE=AUDIO in master (silent)")
+               continue
+           }
+           if (tooShort && !hasVariants) {
+               OLog.d("skip [$label] — too short, no variants")
+               continue
+           }
 
-            // Variants — often silent, kept as last-resort fallback
-            val variantUrls = masterBody.lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() && !it.startsWith("#") }
-                .map { line -> if (line.startsWith("http")) line else "$mainUrl$line" }
-
-            var vCount = 0
-            for (vu in variantUrls) {
-                if (vCount >= 2) break
-                try {
-                    val vp = app.get(vu, headers = playbackHeadersFn())
-                    val vOk = vp.code == 200 && vp.text.trimStart().startsWith("#EXTM3U")
-                    if (!vOk) continue
-                } catch (_: Exception) { continue }
-                callback.invoke(
-                    newExtractorLink("Otakutsu", "🔇 $label v$vCount [$server/$subType]", vu, ExtractorLinkType.M3U8) {
-                        this.referer = "$mainUrl/"
-                        this.headers = playbackHeadersFn()
-                    }
-                )
-                vCount++
-            }
-            OLog.d("emitted master + $vCount variants for [$label]")
-            emitted += vCount
-
+           callback.invoke(
+               newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
+                   this.referer = "$mainUrl/"
+                   this.headers = playbackHeadersFn()
+               }
+           )
+           emitted++
             val tracks = s.optJSONArray("tracks")
             if (tracks != null) {
                 for (j in 0 until tracks.length()) {
