@@ -2,17 +2,29 @@ package com.flummox.otakutsu
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import java.net.URLEncoder
 
 class OtakutsuProvider : MainAPI() {
+    companion object {
+        private val sectionCache = mutableMapOf<String, Pair<Long, List<SearchResponse>>>()
+        fun clearSectionCache() = synchronized(this) { sectionCache.clear() }
+    }
+
     override var mainUrl = "https://otakutsu.cc"
     override var name = "Otakutsu"
     override val hasMainPage = true
@@ -24,10 +36,9 @@ class OtakutsuProvider : MainAPI() {
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
-    // Fallback if auto-extract fails
     private val NEXT_ACTION_ID_FALLBACK = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
-
     private var cachedActionId: String? = null
+    private var playbackCookie: String = ""
 
     private val baseHeaders get() = mapOf(
         "User-Agent" to UA,
@@ -43,8 +54,6 @@ class OtakutsuProvider : MainAPI() {
         "Pragma" to "no-cache",
         "Referer" to "$mainUrl/",
     )
-
-    private var playbackCookie: String = ""
 
     private fun playbackHeadersFn(): Map<String, String> = buildMap {
         put("User-Agent", UA)
@@ -63,18 +72,27 @@ class OtakutsuProvider : MainAPI() {
     // ── home cache ──
     private var homeHtml: String? = null
     private var homeTime: Long = 0L
+    private var homeDoc: Document? = null
     private val HOME_TTL = 10 * 60 * 1000L
+
+    // ── prefetch ──
+    private val PREFETCH_SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var activePrefetchJob: Job? = null
+    private var lastHomeRenderMs: Long = 0L
+
+    private val PREFETCH_DEBOUNCE_MS = 800L
+    private val HOME_GRACE_MS = 5000L
 
     private suspend fun getHomeHtml(): String? {
         val now = System.currentTimeMillis()
-        val cached = homeHtml
-        if (cached != null && now - homeTime < HOME_TTL) return cached
+        homeHtml?.let { if (now - homeTime < HOME_TTL) return it }
         return try {
             val html = app.get(mainUrl, headers = browserHeaders).text
             homeHtml = html
             homeTime = now
+            homeDoc = null
             html
-        } catch (e: kotlinx.coroutines.CancellationException) {
+        } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             OLog.e("getHomeHtml failed: ${e.message}")
@@ -82,95 +100,25 @@ class OtakutsuProvider : MainAPI() {
         }
     }
 
-    // ── auto-extract NEXT_ACTION_ID from Otakutsu's JS chunks ──
-    private suspend fun resolveActionId(): String {
-    cachedActionId?.let { return it }
-
-    // ── Stage 1: 40-hex in homepage HTML (RSC flight payload) ──
-    try {
-        val homeHtml = app.get(mainUrl, headers = browserHeaders).text
-        val rxQuoted = Regex("""["']([a-f0-9]{40})["']""")
-        val rxBare = Regex("""\b([a-f0-9]{40})\b""")
-        val m1 = rxQuoted.find(homeHtml)
-        if (m1 != null) {
-            OLog.d("action id from home html (quoted): ${m1.groupValues[1]}")
-            cachedActionId = m1.groupValues[1]
-            return m1.groupValues[1]
-        }
-        val m2 = rxBare.find(homeHtml)
-        if (m2 != null) {
-            OLog.d("action id from home html (bare): ${m2.groupValues[1]}")
-            cachedActionId = m2.groupValues[1]
-            return m2.groupValues[1]
-        }
-        OLog.d("no 40-hex in home html (len=${homeHtml.length})")
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        OLog.e("home html scan failed: ${e.message}")
-    }
-
-    return try {
-        val homeHtml = app.get(mainUrl, headers = browserHeaders).text
-        val doc = Jsoup.parse(homeHtml, mainUrl)
-            val chunks = doc.select("script[src]").mapNotNull { it.attr("src") }
-                .filter { it.contains("/_next/static/chunks/") }
-                .distinct()
-                .take(40)
-            OLog.d("scanning ${chunks.size} chunks for action id")
-
-            val rxPrimary = Regex("""createServerReference\(["']([a-f0-9]{40})["']""")
-            val rxAlt = Regex("""["']([a-f0-9]{40})["']""")
-
-            val found = coroutineScope {
-                chunks.map { src ->
-                    async {
-                        val tag = src.substringAfterLast("/").take(28)
-                        try {
-                            val url = if (src.startsWith("http")) src else "$mainUrl$src"
-                            val resp = app.get(
-                                url,
-                                headers = mapOf("Accept-Encoding" to "gzip, deflate"),
-                                timeout = 6000L
-                            )
-                            val body = resp.text
-                            val enc = resp.headers["Content-Encoding"] ?: "none"
-                            if (body.length > 100000) {
-                                OLog.d("chunk $tag code=${resp.code} enc=$enc len=${body.length} head=${body.take(80).replace("\n", " ")}")
-                            }
-                            val m = rxPrimary.find(body) ?: rxAlt.find(body)
-                            if (m != null) {
-                                OLog.d("chunk $tag code=${resp.code} len=${body.length} HIT ${m.groupValues[1]}")
-                                src to m.groupValues[1]
-                            } else {
-                                OLog.d("chunk $tag code=${resp.code} len=${body.length} miss")
-                                null
-                            }
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            OLog.d("chunk $tag ERR ${e.message}")
-                            null
-                        }
-                    }
-                }.awaitAll().filterNotNull()
-            }
-            val hit = found.firstOrNull()
-            if (hit != null) {
-                OLog.d("action id extracted: ${hit.second} from ${hit.first}")
-                cachedActionId = hit.second
-                hit.second
-            } else {
-                OLog.e("no action id in chunks, using fallback")
-                NEXT_ACTION_ID_FALLBACK
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
+    private suspend fun getHomeDoc(): Document? {
+        val now = System.currentTimeMillis()
+        homeDoc?.let { if (now - homeTime < HOME_TTL) return it }
+        val html = getHomeHtml() ?: return null
+        return try {
+            val doc = Jsoup.parse(html, mainUrl)
+            homeDoc = doc
+            doc
         } catch (e: Exception) {
-            OLog.e("resolveActionId failed: ${e.message}")
-            NEXT_ACTION_ID_FALLBACK
+            OLog.e("home doc parse failed: ${e.message}")
+            null
         }
     }
+
+    // ── action ID ──
+    // Turbopack no longer emits server action IDs into client JS chunks.
+    // The ID lives only in the RSC flight payload of /watch. load() scans
+    // and caches it. Fallback used if scan misses.
+    private fun resolveActionId(): String = cachedActionId ?: NEXT_ACTION_ID_FALLBACK
 
     override val mainPage = mainPageOf(
         "trending"   to "Top 10 Trending",
@@ -182,9 +130,20 @@ class OtakutsuProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        lastHomeRenderMs = System.currentTimeMillis()
+
+        // section cache hit
+        val ck = "home:${request.data}:$page"
+        synchronized(OtakutsuProvider::class.java) {
+            sectionCache[ck]?.let { (t, cards) ->
+                if (System.currentTimeMillis() - t < HOME_TTL) {
+                    return newHomePageResponse(request.name, cards, hasNext = false)
+                }
+            }
+        }
+
         OLog.section("mainPage: ${request.data}")
-        val html = getHomeHtml() ?: return null
-        val doc = Jsoup.parse(html, mainUrl)
+        val doc = getHomeDoc() ?: return null
         val section = doc.selectFirst("section#${request.data}")
         if (section == null) {
             OLog.e("section #${request.data} not found")
@@ -203,6 +162,9 @@ class OtakutsuProvider : MainAPI() {
             })
         }
         OLog.d("section #${request.data} → ${cards.size} cards")
+        synchronized(OtakutsuProvider::class.java) {
+            sectionCache[ck] = System.currentTimeMillis() to cards
+        }
         return newHomePageResponse(request.name, cards, hasNext = false)
     }
 
@@ -210,6 +172,7 @@ class OtakutsuProvider : MainAPI() {
         OLog.section("search: $query")
         val out = mutableListOf<SearchResponse>()
         val seen = mutableSetOf<String>()
+        val pref = OSettings.getTitleLang()
         try {
             val q = URLEncoder.encode(query.trim(), "UTF-8")
             val url = "$mainUrl/api/feed/search?query=$q&per_page=30&page=1&sort=popularity"
@@ -228,7 +191,13 @@ class OtakutsuProvider : MainAPI() {
                 val id = o.optString("id").takeIf { it.isNotBlank() } ?: continue
                 if (!seen.add(id)) continue
                 val titleObj = o.optJSONObject("title")
-                val title = titleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
+                val preferred = when (pref) {
+                    "romaji" -> titleObj?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" }
+                    "native" -> titleObj?.optString("native")?.takeIf { it.isNotBlank() && it != "null" }
+                    else -> titleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
+                }
+                val title = preferred
+                    ?: titleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
                     ?: titleObj?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" }
                     ?: titleObj?.optString("native")?.takeIf { it.isNotBlank() && it != "null" }
                     ?: continue
@@ -239,7 +208,7 @@ class OtakutsuProvider : MainAPI() {
                 })
             }
             OLog.d("search '$query' → ${out.size} results")
-        } catch (e: kotlinx.coroutines.CancellationException) {
+        } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             OLog.e("search failed: ${e.message}")
@@ -251,8 +220,26 @@ class OtakutsuProvider : MainAPI() {
         val id = Regex("""/(?:watch|anime)/((?:[a-f0-9]{24}|al-\d+))""").find(url)?.groupValues?.get(1) ?: return null
         OLog.section("load: $id")
 
-        val animeHtml = app.get("$mainUrl/anime/$id", headers = browserHeaders).text
+        // Parallel fetch — anime detail + watch page
+        val (animeHtml, watchHtml) = coroutineScope {
+            val a = async { app.get("$mainUrl/anime/$id", headers = browserHeaders).text }
+            val w = async { app.get("$mainUrl/watch/$id?ep=1", headers = browserHeaders).text }
+            a.await() to w.await()
+        }
         OLog.d("anime html len=${animeHtml.length}")
+        OLog.d("watch html len=${watchHtml.length}")
+
+        // Opportunistic action ID scan from watch page RSC payload
+        if (cachedActionId == null) {
+            val m = Regex("""["']([a-f0-9]{40})["']""").find(watchHtml)
+                ?: Regex("""\b([a-f0-9]{40})\b""").find(watchHtml)
+            if (m != null) {
+                OLog.d("action id from watch page: ${m.groupValues[1]}")
+                cachedActionId = m.groupValues[1]
+            } else {
+                OLog.d("no 40-hex in watch html")
+            }
+        }
 
         val title = Regex("""<h1[^>]*>([^<]+)</h1>""")
             .find(animeHtml)?.groupValues?.get(1)?.trim()?.let {
@@ -271,7 +258,7 @@ class OtakutsuProvider : MainAPI() {
         val plot = Regex("""<p[^>]*class="[^"]*line-clamp-3[^"]*"[^>]*>([\s\S]*?)</p>""")
             .find(animeHtml)?.groupValues?.get(1)?.trim()?.let {
                 it.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", "\"")
-                  .replace(Regex("<[^>]+>"), "")
+                    .replace(Regex("<[^>]+>"), "")
             }
 
         val year = run {
@@ -313,9 +300,6 @@ class OtakutsuProvider : MainAPI() {
             (listOf(statusStr) + baseGenres).take(9)
         } else baseGenres
 
-        val watchHtml = app.get("$mainUrl/watch/$id?ep=1", headers = browserHeaders).text
-        OLog.d("watch html len=${watchHtml.length}")
-
         val wDoc = Jsoup.parse(watchHtml, mainUrl)
         data class EpData(val num: Int, val name: String?, val thumb: String?)
         val epList = mutableListOf<EpData>()
@@ -333,7 +317,10 @@ class OtakutsuProvider : MainAPI() {
         OLog.d("episodes found=${epList.size} first=${epList.firstOrNull()?.num} last=${epList.lastOrNull()?.num}")
 
         if (epList.isEmpty()) {
-            val q = JSONObject().apply { put("id", id); put("ep", 1) }.toString()
+            val q = JSONObject().apply {
+                put("id", id); put("ep", 1); put("t", title)
+                put("s", seasonNum); put("ne", 0)
+            }.toString()
             return newMovieLoadResponse(title, url, TvType.AnimeMovie, q) {
                 this.posterUrl = poster
                 this.plot = plot
@@ -343,14 +330,25 @@ class OtakutsuProvider : MainAPI() {
             }
         }
 
-        val episodes = epList.map { e ->
-            val q = JSONObject().apply { put("id", id); put("ep", e.num) }.toString()
+        val episodes = epList.mapIndexed { idx, e ->
+            val next = epList.getOrNull(idx + 1)?.num ?: 0
+            val q = JSONObject().apply {
+                put("id", id); put("ep", e.num); put("t", title)
+                put("s", seasonNum); put("ne", next)
+            }.toString()
             newEpisode(q) {
                 this.name = e.name ?: "Episode ${e.num}"
                 this.episode = e.num
                 this.season = seasonNum
                 this.posterUrl = e.thumb ?: poster
             }
+        }
+
+        // Prefetch ep1 if user is not just previewing
+        val sinceHome = System.currentTimeMillis() - lastHomeRenderMs
+        val fromHome = lastHomeRenderMs > 0 && sinceHome in 0 until HOME_GRACE_MS
+        if (OSettings.isPrefetchEnabled() && !fromHome && epList.isNotEmpty()) {
+            schedulePrefetch(id, epList.first().num)
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
@@ -367,20 +365,31 @@ class OtakutsuProvider : MainAPI() {
         return URLEncoder.encode(raw, "UTF-8")
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        OLog.section("loadLinks")
-        val payload = try { JSONObject(data) } catch (_: Exception) { return false }
-        val animeId = payload.optString("id").takeIf { it.isNotBlank() } ?: return false
-        val ep = payload.optInt("ep", 1).coerceAtLeast(1)
-        OLog.d("animeId=$animeId ep=$ep")
+    private fun schedulePrefetch(animeId: String, ep: Int) {
+        val key = "$animeId:$ep"
+        if (OCache.hasPrefetch(key)) return
+        activePrefetchJob?.cancel()
+        activePrefetchJob = PREFETCH_SCOPE.launch {
+            try {
+                delay(PREFETCH_DEBOUNCE_MS)
+                if (OCache.hasPrefetch(key)) return@launch
+                OLog.d("prefetch start: $animeId E$ep")
+                val result = fetchChain(animeId, ep) ?: run {
+                    OLog.d("prefetch: no result")
+                    return@launch
+                }
+                OCache.putPrefetch(key, result)
+                OLog.d("prefetch done: ${result.sources.size} sources")
+            } catch (e: CancellationException) {
+                OLog.v("prefetch cancelled")
+            } catch (e: Exception) {
+                OLog.e("prefetch failed: ${e.message}")
+            }
+        }
+    }
 
-        try { app.get(mainUrl, headers = browserHeaders) } catch (_: Exception) {}
-
+    // ── Full chain: bootstrap → session → RSC → parse ──
+    private suspend fun fetchChain(animeId: String, ep: Int): PrefetchCache? {
         val apiHeaders = baseHeaders + mapOf(
             "Content-Type" to "application/json",
             "Accept" to "application/json, text/plain, */*",
@@ -401,11 +410,9 @@ class OtakutsuProvider : MainAPI() {
                 .toString().toRequestBody("application/json".toMediaType())
         )
         val bootText = bootResp.text
-        OLog.d("bootstrap code=${bootResp.code} len=${bootText.length}")
-        if (bootText.length < 100) OLog.e("bootstrap body: $bootText")
+        if (bootText.length < 100) OLog.e("bootstrap short: $bootText")
         val streamToken = JSONObject(bootText).optString("streamToken")
-            .takeIf { it.isNotBlank() } ?: return false
-        OLog.d("streamToken len=${streamToken.length}")
+            .takeIf { it.isNotBlank() } ?: return null
 
         val cookieJar = mutableListOf<String>()
         bootResp.headers.values("Set-Cookie").forEach { c ->
@@ -419,21 +426,15 @@ class OtakutsuProvider : MainAPI() {
                 requestBody = JSONObject().put("streamToken", streamToken)
                     .toString().toRequestBody("application/json".toMediaType())
             )
-            OLog.d("session code=${sesResp.code} body=${sesResp.text.take(120)}")
             sesResp.headers.values("Set-Cookie").forEach { c ->
                 c.substringBefore(";").trim().takeIf { it.contains("=") }?.let { cookieJar.add(it) }
             }
         } catch (e: Exception) {
-            OLog.e("session failed: ${e.message}")
+            OLog.v("session failed: ${e.message}")
         }
 
         val cookieHeader = cookieJar.distinct().joinToString("; ")
-        OLog.d("cookie count=${cookieJar.size} headerLen=${cookieHeader.length}")
-        playbackCookie = cookieHeader
-
         val actionId = resolveActionId()
-        OLog.d("using action id=$actionId")
-
         val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
@@ -458,12 +459,8 @@ class OtakutsuProvider : MainAPI() {
             if (cookieHeader.isNotBlank()) put("Cookie", cookieHeader)
         }
 
-        val rsc = app.post(
-            watchUrl,
-            headers = rscHeaders,
-            requestBody = actionBody
-        ).text
-        OLog.d("RSC resp len=${rsc.length}")
+        val rsc = app.post(watchUrl, headers = rscHeaders, requestBody = actionBody).text
+        OLog.v("RSC len=${rsc.length}")
 
         val sourcesObj = rsc.lines()
             .mapNotNull { line ->
@@ -474,20 +471,17 @@ class OtakutsuProvider : MainAPI() {
             .firstOrNull { it.has("sources") }
 
         if (sourcesObj == null) {
-            // Distinguish "server returned page instead of action" from "no sources for this episode"
             if (rsc.length > 20000 && rsc.contains("\"\$Sreact.fragment\"")) {
-                OLog.e("OTAKUTSU UPDATED — plugin needs update (action id likely stale, extraction may have failed)")
+                OLog.e("OTAKUTSU UPDATED — plugin needs update (action id likely stale)")
                 OLog.e("current action id=$actionId")
             } else {
-                OLog.e("RSC had no 'sources' key. len=${rsc.length}. First 500: ${rsc.take(500)}")
+                OLog.v("RSC no 'sources' key. len=${rsc.length}")
             }
-            return false
+            return null
         }
 
-        val sources = sourcesObj.optJSONArray("sources") ?: return false
-        OLog.d("sources count=${sources.length()}")
-
-        var emitted = 0
+        val sources = sourcesObj.optJSONArray("sources") ?: return null
+        val out = mutableListOf<OtakutsuSource>()
         for (i in 0 until sources.length()) {
             val s = sources.optJSONObject(i) ?: continue
             val raw = s.optString("url").takeIf { it.isNotBlank() } ?: continue
@@ -495,72 +489,71 @@ class OtakutsuProvider : MainAPI() {
             val label = s.optString("label").ifBlank { "Otakutsu" }
             val server = s.optString("server").ifBlank { "otakutsu" }
             val subType = s.optString("subType").ifBlank { "sub" }
+            out.add(OtakutsuSource(label, server, subType, fullUrl))
+            OLog.v("source: [$label] [$server/$subType] $fullUrl")
 
-            OLog.d("emit [$label] [$server/$subType] $fullUrl")
+            // subtitle tracks — emit via callback in loadLinks, cached here just for reference
+        }
+        return PrefetchCache(out, cookieHeader)
+    }
 
-            val masterBody: String
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val payload = try { JSONObject(data) } catch (_: Exception) { return false }
+        val animeId = payload.optString("id").takeIf { it.isNotBlank() } ?: return false
+        val ep = payload.optInt("ep", 1).coerceAtLeast(1)
+        val nextEp = payload.optInt("ne", 0)
+        OLog.section("loadLinks: $animeId E$ep")
+
+        // cache hit?
+        val key = "$animeId:$ep"
+        val cached = OCache.getPrefetch(key)
+        val result = cached ?: run {
+            try { app.get(mainUrl, headers = browserHeaders) } catch (_: Exception) {}
+            val fresh = fetchChain(animeId, ep) ?: return false
+            OCache.putPrefetch(key, fresh)
+            OLog.d("cache miss, fetched ${fresh.sources.size} sources")
+            fresh
+        }
+        if (cached != null) OLog.d("cache hit: ${cached.sources.size} sources")
+
+        playbackCookie = result.cookieHeader
+
+        // probe + emit
+        var emitted = 0
+        for (s in result.sources) {
             try {
-                val probe = app.get(fullUrl, headers = playbackHeadersFn())
+                val probe = app.get(s.url, headers = playbackHeadersFn())
                 val ok = probe.code == 200 && probe.text.trimStart().startsWith("#EXTM3U")
                 OLog.d("probe code=${probe.code} len=${probe.text.length} isM3u8=$ok")
-                if (!ok) {
-                    OLog.d("skip [$label] — not a valid m3u8")
-                    continue
-                }
-                masterBody = probe.text
+                if (!ok) continue
+                val master = probe.text
+                val hasVariants = master.contains("#EXT-X-STREAM-INF")
+                val hasMedia = master.contains("#EXT-X-MEDIA")
+                if (!hasVariants && !hasMedia) continue
+                callback.invoke(
+                    newExtractorLink("Otakutsu", "${s.label} [${s.server}/${s.subType}]", s.url, ExtractorLinkType.M3U8) {
+                        this.referer = "$mainUrl/"
+                        this.headers = playbackHeadersFn()
+                    }
+                )
+                emitted++
             } catch (e: Exception) {
                 OLog.e("probe failed: ${e.message}")
-                continue
             }
-
-            val hasVariants = masterBody.contains("#EXT-X-STREAM-INF")
-            val hasMedia = masterBody.contains("#EXT-X-MEDIA")
-            OLog.d("master len=${masterBody.length} hasVariants=$hasVariants hasMedia=$hasMedia")
-
-            if (!hasVariants && !hasMedia) {
-                OLog.d("skip [$label] — not a master playlist")
-                continue
-            }
-
-            callback.invoke(
-                newExtractorLink("Otakutsu", "$label [$server/$subType]", fullUrl, ExtractorLinkType.M3U8) {
-                    this.referer = "$mainUrl/"
-                    this.headers = playbackHeadersFn()
-                }
-            )
-            emitted++
-
-            val tracks = s.optJSONArray("tracks")
-        if (tracks != null) {
-        for (j in 0 until tracks.length()) {
-        val t = tracks.optJSONObject(j) ?: continue
-        val kind = t.optString("kind")
-        if (kind != "subtitles" && kind != "captions") continue
-        val subUrl = t.optString("url").takeIf { it.isNotBlank() } ?: continue
-        val subFull = if (subUrl.startsWith("http")) subUrl else "$mainUrl$subUrl"
-        val label = t.optString("label").ifBlank { "Unknown" }
-
-        OLog.d("SUB URL [$label]: ${subFull.take(200)}")
-
-        // Probe 1: as-is with playback headers
-        try {
-            val p1 = app.get(subFull, headers = playbackHeadersFn())
-            OLog.d("SUB [$label] as-is: code=${p1.code} ct=${p1.headers["Content-Type"]} len=${p1.text.length} head=${p1.text.take(60).replace("\n", " ").replace("\r", "")}")
-        } catch (e: Exception) { OLog.e("SUB [$label] as-is err: ${e.message}") }
-
-        // Probe 2: with referer = watch page
-        try {
-            val h2 = playbackHeadersFn() + mapOf("Referer" to "$mainUrl/watch/$animeId?ep=$ep")
-            val p2 = app.get(subFull, headers = h2)
-            OLog.d("SUB [$label] watch-ref: code=${p2.code} ct=${p2.headers["Content-Type"]} len=${p2.text.length}")
-        } catch (e: Exception) { OLog.e("SUB [$label] watch-ref err: ${e.message}") }
-
-        subtitleCallback(SubtitleFile(label, subFull))
-    }
-}
         }
 
         OLog.d("loadLinks emitted=$emitted")
+
+        // prefetch next episode
+        if (nextEp > 0 && OSettings.isPrefetchEnabled()) {
+            schedulePrefetch(animeId, nextEp)
+        }
+
         return emitted > 0
     }
                                }
