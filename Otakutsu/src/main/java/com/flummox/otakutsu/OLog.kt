@@ -1,6 +1,8 @@
 package com.flummox.otakutsu
 
 import android.content.Context
+import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
+import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
@@ -13,6 +15,7 @@ object OLog {
     private const val MAX_LINES = 2000
     private const val MAX_FILE_BYTES = 500_000L
     private const val TAG = "Otakutsu"
+    private const val K_VERBOSE = "otakutsu_verbose"
 
     private val buffer = ArrayDeque<String>(MAX_LINES)
     private val vBuffer = ArrayDeque<String>(MAX_LINES)
@@ -26,7 +29,6 @@ object OLog {
     private var appContext: Context? = null
     private var verbose = false
 
-    // XOR key — 32 bytes derived from project name. Obfuscation only.
     private val XOR_KEY = byteArrayOf(
         0x4F, 0x74, 0x61, 0x6B, 0x75, 0x74, 0x73, 0x75,
         0x46, 0x6C, 0x75, 0x6D, 0x6D, 0x6F, 0x78, 0x52,
@@ -48,7 +50,18 @@ object OLog {
         String(b, Charsets.UTF_8)
     } catch (_: Exception) { null }
 
-    fun setVerbose(enabled: Boolean) { synchronized(lock) { verbose = enabled } }
+    fun setVerbose(enabled: Boolean) {
+        val changed = synchronized(lock) {
+            val was = verbose
+            verbose = enabled
+            was != enabled
+        }
+        try { setKey(K_VERBOSE, enabled) } catch (_: Exception) {}
+        if (enabled && changed) {
+            writeVerbose("[${timeFormat.format(Date())}] ▸ verbose enabled")
+        }
+    }
+
     fun isVerbose(): Boolean = synchronized(lock) { verbose }
 
     private val RX_JWT = Regex("""eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+""")
@@ -68,6 +81,8 @@ object OLog {
     fun init(context: Context) {
         synchronized(lock) {
             appContext = context.applicationContext
+            verbose = try { getKey<Boolean>(K_VERBOSE) ?: false } catch (_: Exception) { false }
+
             try { writer?.close() } catch (_: Exception) {}
             try { vWriter?.close() } catch (_: Exception) {}
             writer = null; vWriter = null
@@ -96,6 +111,8 @@ object OLog {
                 }
                 vWriter = BufferedWriter(FileWriter(vf, true))
             } catch (_: Exception) {}
+
+            try { android.util.Log.d(TAG, "OLog init, verbose=$verbose") } catch (_: Exception) {}
         }
     }
 
