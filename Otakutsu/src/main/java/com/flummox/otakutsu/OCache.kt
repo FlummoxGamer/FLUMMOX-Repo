@@ -15,14 +15,18 @@ data class PrefetchCache(
 )
 
 object OCache {
+    private const val TTL_VALID = 30 * 60 * 1000L
+    private const val TTL_EMPTY = 60 * 1000L
+
     private data class Entry(val ts: Long, val cache: PrefetchCache)
 
-    private val map = LruCache<String, Entry>(8)
+    private val map = LruCache<String, Entry>(16)
     private val lock = Any()
 
-    fun getPrefetch(key: String, ttlMs: Long = 30 * 60 * 1000L): PrefetchCache? = synchronized(lock) {
+    fun getPrefetch(key: String): PrefetchCache? = synchronized(lock) {
         val e = map.get(key) ?: return null
-        if (System.currentTimeMillis() - e.ts > ttlMs) {
+        val ttl = if (e.cache.sources.isEmpty()) TTL_EMPTY else TTL_VALID
+        if (System.currentTimeMillis() - e.ts > ttl) {
             map.remove(key)
             return null
         }
@@ -33,9 +37,12 @@ object OCache {
         synchronized(lock) { map.put(key, Entry(System.currentTimeMillis(), cache)) }
     }
 
-    fun hasPrefetch(key: String): Boolean = synchronized(lock) { map.get(key) != null }
+    fun hasPrefetch(key: String): Boolean = synchronized(lock) {
+        val e = map.get(key) ?: return false
+        val ttl = if (e.cache.sources.isEmpty()) TTL_EMPTY else TTL_VALID
+        System.currentTimeMillis() - e.ts <= ttl
+    }
 
     fun clear() { synchronized(lock) { map.evictAll() } }
-
     fun size(): Int = synchronized(lock) { map.size() }
 }
