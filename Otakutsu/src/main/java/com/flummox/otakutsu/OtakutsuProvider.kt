@@ -100,18 +100,28 @@ class OtakutsuProvider : MainAPI() {
             val found = coroutineScope {
                 chunks.map { src ->
                     async {
+                        val tag = src.substringAfterLast("/").take(28)
                         try {
                             val url = if (src.startsWith("http")) src else "$mainUrl$src"
-                            val body = app.get(url, timeout = 6000L).text
+                            val resp = app.get(url, timeout = 6000L)
+                            val body = resp.text
                             val m = rxPrimary.find(body) ?: rxAlt.find(body)
-                            if (m != null) src to m.groupValues[1] else null
+                            if (m != null) {
+                                OLog.d("chunk $tag code=${resp.code} len=${body.length} HIT ${m.groupValues[1]}")
+                                src to m.groupValues[1]
+                            } else {
+                                OLog.d("chunk $tag code=${resp.code} len=${body.length} miss")
+                                null
+                            }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
-                        } catch (_: Exception) { null }
+                        } catch (e: Exception) {
+                            OLog.d("chunk $tag ERR ${e.message}")
+                            null
+                        }
                     }
                 }.awaitAll().filterNotNull()
             }
-
             val hit = found.firstOrNull()
             if (hit != null) {
                 OLog.d("action id extracted: ${hit.second} from ${hit.first}")
