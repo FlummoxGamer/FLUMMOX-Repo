@@ -84,10 +84,35 @@ class OtakutsuProvider : MainAPI() {
 
     // ── auto-extract NEXT_ACTION_ID from Otakutsu's JS chunks ──
     private suspend fun resolveActionId(): String {
-        cachedActionId?.let { return it }
-        return try {
-            val homeHtml = app.get(mainUrl, headers = browserHeaders).text
-            val doc = Jsoup.parse(homeHtml, mainUrl)
+    cachedActionId?.let { return it }
+
+    // ── Stage 1: 40-hex in homepage HTML (RSC flight payload) ──
+    try {
+        val homeHtml = app.get(mainUrl, headers = browserHeaders).text
+        val rxQuoted = Regex("""["']([a-f0-9]{40})["']""")
+        val rxBare = Regex("""\b([a-f0-9]{40})\b""")
+        val m1 = rxQuoted.find(homeHtml)
+        if (m1 != null) {
+            OLog.d("action id from home html (quoted): ${m1.groupValues[1]}")
+            cachedActionId = m1.groupValues[1]
+            return m1.groupValues[1]
+        }
+        val m2 = rxBare.find(homeHtml)
+        if (m2 != null) {
+            OLog.d("action id from home html (bare): ${m2.groupValues[1]}")
+            cachedActionId = m2.groupValues[1]
+            return m2.groupValues[1]
+        }
+        OLog.d("no 40-hex in home html (len=${homeHtml.length})")
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        OLog.e("home html scan failed: ${e.message}")
+    }
+
+    return try {
+        val homeHtml = app.get(mainUrl, headers = browserHeaders).text
+        val doc = Jsoup.parse(homeHtml, mainUrl)
             val chunks = doc.select("script[src]").mapNotNull { it.attr("src") }
                 .filter { it.contains("/_next/static/chunks/") }
                 .distinct()
