@@ -531,16 +531,33 @@ class OtakutsuProvider : MainAPI() {
             emitted++
 
             val tracks = s.optJSONArray("tracks")
-            if (tracks != null) {
-                for (j in 0 until tracks.length()) {
-                    val t = tracks.optJSONObject(j) ?: continue
-                    val kind = t.optString("kind")
-                    if (kind != "subtitles" && kind != "captions") continue
-                    val subUrl = t.optString("url").takeIf { it.isNotBlank() } ?: continue
-                    val subFull = if (subUrl.startsWith("http")) subUrl else "$mainUrl$subUrl"
-                    subtitleCallback(SubtitleFile(t.optString("label").ifBlank { "Unknown" }, subFull))
-                }
-            }
+        if (tracks != null) {
+        for (j in 0 until tracks.length()) {
+        val t = tracks.optJSONObject(j) ?: continue
+        val kind = t.optString("kind")
+        if (kind != "subtitles" && kind != "captions") continue
+        val subUrl = t.optString("url").takeIf { it.isNotBlank() } ?: continue
+        val subFull = if (subUrl.startsWith("http")) subUrl else "$mainUrl$subUrl"
+        val label = t.optString("label").ifBlank { "Unknown" }
+
+        OLog.d("SUB URL [$label]: ${subFull.take(200)}")
+
+        // Probe 1: as-is with playback headers
+        try {
+            val p1 = app.get(subFull, headers = playbackHeadersFn())
+            OLog.d("SUB [$label] as-is: code=${p1.code} ct=${p1.headers["Content-Type"]} len=${p1.text.length} head=${p1.text.take(60).replace("\n", " ").replace("\r", "")}")
+        } catch (e: Exception) { OLog.e("SUB [$label] as-is err: ${e.message}") }
+
+        // Probe 2: with referer = watch page
+        try {
+            val h2 = playbackHeadersFn() + mapOf("Referer" to "$mainUrl/watch/$animeId?ep=$ep")
+            val p2 = app.get(subFull, headers = h2)
+            OLog.d("SUB [$label] watch-ref: code=${p2.code} ct=${p2.headers["Content-Type"]} len=${p2.text.length}")
+        } catch (e: Exception) { OLog.e("SUB [$label] watch-ref err: ${e.message}") }
+
+        subtitleCallback(SubtitleFile(label, subFull))
+    }
+}
         }
 
         OLog.d("loadLinks emitted=$emitted")
