@@ -128,8 +128,16 @@ class OtakutsuProvider : MainAPI() {
                         val tag = src.substringAfterLast("/").take(28)
                         try {
                             val url = if (src.startsWith("http")) src else "$mainUrl$src"
-                            val resp = app.get(url, timeout = 6000L)
+                            val resp = app.get(
+                                url,
+                                headers = mapOf("Accept-Encoding" to "gzip, deflate"),
+                                timeout = 6000L
+                            )
                             val body = resp.text
+                            val enc = resp.headers["Content-Encoding"] ?: "none"
+                            if (body.length > 100000) {
+                                OLog.d("chunk $tag code=${resp.code} enc=$enc len=${body.length} head=${body.take(80).replace("\n", " ")}")
+                            }
                             val m = rxPrimary.find(body) ?: rxAlt.find(body)
                             if (m != null) {
                                 OLog.d("chunk $tag code=${resp.code} len=${body.length} HIT ${m.groupValues[1]}")
