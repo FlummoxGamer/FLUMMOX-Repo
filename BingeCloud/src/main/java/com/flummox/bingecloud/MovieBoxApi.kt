@@ -14,14 +14,15 @@ import kotlin.random.Random
 
 private const val MB_SECRET_B64 = "76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O"
 private const val MB_SECRET_ALT_B64 = "Xqn2nnO41/L92o1iuXhSLHTbXvY4Z5ZZ62m8mSLA"
-private const val MB_VERSION_CODE = 50020042L
-private const val MB_VERSION_NAME = "3.0.03.0529.03"
+private const val MB_VERSION_CODE = 50020130L
+private const val MB_VERSION_NAME = "4.0.03.0920.03"
 private const val MB_PACKAGE = "com.community.mbox.in"
-private const val MB_INSTALL_STORE = "ps"
-private const val MB_UA = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
+private const val MB_INSTALL_STORE = "official"
+private const val MB_UA = "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
 private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
 private val MB_HOSTS = listOf(
+    "h5-api.aoneroom.com",
     "api6.aoneroom.com", "api5.aoneroom.com", "api4.aoneroom.com",
     "api4sg.aoneroom.com", "api3.aoneroom.com"
 )
@@ -43,7 +44,7 @@ private fun deviceId(): String {
 }
 
 private fun clientInfo(): String {
-    return """{"package_name":"$MB_PACKAGE","version_name":"$MB_VERSION_NAME","version_code":$MB_VERSION_CODE,"os":"android","os_version":"16","device_id":"${deviceId()}","install_store":"$MB_INSTALL_STORE","gaid":"d7578036d13336cc","brand":"google","model":"SM-S918B","system_language":"en","net":"NETWORK_WIFI","region":"IN","timezone":"Asia/Calcutta","sp_code":""}"""
+    return """{"package_name":"$MB_PACKAGE","version_name":"$MB_VERSION_NAME","version_code":$MB_VERSION_CODE,"os":"android","os_version":"14","device_id":"${deviceId()}","install_store":"$MB_INSTALL_STORE","gaid":"1b2212c1-dadf-43c3-a0c8-bd6ce48ae22d","brand":"Google","model":"Pixel 8","system_language":"en","net":"NETWORK_WIFI","region":"IN","timezone":"Asia/Calcutta","sp_code":""}"""
 }
 private fun md5Hex(data: ByteArray): String =
     MessageDigest.getInstance("MD5").digest(data).joinToString("") { "%02x".format(it) }
