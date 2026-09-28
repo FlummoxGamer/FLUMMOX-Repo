@@ -26,8 +26,7 @@ private val MB_HOSTS = listOf(
     "api4sg.aoneroom.com", "api3.aoneroom.com"
 )
 
-private const val H5_API_HOST = "https://h5-api.aoneroom.com"
-private var cachedH5Token: String? = null
+
 
 private const val MB_BOOTSTRAP_HOST = "apig.inmoviebox.com"
 private const val MB_BOOTSTRAP_PATH = "/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1"
@@ -122,63 +121,51 @@ private fun parseJwtExp(token: String): Long = try {
 fun restoreMbSession() {
     BCLog.d("MB session: fresh bootstrap on boot")
 }
-private suspend fun getH5Token(): String? {
-    cachedH5Token?.let { return it }
-    val url = "$H5_API_HOST/wefeed-h5api-bff/app/get-latest-app-pkgs?appName=moviebox"
-    return try {
-        val ts = System.currentTimeMillis()
-        val res = app.get(url, headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
-            "x-client-token" to generateXClientToken(ts),
-            "x-client-info" to """{"timezone":"Asia/Calcutta"}""",
-            "x-request-lang" to "en",
-            "Accept" to "application/json"
-        ))
-        if (res.code !in 200..299) {
-            BCLog.e("H5 token: HTTP ${res.code}")
-            return null
-        }
-        val xUser = res.headers["x-user"] ?: run {
-            BCLog.e("H5 token: no x-user header")
-            return null
-        }
-        val token = JSONObject(xUser).optString("token").takeIf { it.isNotBlank() }
-        if (token != null) {
-            cachedH5Token = token
-            BCLog.d("H5 token acquired: len=${token.length}")
-        } else {
-            BCLog.e("H5 token: empty token in x-user")
-        }
-        token
-    } catch (e: Exception) {
-        BCLog.e("H5 token failed: ${e.message}")
-        null
-    }
-}
 
-private suspend fun fetchH5StreamUrl(subjectId: String, season: Int, episode: Int): String? {
-    val token = getH5Token() ?: return null
-    val url = "$H5_API_HOST/wefeed-h5api-bff/subject/play-info?subjectId=$subjectId&se=$season&ep=$episode"
+
+private suspend fun fetchResourceStreamUrl(subjectId: String): List<MBStream> {
     return try {
-        val ts = System.currentTimeMillis()
-        val res = app.get(url, headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
-            "Authorization" to "Bearer $token",
-            "x-client-token" to generateXClientToken(ts),
-            "x-client-info" to """{"timezone":"Asia/Calcutta"}""",
-            "x-request-lang" to "en",
-            "Accept" to "application/json"
-        ))
+        val url = "https://${MB_HOSTS.first()}/wefeed-mobile-bff/subject-api/get?subjectId=$subjectId"
+        val session = ensureSession() ?: return emptyList()
+        val res = app.get(url, headers = buildHeaders("GET", url, "application/json", "application/json", null, session))
         if (res.code !in 200..299) {
-            BCLog.e("H5 stream: HTTP ${res.code}")
-            return null
+            BCLog.e("MB get: HTTP ${res.code}")
+            return emptyList()
         }
+        BCLog.v("MB get raw: ${res.text.take(3000)}")
         val root = JSONObject(res.text)
-        BCLog.v("H5 stream raw: ${res.text.take(1000)}")
-        root.optJSONObject("data")?.optString("url")?.takeIf { it.isNotBlank() }
+        val data = root.optJSONObject("data") ?: root
+        val detectors = data.optJSONArray("resourceDetectors")
+            ?: data.optJSONArray("resourceList")
+            ?: return emptyList()
+
+        val out = mutableListOf<MBStream>()
+        for (i in 0 until detectors.length()) {
+            val detector = detectors.optJSONObject(i) ?: continue
+            val resolutions = detector.optJSONArray("resolutionList") ?: continue
+            for (j in 0 until resolutions.length()) {
+                val item = resolutions.optJSONObject(j) ?: continue
+                val link = item.optString("resourceLink").takeIf { it.isNotBlank() } ?: continue
+                val resolution = item.optString("resolution").ifBlank { "Auto" }
+                val fmt = item.optString("format").ifBlank { "MP4" }
+                val codec = item.optString("codecName").ifBlank { "" }
+                BCLog.d("MB resource [$resolution $fmt $codec]: $link")
+                out.add(MBStream(
+                    url = link,
+                    realUrl = link,
+                    quality = if (resolution.endsWith("p")) resolution else "${resolution}p",
+                    size = item.optString("size").ifBlank { null },
+                    audio = null,
+                    durationSec = 0L,
+                    captions = emptyList()
+                ))
+            }
+        }
+        BCLog.d("MB get: ${out.size} resources")
+        out
     } catch (e: Exception) {
-        BCLog.e("H5 stream failed: ${e.message}")
-        null
+        BCLog.e("MB get failed: ${e.message}")
+        emptyList()
     }
 }
 
@@ -360,22 +347,14 @@ suspend fun mbLanguages(originalSubjectId: String): List<Pair<String, String>> {
 }
 
 suspend fun mbPlay(subjectId: String, season: Int = 0, episode: Int = 0, audioLabel: String? = null): List<MBStream> {
-    // Try H5 (web) API first — returns smooth H264 MP4 instead of throttled HEVC DASH
-    val h5Url = fetchH5StreamUrl(subjectId, season, episode)
-    if (h5Url != null) {
-        BCLog.d("H5 stream hit [$audioLabel]: $h5Url")
-        return listOf(MBStream(
-            url = h5Url,
-            realUrl = h5Url,
-            quality = "Auto",
-            size = null,
-            audio = audioLabel,
-            durationSec = 0L,
-            captions = emptyList()
-        ))
-    }
-    BCLog.v("H5 miss [$audioLabel], falling back to mobile API")
-
+    // Try resource-api first — returns all formats (MP4/HLS/DASH)
+val resources = fetchResourceStreamUrl(subjectId)
+val mp4 = resources.filter { it.realUrl.contains(".mp4") && !it.realUrl.contains("macdn.aoneroom.com") }
+if (mp4.isNotEmpty()) {
+    BCLog.d("MB resource hit [$audioLabel]: ${mp4.size} MP4 links")
+    return mp4.map { it.copy(audio = audioLabel) }
+}
+BCLog.v("MB resource miss [$audioLabel], falling back to play-info")
     val q = "subjectId=$subjectId&se=$season&ep=$episode"
     val json = mbGet("/wefeed-mobile-bff/subject-api/play-info", q) ?: return emptyList()
     val root = json.optJSONObject("data") ?: json
