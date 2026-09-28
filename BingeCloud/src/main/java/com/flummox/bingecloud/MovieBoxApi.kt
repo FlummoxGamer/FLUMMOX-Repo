@@ -18,7 +18,7 @@ private const val MB_VERSION_CODE = 50020042L
 private const val MB_VERSION_NAME = "3.0.03.0529.03"
 private const val MB_PACKAGE = "com.community.mbox.in"
 private const val MB_INSTALL_STORE = "ps"
-private const val MB_UA = "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)"
+private const val MB_UA = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
 private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
 private val MB_HOSTS = listOf(
