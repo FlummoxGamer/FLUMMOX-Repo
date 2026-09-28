@@ -1,6 +1,6 @@
 {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/Otakutsu/icon.png",
-    "fileHash": "sha256-6585a090efa0f5fe21c897f73c7e129fc4c7ed8f2308c5edb991f968cdd7f99b",
+    "fileHash": "sha256-e4788357ee4477a0094e84641374a5cc0c67ab47c5abb4211fff56dd29672427",
     "apiVersion": 1,
     "fileSize": 92045,
     "status": 1,
@@ -12,7 +12,7 @@
         "Anime",
         "AnimeMovie"
     ],
-    "version": 1,
+    "version": 2,
     "internalName": "Otakutsu",
     "description": "Anime streaming from Otakutsu",
     "url": "",
