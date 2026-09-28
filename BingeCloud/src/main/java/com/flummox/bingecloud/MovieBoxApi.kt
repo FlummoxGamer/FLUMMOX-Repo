@@ -316,6 +316,9 @@ if (captionsArr != null) {
 }
 if (captionsList.isNotEmpty()) BCLog.d("MB captions: ${captionsList.map { it.first }}")
 
+    // DEBUG: dump the raw streams array so we can see every available field
+    BCLog.v("MB play-info raw streams: ${arr.toString().take(4000)}")
+
 val out = mutableListOf<MBStream>()
     for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
