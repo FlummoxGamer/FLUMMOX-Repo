@@ -438,10 +438,42 @@ path: Otakutsu/build.gradle.kts
 ## OCache.kt
 - OtakutsuSource — data class (label, server, subType, url)
 - PrefetchCache — data class (sources, cookieHeader)
-- OCache — LRU prefetch cache (16 entries)
-  - TTL_VALID = 30min (for non-empty sources)
-  - TTL_EMPTY = 60s (empty results retry sooner)
-  - getPrefetch, putPrefetch, hasPrefetch, clear, size
+- OCache — LRU prefetch cache
+  - getPrefetch, putPrefetch, hasPrefetch
+  - TTL_VALID = 30min, TTL_EMPTY = 60s
+  - clear, size
+
+
+## AniKotoSubs.kt
+- AniKotoSubs — standalone AniKoto subtitle extractor (ported from BingeCloud)
+- DOMAIN, UA, browserHeaders, ajaxHeaders — request config
+- resultString, resultUrl, score — parsing + scoring helpers
+- findSeries — /filter?keyword=X → best title match → data-id extraction
+- serverIdsForEpisode — /ajax/episode/list/{id} → data-ids for target ep
+- resolvePlayerUrl — /ajax/server?get={linkId} → player URL
+- tracksFromPlayer — fetch player page → #megaplay-player data-id → /stream/getSources → tracks
+- Sub, Series — data classes
+- fetch — top-level entry: search → episode → server → player → subs (first 3 servers)
+
+
+## AniZoneSubs.kt
+- AniZoneSubs — standalone AniZone subtitle extractor (ported from BingeCloud)
+- BASE, UA — request config
+- RX_JSON_PARSE_TPL, RX_PLAYER, RX_NON_ALNUM, RX_WS — regexes
+- unescapeJs, extractJsonParse, normalize — parsing helpers
+- search — /anime?search=X → items JSON → Hit list
+- pickBest — exact → containment → first hit
+- getSubtitles — /anime/{slug}/{ep} → vidstackPlayer JSON → subtitles[]
+- Sub, Hit — data classes
+- fetch — top-level entry
+
+
+## SubtitleFetcher.kt
+- SubtitleFetcher — orchestrator for AniKoto + AniZone subs
+- fetch — runs both in parallel, 6s timeout each, merges + dedupes by URL
+- Sub — data class (label, url) with source prefix applied
+- cache — LruCache<String, Entry>, TTL 7 days in-memory
+- clear — wipes cache
 
 
 # ══════════════════════════════════════════════════════════════
