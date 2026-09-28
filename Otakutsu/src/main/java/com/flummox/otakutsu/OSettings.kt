@@ -37,19 +37,11 @@ object OSettings {
     private const val RED = 0xFFE57373.toInt()
     private const val LOG_TEXT = 0xFFB8B8B8.toInt()
 
-    private const val K_TITLE_LANG = "otakutsu_title_lang"
     private const val K_PREFETCH = "otakutsu_prefetch"
 
-    // ── prefs ──
-    fun getTitleLang(): String = getKey<String>(K_TITLE_LANG) ?: "english"
-    fun setTitleLang(v: String) {
-        setKey(K_TITLE_LANG, v)
-        OtakutsuProvider.clearSectionCache()
-    }
     fun isPrefetchEnabled(): Boolean = getKey<Boolean>(K_PREFETCH) ?: true
     fun setPrefetchEnabled(v: Boolean) { setKey(K_PREFETCH, v) }
 
-    // ── helpers ──
     private fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
 
     private fun shape(color: Int, radiusDp: Int, ctx: Context, strokeDp: Int = 0, strokeColor: Int = 0): GradientDrawable =
@@ -162,9 +154,6 @@ object OSettings {
         dlg.show()
     }
 
-    // ══════════════════════════════════════════════════════════
-    // MAIN SCREEN
-    // ══════════════════════════════════════════════════════════
     fun show(ctx: Context) {
         val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
         val root = baseRoot(ctx).apply {
@@ -189,7 +178,6 @@ object OSettings {
         }
         root.addView(subtitle)
 
-        // Badge
         val badge = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -224,15 +212,11 @@ object OSettings {
         })
         root.addView(badge)
 
-        // Spacer to center tiles
         root.addView(View(ctx), LinearLayout.LayoutParams(0, 0, 0.3f))
 
-        // Tiles
         val tileSettings = makeTile(ctx, "⚙️", "SETTINGS") { showSettings(ctx) }
-        val tileTitles = makeTile(ctx, "🌐", "TITLES") { showTitles(ctx) }
         val tileLogs = makeTile(ctx, "📋", "LOGS") { showLogs(ctx) }
         root.addView(tileSettings)
-        root.addView(tileTitles)
         root.addView(tileLogs)
 
         root.addView(View(ctx), LinearLayout.LayoutParams(0, 0, 0.3f))
@@ -264,15 +248,12 @@ object OSettings {
                     }
                 }.start()
             }.start()
-            listOf(title, subtitle, badge, tileSettings, tileTitles, tileLogs, closeBtn)
+            listOf(title, subtitle, badge, tileSettings, tileLogs, closeBtn)
                 .forEachIndexed { i, v -> stagger(v, i) }
         }
         dlg.show()
     }
 
-    // ══════════════════════════════════════════════════════════
-    // SETTINGS
-    // ══════════════════════════════════════════════════════════
     private fun showSettings(ctx: Context) {
         subWindow(ctx, "SETTINGS") { root, dlg ->
 
@@ -296,7 +277,7 @@ object OSettings {
                 setTypeface(typeface, Typeface.BOLD)
             })
             pfCol.addView(TextView(ctx).apply {
-                text = "Pre-cache next episode in background"
+                text = "Pre-cache next episodes in background"
                 setTextColor(SUBTEXT)
                 textSize = 11f
                 setPadding(0, dp(ctx, 4), 0, 0)
@@ -336,7 +317,7 @@ object OSettings {
                 textSize = 11f
                 setPadding(0, dp(ctx, 4), 0, 0)
             })
-            clearRow.addView(clCol)
+            clearRow.addView(clCl)
             clearRow.addView(Button(ctx).apply {
                 text = "CLEAR"
                 textSize = 12f
@@ -359,68 +340,6 @@ object OSettings {
         }
     }
 
-    // ══════════════════════════════════════════════════════════
-    // TITLES
-    // ══════════════════════════════════════════════════════════
-    private fun showTitles(ctx: Context) {
-        subWindow(ctx, "TITLES") { root, dlg ->
-            root.addView(TextView(ctx).apply {
-                text = "Preferred display language for search results."
-                setTextColor(SUBTEXT)
-                textSize = 11f
-                letterSpacing = 0.08f
-                setPadding(0, dp(ctx, 4), 0, dp(ctx, 16))
-            })
-
-            val options = listOf(
-                "english" to "English",
-                "romaji" to "Romaji",
-                "native" to "Native"
-            )
-            val current = getTitleLang()
-
-            for ((key, label) in options) {
-                val row = LinearLayout(ctx).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    background = ripple(shape(SURFACE, 14, ctx, 1, if (key == current) BORDER_HI else BORDER))
-                    isClickable = true
-                    setPadding(dp(ctx, 20), dp(ctx, 18), dp(ctx, 20), dp(ctx, 18))
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                    ).apply { bottomMargin = dp(ctx, 10) }
-                    setOnClickListener {
-                        setTitleLang(key)
-                        dlg.dismiss()
-                        showTitles(ctx)
-                    }
-                }
-                row.addView(TextView(ctx).apply {
-                    text = label
-                    setTextColor(if (key == current) TEXT else SUBTEXT)
-                    textSize = 15f
-                    letterSpacing = 0.10f
-                    setTypeface(typeface, if (key == current) Typeface.BOLD else Typeface.NORMAL)
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                })
-                if (key == current) {
-                    row.addView(TextView(ctx).apply {
-                        text = "✓"
-                        setTextColor(ACTIVE)
-                        textSize = 18f
-                        setTypeface(typeface, Typeface.BOLD)
-                    })
-                }
-                root.addView(row)
-            }
-
-            root.addView(View(ctx), LinearLayout.LayoutParams(0, 0, 1f))
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════
-    // LOGS
-    // ══════════════════════════════════════════════════════════
     private fun showLogs(ctx: Context) {
         val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
         val root = baseRoot(ctx).apply {
@@ -445,7 +364,6 @@ object OSettings {
         }
         root.addView(countText)
 
-        // Verbose toggle row
         val verboseRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -479,7 +397,6 @@ object OSettings {
         verboseRow.addView(verboseSwitch)
         root.addView(verboseRow)
 
-        // Log view
         val logView = TextView(ctx).apply {
             typeface = Typeface.MONOSPACE
             textSize = 11f
@@ -511,7 +428,6 @@ object OSettings {
         })
         root.addView(logRow)
 
-        // Buttons
         val btnRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(ctx, 14), 0, 0)
@@ -588,7 +504,6 @@ object OSettings {
         })
         root.addView(btnRow)
 
-        // Footer note
         root.addView(TextView(ctx).apply {
             text = "Logs are local. Verbose mode captures full URLs, tokens, and chunk data — off by default."
             setTextColor(SUBTEXT)
