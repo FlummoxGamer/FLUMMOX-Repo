@@ -9,6 +9,7 @@ class OtakutsuPlugin : Plugin() {
     override fun load(context: Context) {
         OLog.init(context)
         OLog.d("Otakutsu boot")
+        OAnalytics.ping(context, "Otakutsu")
         registerMainAPI(OtakutsuProvider())
         this.openSettings = { ctx ->
             OSettings.show(ctx)

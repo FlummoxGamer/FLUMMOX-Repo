@@ -9,6 +9,11 @@ android {
     compileSdk = 35
     defaultConfig {
         minSdk = 21
+        val pluginVer = (project.findProperty("otakutsu_version") as? String)?.toIntOrNull() ?: 1
+        buildConfigField("int", "PLUGIN_VERSION", "$pluginVer")
+    }
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
