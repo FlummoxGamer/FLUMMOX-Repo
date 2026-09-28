@@ -15,6 +15,8 @@ android {
         buildConfigField("String", "TVDB_API_KEY", "\"$tvdbKey\"")
         val pluginVer = (project.findProperty("bingecloud_version") as? String)?.toIntOrNull() ?: 1
         buildConfigField("int", "PLUGIN_VERSION", "$pluginVer")
+        val isDev = (System.getenv("IS_DEV_BUILD") ?: "false").equals("true", ignoreCase = true)
+        buildConfigField("boolean", "IS_DEV_BUILD", "$isDev")
     }
     buildFeatures {
         buildConfig = true
