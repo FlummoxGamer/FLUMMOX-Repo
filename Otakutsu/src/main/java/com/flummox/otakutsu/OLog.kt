@@ -69,14 +69,20 @@ object OLog {
                 writer = BufferedWriter(FileWriter(f, true))
             } catch (_: Exception) {}
 
+            // Remove legacy encrypted file from prior installs
             try {
-                val vf = File(context.filesDir, "otakutsu_verbose.txt")
-                if (vf.exists() && vf.length() > MAX_FILE_BYTES) {
-                    val lines = vf.readLines().takeLast(MAX_LINES / 2)
-                    vf.writeText(lines.joinToString("\n") + "\n")
-                }
-                vWriter = BufferedWriter(FileWriter(vf, true))
-            } catch (_: Exception) {}
+                 val legacy = File(context.filesDir, "otakutsu_verbose.enc")
+                 if (legacy.exists()) legacy.delete()
+             } catch (_: Exception) {}
+
+             try {
+                  val vf = File(context.filesDir, "otakutsu_verbose.txt")
+                  if (vf.exists() && vf.length() > MAX_FILE_BYTES) {
+                     val lines = vf.readLines().takeLast(MAX_LINES / 2)
+                     vf.writeText(lines.joinToString("\n") + "\n")
+                  }
+                  vWriter = BufferedWriter(FileWriter(vf, true))
+              } catch (_: Exception) {}
 
             try { android.util.Log.d(TAG, "OLog init, verbose=$verbose") } catch (_: Exception) {}
         }
