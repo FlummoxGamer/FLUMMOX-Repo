@@ -40,13 +40,12 @@ object OAnalytics {
         if (now - lastPing < PING_INTERVAL_MS) return
 
         val installId = getOrCreateInstallId(context)
-        val version = try { BuildConfig.PLUGIN_VERSION } catch (_: Throwable) { 1 }
         val body = JSONObject().apply {
             put("timestamp", now)
             put("installId", installId)
             put("repo", "FLUMMOX-Repo")
             put("ext", extensionName)
-            put("ver", version.toString())
+            put("ver", BuildConfig.PLUGIN_VERSION.toString())
         }.toString()
 
         CoroutineScope(Dispatchers.IO).launch {
