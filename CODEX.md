@@ -29,15 +29,18 @@ path: build.gradle.kts
 path: settings.gradle.kts
 - pluginManagement — plugin id → module mapping
 - rootProject.name = "FLUMMOX-Repo"
+- includes :BingeCloud and :Otakutsu
 
 ## gradle.properties
 path: gradle.properties
 - bingecloud_version — SINGLE SOURCE OF TRUTH for plugin version
+- otakutsu_version — plugin version for Otakutsu
 
 ## patch_plugins.py
 path: patch_plugins.py
 - reads NEW_VERSION, OUTPUT_BRANCH, GITHUB_REPOSITORY env
 - rewrites builds/plugins.json URLs + versions
+- [v2] also reads src/gradle.properties → {internalName.lower()}_version per plugin
 
 
 ## BingeCloud/build.gradle.kts
@@ -339,3 +342,156 @@ path: BingeCloud/build.gradle.kts
 
 ## SpeedBooster.kt
 - deduped — in-flight job deduplication via ConcurrentHashMap
+
+
+# ══════════════════════════════════════════════════════════════
+# OTAKUTSU MODULE
+# ══════════════════════════════════════════════════════════════
+
+## Otakutsu/build.gradle.kts
+path: Otakutsu/build.gradle.kts
+- android — namespace com.flummox.otakutsu, compileSdk 35, minSdk 21
+- cloudstream — description, authors, tvTypes=[Anime, AnimeMovie], version from otakutsu_version
+- dependencies — cloudstream3 pre-release, NiceHttp, jsoup, okhttp, jackson, coroutines
+
+
+## package: com.flummox.otakutsu
+## path: Otakutsu/src/main/java/com/flummox/otakutsu/
+
+
+## OLog.kt
+- init — file + buffer setup; loads persisted verbose pref from CloudStream keys
+- d, v, e, section — normal + verbose log levels (▸ prefix on verbose lines)
+- setVerbose, isVerbose — toggle persisted across sessions
+- allSanitized, allVerboseSanitized — UI feeds for log windows
+- count, countVerbose — line counts for header
+- clear — wipes both files + buffers, reopens writers
+- xorEncrypt, xorDecrypt — obfuscation for otakutsu_verbose.enc
+- sanitize — regex redaction (JWT, bearer, cookie, CF) applied to both views
+- Files: otakutsu_log.txt (plain text), otakutsu_verbose.enc (xor+base64)
+
+
+## OLogScrollbar.kt
+- OLogScrollbar — custom draggable scrollbar View (dim gray 0x8C7A7A7A thumb)
+
+
+## OSettings.kt
+- show — main dialog: OTAKUTSU hero + EXTENSION badge + SETTINGS/LOGS tiles + CLOSE
+- showSettings — sub-window: prefetch toggle row + clear cache row
+- showLogs — sub-window: verbose toggle row, log view, REFRESH/SAVE/COPY/CLEAR buttons, footer note
+- isPrefetchEnabled, setPrefetchEnabled — prefs (K_PREFETCH)
+- makeTile, subWindow, stagger, shape, ripple — UI builders
+- Colors — BG, SURFACE, BORDER, BORDER_HI, TEXT, SUBTEXT, ACTIVE, RED, LOG_TEXT
+- Tile structure: SETTINGS (⚙️) → showSettings, LOGS (📋) → showLogs
+- Badge ACTIVE dot pulses 0.25↔1.0 alpha at 1200ms cycles
+- Staggered entrance: 70ms offset, 420ms duration, DecelerateInterpolator
+
+
+## OtakutsuPlugin.kt
+- OtakutsuPlugin — @CloudstreamPlugin entry point
+- load — OLog.init, registerMainAPI(OtakutsuProvider)
+- openSettings → OSettings.show
+
+
+## OtakutsuProvider.kt
+- OtakutsuProvider — MainAPI class
+  - mainUrl = https://otakutsu.cc
+  - name = Otakutsu
+  - hasMainPage, hasQuickSearch, hasDownloadSupport, supportedTypes = [Anime, AnimeMovie]
+  - NEXT_ACTION_ID — hardcoded fallback (787faac6445fbc39cfe9376659cbfb5168c3f714b2)
+    Turbopack does NOT emit server action IDs to client JS (verified via
+    homepage HTML, homepage chunks, watch route chunks — all miss)
+  - playbackCookie — session cookie state captured from bootstrap+session Set-Cookie
+  - baseHeaders, browserHeaders, playbackHeadersFn — header sets
+  - homeHtml, homeTime, homeDoc, HOME_TTL (10min) — home cache
+  - totalEpsByAnime — per-anime episode count for prefetch planning
+  - getHomeHtml, getHomeDoc — cached accessors
+  - getMainPage — parse <section id=X> cards from home HTML
+  - search — GET /api/feed/search (English → Romaji → Native title chain)
+  - load — parallel /anime/{id} + /watch/{id}?ep=1, parse metadata + episodes, fires PrefetchEngine.warmLoad
+  - buildStateTree — Next.js router state JSON for RSC action POST
+  - fetchChain — bootstrap → session → cookie collect → POST /watch/{id}?ep=N with next-action + state-tree → parse sources[] from RSC flight lines
+  - loadLinks — PrefetchEngine.obtain → probe each source (200 + #EXTM3U + STREAM-INF/MEDIA) → emit ExtractorLink (M3U8) → recordPlay + warmAfterPlay
+  - clearSectionCache — static; wipes in-memory home section cache
+  - Stale-action heuristic: rsc.len > 20KB + contains "$Sreact.fragment" + no "sources" key → log OTAKUTSU UPDATED
+
+
+## PrefetchEngine.kt
+- DEBOUNCE_MS = 800, HOME_GRACE_MS = 5000, HISTORY_SIZE = 5
+- SCOPE — SupervisorJob + Dispatchers.IO
+- inFlight — ConcurrentHashMap<String, CompletableDeferred<PrefetchCache?>>
+  (dedup; second concurrent caller awaits first, no duplicate network)
+- watchHistory — per-anime last-5 plays (binge detection)
+- currentAnimeId — session tracking
+- sessionJobs — cancelable per-session jobs
+- markHomeRender — sets lastHomeRenderMs for grace check
+- isFromHome — true if within HOME_GRACE_MS
+- beginSession — switch anime; cancels prior session jobs
+- recordPlay — append episode to history (dedup on consecutive)
+- plan — sequential 3-history → warm [ep+1, ep+2]; else warm [ep+1]
+- warmLoad — batch warm E1+E2 on series open
+- warmAfterPlay — history-aware next-ep warming
+- warm — enqueues jobs with debounce + grace + cache checks
+- obtain — public in-flight dedup entry (single network call per key even if many callers race)
+
+
+## OCache.kt
+- OtakutsuSource — data class (label, server, subType, url)
+- PrefetchCache — data class (sources, cookieHeader)
+- OCache — LRU prefetch cache (16 entries)
+  - TTL_VALID = 30min (for non-empty sources)
+  - TTL_EMPTY = 60s (empty results retry sooner)
+  - getPrefetch, putPrefetch, hasPrefetch, clear, size
+
+
+# ══════════════════════════════════════════════════════════════
+# OTAKUTSU — reverse-engineered API surface
+# ══════════════════════════════════════════════════════════════
+
+| Purpose              | Endpoint                                     | Method | Notes                                       |
+|----------------------|----------------------------------------------|--------|---------------------------------------------|
+| Search               | /api/feed/search?query=X&per_page=30&page=1  | GET    | JSON; ranked                                |
+| Bootstrap            | /api/media/bootstrap                         | POST   | body {animeId, ep} → {streamToken: JWT}     |
+| Session              | /api/media/session                           | POST   | body {streamToken} → {ok, expiresAt}        |
+| Stream mint          | /watch/{animeId}?ep=N                        | POST   | Next.js server action, RSC flight response  |
+| Master playlist      | /playlist/{id}.m3u8?e={exp}&s={sig}          | GET    | needs Referer + Cookie                      |
+| Variant playlist     | /video/{id}/playlist_X.m3u8?e=&s=            | GET    | listed in master                            |
+| Segment              | /video/{id}/NNNNN.html?e=&s=                 | GET    | content-type video/mp2t (disguised)         |
+| Subtitles            | /subtitle/{id}/{n}_{lang}.html?e=&s=         | GET    | currently 502 — server-side dead            |
+| Related seasons      | /api/catalog-seasons?animeId={id}            | GET    | JSON                                        |
+| Comments             | /api/comments?animeId={id}&ep=N              | GET    | JSON                                        |
+
+## Critical headers for bootstrap/session POST
+- Content-Type: application/json
+- Accept: application/json, text/plain, */*
+- User-Agent: browser UA
+- Referer / Origin: https://otakutsu.cc
+- sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform
+- sec-fetch-dest: empty / mode: cors / site: same-origin
+- Missing sec-fetch-* → Cloudflare returns 404
+
+## Critical headers for /watch server action POST
+Same as above PLUS:
+- Accept: text/x-component
+- Content-Type: text/plain;charset=UTF-8
+- next-action: <40-hex id>
+- next-router-state-tree: <URL-encoded JSON route tree>
+- Cookie: <from bootstrap + session>
+
+Body: ["<animeId>", <ep>, "<streamToken>"]
+
+## Cookie flow
+1. POST /api/media/bootstrap sets 1-2 cookies via Set-Cookie
+2. POST /api/media/session sets 1-2 cookies via Set-Cookie
+3. Both collected into Cookie: name1=val1; name2=val2
+4. Sent on /watch action POST and all m3u8 playback requests
+5. Without cookies → m3u8 requests return 404 (9-byte "Not Found")
+
+## Action ID status (2026-09-28)
+- Hardcoded fallback: 787faac6445fbc39cfe9376659cbfb5168c3f714b2
+- Turbopack does NOT emit server action IDs into client JS bundles
+- Scanned: homepage HTML, homepage chunks (19 files), watch route chunks (12 files)
+- All scans → 0 hits on `[a-f0-9]{40}` pattern
+- Fallback is authoritative until Otakutsu rotates their action source
+- Stale detection heuristic: RSC response >20KB containing "$Sreact.fragment"
+  but no "sources" key → log OTAKUTSU UPDATED
