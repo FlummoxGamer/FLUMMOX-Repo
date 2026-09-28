@@ -87,8 +87,8 @@ jobs:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
           NEW_VERSION: ${{ steps.ver.outputs.version }}
+          IS_DEV_BUILD: ${{ github.ref_name == 'dev' }}
         run: gradle makePluginsJson --no-daemon --no-configuration-cache --no-build-cache
-
       - name: Copy artifacts to builds
         run: |
           find src -name "*.cs3" -exec cp {} builds/ \;
