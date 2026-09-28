@@ -6,7 +6,8 @@ data class OtakutsuSource(
     val label: String,
     val server: String,
     val subType: String,
-    val url: String
+    val url: String,
+    val tracks: List<Pair<String, String>> = emptyList()
 )
 
 data class PrefetchCache(
