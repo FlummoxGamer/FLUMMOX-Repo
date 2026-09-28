@@ -28,27 +28,6 @@ object OLog {
     private var appContext: Context? = null
     private var verbose = false
 
-    private val XOR_KEY = byteArrayOf(
-        0x4F, 0x74, 0x61, 0x6B, 0x75, 0x74, 0x73, 0x75,
-        0x46, 0x6C, 0x75, 0x6D, 0x6D, 0x6F, 0x78, 0x52,
-        0x65, 0x70, 0x6F, 0x56, 0x65, 0x72, 0x62, 0x6F,
-        0x73, 0x65, 0x4C, 0x6F, 0x67, 0x32, 0x30, 0x32
-    )
-
-    private fun xorEncrypt(s: String): String {
-        val b = s.toByteArray(Charsets.UTF_8)
-        val o = ByteArray(b.size)
-        for (i in b.indices) o[i] = (b[i].toInt() xor XOR_KEY[i % XOR_KEY.size].toInt()).toByte()
-        return android.util.Base64.encodeToString(o, android.util.Base64.NO_WRAP)
-    }
-
-    private fun xorDecrypt(b64: String): String? = try {
-        val o = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)
-        val b = ByteArray(o.size)
-        for (i in o.indices) b[i] = (o[i].toInt() xor XOR_KEY[i % XOR_KEY.size].toInt()).toByte()
-        String(b, Charsets.UTF_8)
-    } catch (_: Exception) { null }
-
     fun setVerbose(enabled: Boolean) {
         synchronized(lock) { verbose = enabled }
         try { setKey(K_VERBOSE, enabled) } catch (_: Exception) {}
@@ -91,7 +70,7 @@ object OLog {
             } catch (_: Exception) {}
 
             try {
-                val vf = File(context.filesDir, "otakutsu_verbose.enc")
+                val vf = File(context.filesDir, "otakutsu_verbose.txt")
                 if (vf.exists() && vf.length() > MAX_FILE_BYTES) {
                     val lines = vf.readLines().takeLast(MAX_LINES / 2)
                     vf.writeText(lines.joinToString("\n") + "\n")
@@ -114,7 +93,7 @@ object OLog {
             } catch (_: Exception) {}
             if (isVerboseLine) {
                 try {
-                    vWriter?.appendLine(xorEncrypt(line))
+                    vWriter?.appendLine(line)
                     vPendingWrites++
                     if (vPendingWrites >= 30) { vWriter?.flush(); vPendingWrites = 0 }
                 } catch (_: Exception) {}
@@ -123,9 +102,7 @@ object OLog {
         try { android.util.Log.d(TAG, line) } catch (_: Exception) {}
     }
 
-    fun d(message: String) {
-        writeLine("[${timeFormat.format(Date())}] $message", false)
-    }
+    fun d(message: String) = writeLine("[${timeFormat.format(Date())}] $message", false)
 
     fun v(message: String) {
         if (!isVerbose()) return
@@ -137,9 +114,7 @@ object OLog {
         try { android.util.Log.e(TAG, message) } catch (_: Exception) {}
     }
 
-    fun section(title: String) {
-        writeLine("───── $title ─────", false)
-    }
+    fun section(title: String) = writeLine("───── $title ─────", false)
 
     fun allSanitized(): String = sanitize(
         synchronized(lock) {
@@ -148,7 +123,6 @@ object OLog {
     )
 
     fun allVerboseSanitized(): String = allSanitized()
-
     fun count(): Int = synchronized(lock) { buffer.size }
     fun countVerbose(): Int = count()
 
@@ -160,9 +134,9 @@ object OLog {
             try {
                 appContext?.let { ctx ->
                     File(ctx.filesDir, "otakutsu_log.txt").delete()
-                    File(ctx.filesDir, "otakutsu_verbose.enc").delete()
+                    File(ctx.filesDir, "otakutsu_verbose.txt").delete()
                     writer = BufferedWriter(FileWriter(File(ctx.filesDir, "otakutsu_log.txt"), true))
-                    vWriter = BufferedWriter(FileWriter(File(ctx.filesDir, "otakutsu_verbose.enc"), true))
+                    vWriter = BufferedWriter(FileWriter(File(ctx.filesDir, "otakutsu_verbose.txt"), true))
                 }
             } catch (_: Exception) {}
         }
