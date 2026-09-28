@@ -14,11 +14,11 @@ import kotlin.random.Random
 
 private const val MB_SECRET_B64 = "76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O"
 private const val MB_SECRET_ALT_B64 = "Xqn2nnO41/L92o1iuXhSLHTbXvY4Z5ZZ62m8mSLA"
-private const val MB_VERSION_CODE = 50020126L
-private const val MB_VERSION_NAME = "4.0.02.0831.03"
-private const val MB_PACKAGE = "com.community.mbox.in"
+private const val MB_VERSION_CODE = 50020131L
+private const val MB_VERSION_NAME = "4.0.03.0922.02"
+private const val MB_PACKAGE = "com.community.oneroom"
 private const val MB_INSTALL_STORE = "official"
-private const val MB_UA = "com.community.mbox.in/50020126 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
+private const val MB_UA = "com.community.oneroom/50020131 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
 private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
 private val MB_HOSTS = listOf(
