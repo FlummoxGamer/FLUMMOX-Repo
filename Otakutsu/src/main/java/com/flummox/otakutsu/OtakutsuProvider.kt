@@ -424,17 +424,33 @@ class OtakutsuProvider : MainAPI() {
         }
 
         val sources = sourcesObj.optJSONArray("sources") ?: return null
-        val out = mutableListOf<OtakutsuSource>()
-        for (i in 0 until sources.length()) {
-            val s = sources.optJSONObject(i) ?: continue
-            val raw = s.optString("url").takeIf { it.isNotBlank() } ?: continue
-            val fullUrl = if (raw.startsWith("http")) raw else "$mainUrl$raw"
-            val label = s.optString("label").ifBlank { "Otakutsu" }
-            val server = s.optString("server").ifBlank { "otakutsu" }
-            val subType = s.optString("subType").ifBlank { "sub" }
-            out.add(OtakutsuSource(label, server, subType, fullUrl))
+val out = mutableListOf<OtakutsuSource>()
+for (i in 0 until sources.length()) {
+    val s = sources.optJSONObject(i) ?: continue
+    val raw = s.optString("url").takeIf { it.isNotBlank() } ?: continue
+    val fullUrl = if (raw.startsWith("http")) raw else "$mainUrl$raw"
+    val label = s.optString("label").ifBlank { "Otakutsu" }
+    val server = s.optString("server").ifBlank { "otakutsu" }
+    val subType = s.optString("subType").ifBlank { "sub" }
+
+    // Otakutsu native subtitle tracks. Currently returns 502 on
+    // Otakutsu's server side — emitted anyway so if/when they fix
+    // their subtitle service, users get them automatically.
+    val tracks = mutableListOf<Pair<String, String>>()
+    s.optJSONArray("tracks")?.let { arr ->
+        for (j in 0 until arr.length()) {
+            val t = arr.optJSONObject(j) ?: continue
+            val kind = t.optString("kind")
+            if (kind != "subtitles" && kind != "captions") continue
+            val subUrl = t.optString("url").takeIf { it.isNotBlank() } ?: continue
+            val subFull = if (subUrl.startsWith("http")) subUrl else "$mainUrl$subUrl"
+            val subLabel = t.optString("label").ifBlank { "Unknown" }
+            tracks.add(subLabel to subFull)
         }
-        return PrefetchCache(out, cookieHeader)
+    }
+    out.add(OtakutsuSource(label, server, subType, fullUrl, tracks))
+}
+return PrefetchCache(out, cookieHeader)
     }
 
     override suspend fun loadLinks(
@@ -480,10 +496,20 @@ val subsDeferred: Deferred<List<SubtitleFetcher.Sub>>? =
 
         playbackCookie = result.cookieHeader
 
-        var emitted = 0
-        for (s in result.sources) {
+var emitted = 0
+var nativeSubs = 0
+for (s in result.sources) {
+    // Native Otakutsu tracks (currently 502 but preserved)
+    if (OSettings.isSubtitlesEnabled() && s.tracks.isNotEmpty()) {
+        for ((subLabel, subUrl) in s.tracks) {
             try {
-                val probe = app.get(s.url, headers = playbackHeadersFn())
+                subtitleCallback(SubtitleFile("Otakutsu · $subLabel", subUrl))
+                nativeSubs++
+            } catch (_: Exception) {}
+        }
+    }
+    try {
+        val probe = app.get(s.url, headers = playbackHeadersFn())
                 OLog.v("probe code=${probe.code} len=${probe.text.length}")
                 val ok = probe.code == 200 && probe.text.trimStart().startsWith("#EXTM3U")
                 if (!ok) continue
@@ -507,12 +533,12 @@ val subsDeferred: Deferred<List<SubtitleFetcher.Sub>>? =
 
     // Await parallel subtitle fetch, emit results
     if (subsDeferred != null) {
-        try {
-            val subs = subsDeferred.await()
-            for (s in subs) {
-                subtitleCallback(SubtitleFile(s.label, s.url))
-            }
-            OLog.d("subs emitted=${subs.size}")
+    try {
+        val subs = subsDeferred.await()
+        for (s in subs) {
+            subtitleCallback(SubtitleFile(s.label, s.url))
+        }
+        OLog.d("subs emitted=${subs.size} (native=$nativeSubs)")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
