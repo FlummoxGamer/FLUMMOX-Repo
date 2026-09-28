@@ -200,16 +200,21 @@ object OSettings {
             setTypeface(typeface, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
+
+        val healthy = ActionHealth.isHealthy()
+        val statusColor = if (healthy) ACTIVE else RED
+        val statusText = if (healthy) "ACTIVE" else "STALE"
+
         val dot = View(ctx).apply {
-            background = shape(ACTIVE, 5, ctx)
+            background = shape(statusColor, 5, ctx)
             layoutParams = LinearLayout.LayoutParams(dp(ctx, 9), dp(ctx, 9)).apply {
                 rightMargin = dp(ctx, 10)
             }
         }
         badge.addView(dot)
         badge.addView(TextView(ctx).apply {
-            text = "ACTIVE"
-            setTextColor(ACTIVE)
+            text = statusText
+            setTextColor(statusColor)
             textSize = 13f
             letterSpacing = 0.20f
             setTypeface(typeface, Typeface.BOLD)
