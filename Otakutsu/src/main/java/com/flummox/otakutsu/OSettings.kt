@@ -449,13 +449,8 @@ object OSettings {
         }
 
         fun refresh() {
-            if (OLog.isVerbose()) {
-                logView.text = OLog.allVerboseSanitized()
-                countText.text = "${OLog.countVerbose()} VERBOSE LINES"
-            } else {
-                logView.text = OLog.allSanitized()
-                countText.text = "${OLog.count()} LINES"
-            }
+            logView.text = OLog.allSanitized()
+            countText.text = "${OLog.count()} LINES"
             logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
         }
 
