@@ -18,7 +18,6 @@ object OLog {
     private const val K_VERBOSE = "otakutsu_verbose"
 
     private val buffer = ArrayDeque<String>(MAX_LINES)
-    private val vBuffer = ArrayDeque<String>(MAX_LINES)
     private val lock = Any()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -86,7 +85,7 @@ object OLog {
             try { writer?.close() } catch (_: Exception) {}
             try { vWriter?.close() } catch (_: Exception) {}
             writer = null; vWriter = null
-            buffer.clear(); vBuffer.clear()
+            buffer.clear()
 
             try {
                 val f = File(context.filesDir, "otakutsu_log.txt")
@@ -104,11 +103,6 @@ object OLog {
                     val lines = vf.readLines().takeLast(MAX_LINES / 2)
                     vf.writeText(lines.joinToString("\n") + "\n")
                 }
-                if (vf.exists()) {
-                    vf.readLines().takeLast(MAX_LINES).forEach { line ->
-                        xorDecrypt(line)?.let { vBuffer.addLast(it) }
-                    }
-                }
                 vWriter = BufferedWriter(FileWriter(vf, true))
             } catch (_: Exception) {}
 
@@ -116,40 +110,34 @@ object OLog {
         }
     }
 
-    private fun writeLine(line: String) {
-        synchronized(lock) {
-            buffer.addLast(line)
-            while (buffer.size > MAX_LINES) buffer.removeFirst()
-            try {
-                writer?.appendLine(line)
-                pendingWrites++
-                if (pendingWrites >= 30) { writer?.flush(); pendingWrites = 0 }
-            } catch (_: Exception) {}
-        }
-        try { android.util.Log.d(TAG, line) } catch (_: Exception) {}
-    }
-
-    private fun writeVerbose(line: String) {
-        synchronized(lock) {
-            vBuffer.addLast(line)
-            while (vBuffer.size > MAX_LINES) vBuffer.removeFirst()
+    private fun writeLine(line: String, isVerboseLine: Boolean = false) {
+    synchronized(lock) {
+        buffer.addLast(line)
+        while (buffer.size > MAX_LINES) buffer.removeFirst()
+        try {
+            writer?.appendLine(line)
+            pendingWrites++
+            if (pendingWrites >= 30) { writer?.flush(); pendingWrites = 0 }
+        } catch (_: Exception) {}
+        if (isVerboseLine) {
             try {
                 vWriter?.appendLine(xorEncrypt(line))
                 vPendingWrites++
                 if (vPendingWrites >= 30) { vWriter?.flush(); vPendingWrites = 0 }
             } catch (_: Exception) {}
         }
-        try { android.util.Log.d(TAG, line) } catch (_: Exception) {}
     }
+    try { android.util.Log.d(TAG, line) } catch (_: Exception) {}
+}
 
-    fun d(message: String) {
-        writeLine("[${timeFormat.format(Date())}] $message")
-    }
+fun d(message: String) {
+    writeLine("[${timeFormat.format(Date())}] $message", false)
+}
 
-    fun v(message: String) {
-        if (!isVerbose()) return
-        writeVerbose("[${timeFormat.format(Date())}] ▸ $message")
-    }
+fun v(message: String) {
+    if (!isVerbose()) return
+    writeLine("[${timeFormat.format(Date())}] ▸ $message", true)
+}
 
     fun e(message: String) {
         writeLine("[${timeFormat.format(Date())}] ✗ $message")
@@ -166,14 +154,10 @@ object OLog {
         }
     )
 
-    fun allVerboseSanitized(): String = sanitize(
-        synchronized(lock) {
-            if (vBuffer.isEmpty()) "(no verbose logs yet)" else vBuffer.joinToString("\n")
-        }
-    )
+    fun allVerboseSanitized(): String = allSanitized()
 
     fun count(): Int = synchronized(lock) { buffer.size }
-    fun countVerbose(): Int = synchronized(lock) { vBuffer.size }
+    fun countVerbose(): Int = count()
 
     fun clear() {
         synchronized(lock) {
