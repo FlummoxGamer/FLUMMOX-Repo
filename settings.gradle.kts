@@ -18,3 +18,4 @@ pluginManagement {
 
 rootProject.name = "FLUMMOX-Repo"
 include(":BingeCloud")
+include(":Otakutsu")
