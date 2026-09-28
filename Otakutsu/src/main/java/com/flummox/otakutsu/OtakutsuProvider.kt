@@ -30,6 +30,12 @@ class OtakutsuProvider : MainAPI() {
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
+    // Turbopack compiles Next.js server action IDs into a server-side manifest.
+    // The 40-hex is never emitted to client JS. Confirmed dead-end after scanning
+    // homepage, homepage chunks, and watch route chunks — 0 hits everywhere.
+    // Hardcoded fallback + stale detection heuristic in fetchChain covers rotation.
+    private val NEXT_ACTION_ID = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
+
     private var playbackCookie: String = ""
 
     private val baseHeaders get() = mapOf(
@@ -61,13 +67,11 @@ class OtakutsuProvider : MainAPI() {
         if (playbackCookie.isNotBlank()) put("Cookie", playbackCookie)
     }
 
-    // ── home cache ──
     private var homeHtml: String? = null
     private var homeTime: Long = 0L
     private var homeDoc: Document? = null
     private val HOME_TTL = 10 * 60 * 1000L
 
-    // ── totalEps cache for prefetch planning ──
     private val totalEpsByAnime = mutableMapOf<String, Int>()
 
     private suspend fun getHomeHtml(): String? {
@@ -202,9 +206,6 @@ class OtakutsuProvider : MainAPI() {
         OLog.d("anime html len=${animeHtml.length}")
         OLog.d("watch html len=${watchHtml.length}")
 
-        // Action ID — scan route-scoped chunks referenced by watch page
-        ActionIdResolver.resolveFromWatchHtml(watchHtml, mainUrl)
-
         val title = Regex("""<h1[^>]*>([^<]+)</h1>""")
             .find(animeHtml)?.groupValues?.get(1)?.trim()?.let {
                 it.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", "\"")
@@ -311,7 +312,6 @@ class OtakutsuProvider : MainAPI() {
             }
         }
 
-        // Kick off batch warm E1+E2 (grace + enabled checks inside)
         PrefetchEngine.warmLoad(id) { aid, ep -> fetchChain(aid, ep) }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
@@ -374,7 +374,6 @@ class OtakutsuProvider : MainAPI() {
         }
 
         val cookieHeader = cookieJar.distinct().joinToString("; ")
-        val actionId = ActionIdResolver.current()
         val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
@@ -388,7 +387,7 @@ class OtakutsuProvider : MainAPI() {
             put("Content-Type", "text/plain;charset=UTF-8")
             put("Origin", mainUrl)
             put("Referer", watchUrl)
-            put("next-action", actionId)
+            put("next-action", NEXT_ACTION_ID)
             put("next-router-state-tree", stateTree)
             put("sec-ch-ua", "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"")
             put("sec-ch-ua-mobile", "?1")
