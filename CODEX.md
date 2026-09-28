@@ -486,6 +486,14 @@ path: Otakutsu/build.gradle.kts
 - isHealthy — true if last OK >= last stale (or both zero)
 
 
+## OAnalytics.kt
+- OAnalytics — anonymous daily ping (same Worker + AUTH_TOKEN as BingeCloud)
+- PREFS = "otakutsu_repo_analytics" — separate install ID namespace
+- PING_INTERVAL_MS — 24h throttle
+- getOrCreateInstallId — persistent UUID in CloudStream prefs
+- ping — POST {timestamp, installId, repo, ext, ver} with X-Auth-Token
+
+
 # ══════════════════════════════════════════════════════════════
 # OTAKUTSU — reverse-engineered API surface
 # ══════════════════════════════════════════════════════════════
