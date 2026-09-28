@@ -419,11 +419,13 @@ class OtakutsuProvider : MainAPI() {
         if (sourcesObj == null) {
             if (rsc.length > 20000 && rsc.contains("\"\$Sreact.fragment\"")) {
                 OLog.e("OTAKUTSU UPDATED — plugin needs update (action id likely stale)")
+                ActionHealth.markStale()
             }
             return null
         }
 
-        val sources = sourcesObj.optJSONArray("sources") ?: return null
+val sources = sourcesObj.optJSONArray("sources") ?: return null
+if (sources.length() > 0) ActionHealth.markOk()
 val out = mutableListOf<OtakutsuSource>()
 for (i in 0 until sources.length()) {
     val s = sources.optJSONObject(i) ?: continue
