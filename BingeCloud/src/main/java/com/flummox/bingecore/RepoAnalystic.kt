@@ -35,6 +35,7 @@ object RepoAnalytics {
     }
 
     fun ping(context: Context, extensionName: String) {
+        if (BuildConfig.IS_DEV_BUILD) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val lastPing = prefs.getLong(KEY_LAST_PING, 0L)
         val now = System.currentTimeMillis()
