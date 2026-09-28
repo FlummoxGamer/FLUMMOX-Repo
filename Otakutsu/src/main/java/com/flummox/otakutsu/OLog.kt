@@ -50,15 +50,8 @@ object OLog {
     } catch (_: Exception) { null }
 
     fun setVerbose(enabled: Boolean) {
-        val changed = synchronized(lock) {
-            val was = verbose
-            verbose = enabled
-            was != enabled
-        }
+        synchronized(lock) { verbose = enabled }
         try { setKey(K_VERBOSE, enabled) } catch (_: Exception) {}
-        if (enabled && changed) {
-            writeVerbose("[${timeFormat.format(Date())}] ▸ verbose enabled")
-        }
     }
 
     fun isVerbose(): Boolean = synchronized(lock) { verbose }
@@ -111,41 +104,41 @@ object OLog {
     }
 
     private fun writeLine(line: String, isVerboseLine: Boolean = false) {
-    synchronized(lock) {
-        buffer.addLast(line)
-        while (buffer.size > MAX_LINES) buffer.removeFirst()
-        try {
-            writer?.appendLine(line)
-            pendingWrites++
-            if (pendingWrites >= 30) { writer?.flush(); pendingWrites = 0 }
-        } catch (_: Exception) {}
-        if (isVerboseLine) {
+        synchronized(lock) {
+            buffer.addLast(line)
+            while (buffer.size > MAX_LINES) buffer.removeFirst()
             try {
-                vWriter?.appendLine(xorEncrypt(line))
-                vPendingWrites++
-                if (vPendingWrites >= 30) { vWriter?.flush(); vPendingWrites = 0 }
+                writer?.appendLine(line)
+                pendingWrites++
+                if (pendingWrites >= 30) { writer?.flush(); pendingWrites = 0 }
             } catch (_: Exception) {}
+            if (isVerboseLine) {
+                try {
+                    vWriter?.appendLine(xorEncrypt(line))
+                    vPendingWrites++
+                    if (vPendingWrites >= 30) { vWriter?.flush(); vPendingWrites = 0 }
+                } catch (_: Exception) {}
+            }
         }
+        try { android.util.Log.d(TAG, line) } catch (_: Exception) {}
     }
-    try { android.util.Log.d(TAG, line) } catch (_: Exception) {}
-}
 
-fun d(message: String) {
-    writeLine("[${timeFormat.format(Date())}] $message", false)
-}
+    fun d(message: String) {
+        writeLine("[${timeFormat.format(Date())}] $message", false)
+    }
 
-fun v(message: String) {
-    if (!isVerbose()) return
-    writeLine("[${timeFormat.format(Date())}] ▸ $message", true)
-}
+    fun v(message: String) {
+        if (!isVerbose()) return
+        writeLine("[${timeFormat.format(Date())}] ▸ $message", true)
+    }
 
     fun e(message: String) {
-        writeLine("[${timeFormat.format(Date())}] ✗ $message")
+        writeLine("[${timeFormat.format(Date())}] ✗ $message", false)
         try { android.util.Log.e(TAG, message) } catch (_: Exception) {}
     }
 
     fun section(title: String) {
-        writeLine("───── $title ─────")
+        writeLine("───── $title ─────", false)
     }
 
     fun allSanitized(): String = sanitize(
@@ -161,7 +154,7 @@ fun v(message: String) {
 
     fun clear() {
         synchronized(lock) {
-            buffer.clear(); vBuffer.clear()
+            buffer.clear()
             try { writer?.close(); writer = null } catch (_: Exception) {}
             try { vWriter?.close(); vWriter = null } catch (_: Exception) {}
             try {
