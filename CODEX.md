@@ -545,3 +545,15 @@ Body: ["<animeId>", <ep>, "<streamToken>"]
 - Fallback is authoritative until Otakutsu rotates their action source
 - Stale detection heuristic: RSC response >20KB containing "$Sreact.fragment"
   but no "sources" key → log OTAKUTSU UPDATED
+
+
+# ══════════════════════════════════════════════════════════════
+# CROSS-CUTTING — Dev-build analytics gate (2026-09-28)
+# ══════════════════════════════════════════════════════════════
+
+- build.yml passes IS_DEV_BUILD env (github.ref_name == 'dev')
+- BingeCloud + Otakutsu build.gradle.kts emit BuildConfig.IS_DEV_BUILD boolean
+- RepoAnalytics.ping() and OAnalytics.ping() early-return when true
+- Effect: dev branch builds never contribute to Firebase ping counts
+- Stable builds (main branch) ping normally
+- bingecloud_version bumped to 217 to ship this gate to stable users
