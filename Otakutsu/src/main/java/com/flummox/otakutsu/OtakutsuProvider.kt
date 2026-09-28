@@ -3,14 +3,8 @@ package com.flummox.otakutsu
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -36,8 +30,6 @@ class OtakutsuProvider : MainAPI() {
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
-    private val NEXT_ACTION_ID_FALLBACK = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
-    private var cachedActionId: String? = null
     private var playbackCookie: String = ""
 
     private val baseHeaders get() = mapOf(
@@ -69,16 +61,14 @@ class OtakutsuProvider : MainAPI() {
         if (playbackCookie.isNotBlank()) put("Cookie", playbackCookie)
     }
 
+    // ── home cache ──
     private var homeHtml: String? = null
     private var homeTime: Long = 0L
     private var homeDoc: Document? = null
     private val HOME_TTL = 10 * 60 * 1000L
 
-    private val PREFETCH_SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var activePrefetchJob: Job? = null
-    private var lastHomeRenderMs: Long = 0L
-    private val PREFETCH_DEBOUNCE_MS = 800L
-    private val HOME_GRACE_MS = 5000L
+    // ── totalEps cache for prefetch planning ──
+    private val totalEpsByAnime = mutableMapOf<String, Int>()
 
     private suspend fun getHomeHtml(): String? {
         val now = System.currentTimeMillis()
@@ -111,8 +101,6 @@ class OtakutsuProvider : MainAPI() {
         }
     }
 
-    private fun resolveActionId(): String = cachedActionId ?: NEXT_ACTION_ID_FALLBACK
-
     override val mainPage = mainPageOf(
         "trending"   to "Top 10 Trending",
         "weekend"    to "Short & Complete",
@@ -123,7 +111,7 @@ class OtakutsuProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        lastHomeRenderMs = System.currentTimeMillis()
+        PrefetchEngine.markHomeRender()
 
         val ck = "home:${request.data}:$page"
         synchronized(OtakutsuProvider::class.java) {
@@ -162,8 +150,6 @@ class OtakutsuProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         OLog.section("search: $query")
-        val pref = OSettings.getTitleLang()
-        OLog.d("search pref=$pref")
         val out = mutableListOf<SearchResponse>()
         val seen = mutableSetOf<String>()
         try {
@@ -185,14 +171,10 @@ class OtakutsuProvider : MainAPI() {
                 val id = o.optString("id").takeIf { it.isNotBlank() } ?: continue
                 if (!seen.add(id)) continue
                 val titleObj = o.optJSONObject("title")
-                val romaji = titleObj?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" }
-                val english = titleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
-                val native = titleObj?.optString("native")?.takeIf { it.isNotBlank() && it != "null" }
-                val chosen = when (pref) {
-                    "romaji" -> romaji ?: english ?: native
-                    "native" -> native ?: english ?: romaji
-                    else -> english ?: romaji ?: native
-                } ?: continue
+                val chosen = titleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: titleObj?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: titleObj?.optString("native")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: continue
                 val poster = o.optJSONObject("cover_image")?.optString("large")
                     ?.takeIf { it.startsWith("http") }
                 out.add(newMovieSearchResponse(chosen, "$mainUrl/watch/$id?ep=1", TvType.Anime) {
@@ -220,16 +202,8 @@ class OtakutsuProvider : MainAPI() {
         OLog.d("anime html len=${animeHtml.length}")
         OLog.d("watch html len=${watchHtml.length}")
 
-        if (cachedActionId == null) {
-            val m = Regex("""["']([a-f0-9]{40})["']""").find(watchHtml)
-                ?: Regex("""\b([a-f0-9]{40})\b""").find(watchHtml)
-            if (m != null) {
-                OLog.d("action id from watch page: ${m.groupValues[1]}")
-                cachedActionId = m.groupValues[1]
-            } else {
-                OLog.d("no 40-hex in watch html")
-            }
-        }
+        // Action ID — scan route-scoped chunks referenced by watch page
+        ActionIdResolver.resolveFromWatchHtml(watchHtml, mainUrl)
 
         val title = Regex("""<h1[^>]*>([^<]+)</h1>""")
             .find(animeHtml)?.groupValues?.get(1)?.trim()?.let {
@@ -308,8 +282,7 @@ class OtakutsuProvider : MainAPI() {
 
         if (epList.isEmpty()) {
             val q = JSONObject().apply {
-                put("id", id); put("ep", 1); put("t", title)
-                put("s", seasonNum); put("ne", 0)
+                put("id", id); put("ep", 1); put("ne", 0); put("te", 1)
             }.toString()
             return newMovieLoadResponse(title, url, TvType.AnimeMovie, q) {
                 this.posterUrl = poster
@@ -320,11 +293,15 @@ class OtakutsuProvider : MainAPI() {
             }
         }
 
+        val totalEps = epList.size
+        synchronized(totalEpsByAnime) { totalEpsByAnime[id] = totalEps }
+        PrefetchEngine.beginSession(id)
+
         val episodes = epList.mapIndexed { idx, e ->
             val next = epList.getOrNull(idx + 1)?.num ?: 0
             val q = JSONObject().apply {
-                put("id", id); put("ep", e.num); put("t", title)
-                put("s", seasonNum); put("ne", next)
+                put("id", id); put("ep", e.num)
+                put("ne", next); put("te", totalEps)
             }.toString()
             newEpisode(q) {
                 this.name = e.name ?: "Episode ${e.num}"
@@ -334,11 +311,8 @@ class OtakutsuProvider : MainAPI() {
             }
         }
 
-        val sinceHome = System.currentTimeMillis() - lastHomeRenderMs
-        val fromHome = lastHomeRenderMs > 0 && sinceHome in 0 until HOME_GRACE_MS
-        if (OSettings.isPrefetchEnabled() && !fromHome && epList.isNotEmpty()) {
-            schedulePrefetch(id, epList.first().num)
-        }
+        // Kick off batch warm E1+E2 (grace + enabled checks inside)
+        PrefetchEngine.warmLoad(id) { aid, ep -> fetchChain(aid, ep) }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
@@ -354,29 +328,6 @@ class OtakutsuProvider : MainAPI() {
         return URLEncoder.encode(raw, "UTF-8")
     }
 
-    private fun schedulePrefetch(animeId: String, ep: Int) {
-        val key = "$animeId:$ep"
-        if (OCache.hasPrefetch(key)) return
-        activePrefetchJob?.cancel()
-        activePrefetchJob = PREFETCH_SCOPE.launch {
-            try {
-                delay(PREFETCH_DEBOUNCE_MS)
-                if (OCache.hasPrefetch(key)) return@launch
-                OLog.d("prefetch start: $animeId E$ep")
-                val result = fetchChain(animeId, ep) ?: run {
-                    OLog.d("prefetch: no result")
-                    return@launch
-                }
-                OCache.putPrefetch(key, result)
-                OLog.d("prefetch done: ${result.sources.size} sources")
-            } catch (e: CancellationException) {
-                OLog.v("prefetch cancelled")
-            } catch (e: Exception) {
-                OLog.e("prefetch failed: ${e.message}")
-            }
-        }
-    }
-
     private suspend fun fetchChain(animeId: String, ep: Int): PrefetchCache? {
         val apiHeaders = baseHeaders + mapOf(
             "Content-Type" to "application/json",
@@ -390,7 +341,7 @@ class OtakutsuProvider : MainAPI() {
             "sec-fetch-site" to "same-origin",
         )
 
-        OLog.v("chain: bootstrap POST $animeId E$ep")
+        OLog.v("chain: bootstrap $animeId E$ep")
         val bootResp = app.post(
             "$mainUrl/api/media/bootstrap",
             headers = apiHeaders,
@@ -399,11 +350,9 @@ class OtakutsuProvider : MainAPI() {
                 .toString().toRequestBody("application/json".toMediaType())
         )
         val bootText = bootResp.text
-        OLog.v("chain: bootstrap code=${bootResp.code} len=${bootText.length}")
         if (bootText.length < 100) OLog.e("bootstrap short: $bootText")
         val streamToken = JSONObject(bootText).optString("streamToken")
             .takeIf { it.isNotBlank() } ?: return null
-        OLog.v("chain: token len=${streamToken.length}")
 
         val cookieJar = mutableListOf<String>()
         bootResp.headers.values("Set-Cookie").forEach { c ->
@@ -411,14 +360,12 @@ class OtakutsuProvider : MainAPI() {
         }
 
         try {
-            OLog.v("chain: session POST")
             val sesResp = app.post(
                 "$mainUrl/api/media/session",
                 headers = apiHeaders,
                 requestBody = JSONObject().put("streamToken", streamToken)
                     .toString().toRequestBody("application/json".toMediaType())
             )
-            OLog.v("chain: session code=${sesResp.code}")
             sesResp.headers.values("Set-Cookie").forEach { c ->
                 c.substringBefore(";").trim().takeIf { it.contains("=") }?.let { cookieJar.add(it) }
             }
@@ -427,9 +374,7 @@ class OtakutsuProvider : MainAPI() {
         }
 
         val cookieHeader = cookieJar.distinct().joinToString("; ")
-        OLog.v("chain: cookies=${cookieJar.size} len=${cookieHeader.length}")
-        val actionId = resolveActionId()
-        OLog.v("chain: action id=$actionId")
+        val actionId = ActionIdResolver.current()
         val stateTree = buildStateTree(animeId, ep)
         val actionBody = JSONArray().apply {
             put(animeId); put(ep); put(streamToken)
@@ -454,7 +399,6 @@ class OtakutsuProvider : MainAPI() {
             if (cookieHeader.isNotBlank()) put("Cookie", cookieHeader)
         }
 
-        OLog.v("chain: RSC POST $watchUrl")
         val rsc = app.post(watchUrl, headers = rscHeaders, requestBody = actionBody).text
         OLog.v("chain: RSC len=${rsc.length}")
 
@@ -469,9 +413,6 @@ class OtakutsuProvider : MainAPI() {
         if (sourcesObj == null) {
             if (rsc.length > 20000 && rsc.contains("\"\$Sreact.fragment\"")) {
                 OLog.e("OTAKUTSU UPDATED — plugin needs update (action id likely stale)")
-                OLog.e("current action id=$actionId")
-            } else {
-                OLog.v("chain: no sources key, len=${rsc.length}")
             }
             return null
         }
@@ -486,9 +427,7 @@ class OtakutsuProvider : MainAPI() {
             val server = s.optString("server").ifBlank { "otakutsu" }
             val subType = s.optString("subType").ifBlank { "sub" }
             out.add(OtakutsuSource(label, server, subType, fullUrl))
-            OLog.v("chain: source [$label] [$server/$subType] $fullUrl")
         }
-        OLog.v("chain: parsed ${out.size} sources")
         return PrefetchCache(out, cookieHeader)
     }
 
@@ -502,24 +441,23 @@ class OtakutsuProvider : MainAPI() {
         val animeId = payload.optString("id").takeIf { it.isNotBlank() } ?: return false
         val ep = payload.optInt("ep", 1).coerceAtLeast(1)
         val nextEp = payload.optInt("ne", 0)
+        val totalEps = payload.optInt("te", 0).takeIf { it > 0 }
+            ?: synchronized(totalEpsByAnime) { totalEpsByAnime[animeId] } ?: Int.MAX_VALUE
         OLog.section("loadLinks: $animeId E$ep")
 
         val key = "$animeId:$ep"
-        val cached = OCache.getPrefetch(key)
-        val result = cached ?: run {
-            val fresh = fetchChain(animeId, ep) ?: return false
-            OCache.putPrefetch(key, fresh)
-            OLog.d("cache miss, fetched ${fresh.sources.size} sources")
-            fresh
-        }
-        if (cached != null) OLog.d("cache hit: ${cached.sources.size} sources")
+        val result = PrefetchEngine.obtain(key) { fetchChain(animeId, ep) }
+            ?: run {
+                OLog.e("loadLinks: fetch failed")
+                return false
+            }
+        OLog.d("loadLinks: ${result.sources.size} sources (cache=${OCache.hasPrefetch(key)})")
 
         playbackCookie = result.cookieHeader
 
         var emitted = 0
         for (s in result.sources) {
             try {
-                OLog.v("probe: ${s.url}")
                 val probe = app.get(s.url, headers = playbackHeadersFn())
                 OLog.v("probe code=${probe.code} len=${probe.text.length}")
                 val ok = probe.code == 200 && probe.text.trimStart().startsWith("#EXTM3U")
@@ -542,10 +480,9 @@ class OtakutsuProvider : MainAPI() {
 
         OLog.d("loadLinks emitted=$emitted")
 
-        if (nextEp > 0 && OSettings.isPrefetchEnabled()) {
-            schedulePrefetch(animeId, nextEp)
-        }
+        PrefetchEngine.recordPlay(animeId, ep)
+        PrefetchEngine.warmAfterPlay(animeId, ep, totalEps) { aid, e -> fetchChain(aid, e) }
 
         return emitted > 0
     }
-}
+                               }
