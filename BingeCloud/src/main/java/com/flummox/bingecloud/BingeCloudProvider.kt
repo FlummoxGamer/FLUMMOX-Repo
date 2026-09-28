@@ -947,26 +947,33 @@ val episodes = (1..totalEps).map { epNum ->
                                         emittedCount.addAndGet(emitted)
                                     }
                                 }
-                                "MB" -> {
-                                    val linkType = when {
-                                        m.url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
-                                        m.url.contains(".mpd", true) -> ExtractorLinkType.DASH
-                                        else -> ExtractorLinkType.VIDEO
+                                    "MB" -> {
+                                        val linkType = when {
+                                            m.url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
+                                            m.url.contains(".mpd", true) -> ExtractorLinkType.DASH
+                                            else -> ExtractorLinkType.VIDEO
+                                       }
+                                       val display = "$emoji${m.quality} •MB ${m.mirror}"
+                                       BCLog.d("MB link: $display (score=$score)")
+                                       val link = newExtractorLink("MovieBox", display, m.url, linkType) {
+                                           this.referer = "https://themoviebox.org/"
+                                           val hdrs = mutableMapOf(
+                                               "User-Agent" to "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
+                                               "Accept" to "*/*",
+                                               "Accept-Language" to "en-US,en;q=0.9",
+                                               "Referer" to "https://themoviebox.org/",
+                                               "Origin" to "https://themoviebox.org"
+                                          )
+                                          m.headers?.let { hdrs.putAll(it) }
+                                          this.headers = hdrs
+                                      }
+                                      callback.invoke(link)
+                                      emittedCount.incrementAndGet()
+                                      HostHealth.recordSuccess("mb.local")
+                                      m.captions.forEach { (lang, subUrl) ->
+                                          try { subtitleCallback(SubtitleFile(lang, subUrl)) } catch (_: Exception) {}
+                                      }
                                     }
-                                    val display = "$emoji${m.quality} •MB ${m.mirror}"
-                                    BCLog.d("MB link: $display (score=$score)")
-                                    val hdrs = m.headers
-                                    val link = newExtractorLink("MovieBox", display, m.url, linkType) {
-                                        this.referer = "https://h5.aoneroom.com/"
-                                    if (hdrs != null) this.headers = hdrs
-                                    }
-                                        callback.invoke(link)
-                                        emittedCount.incrementAndGet()
-                                        HostHealth.recordSuccess("mb.local")
-                                        m.captions.forEach { (lang, subUrl) ->
-                                    try { subtitleCallback(SubtitleFile(lang, subUrl)) } catch (_: Exception) {}
-                                    }
-                                }
                                     "ANIZONE" -> {
                                       val linkType = if (m.url.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                       val display = "$emoji${m.quality} •${m.mirror}"
