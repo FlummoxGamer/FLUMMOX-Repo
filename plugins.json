@@ -1,9 +1,9 @@
 [
   {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeCloud/icon.png",
-    "fileHash": "sha256-b0b16e808ed6f9162a3497a2c8bb4164f24db23ec8aa2b1b2c7fc1055a57cb94",
+    "fileHash": "sha256-46592c72e7aed4e2a72b804471534bd6546f10fb90d0b4e3a6b65dd2fd9d2eeb",
     "apiVersion": 1,
-    "fileSize": 363349,
+    "fileSize": 363004,
     "status": 1,
     "language": "en",
     "authors": [
@@ -22,9 +22,9 @@
   },
   {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/Otakutsu/icon.png",
-    "fileHash": "sha256-83c243d4a347c5418710f6194e1b91aa1713f4dda00e3216820ee64aa75e57ba",
+    "fileHash": "sha256-41cb9b28e88be2e98728018c462a0312c21e035dcd04ef499eb426f909d0c8e7",
     "apiVersion": 1,
-    "fileSize": 93587,
+    "fileSize": 93250,
     "status": 1,
     "language": "en",
     "authors": [
