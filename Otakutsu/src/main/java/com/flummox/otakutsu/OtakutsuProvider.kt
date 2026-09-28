@@ -3,8 +3,13 @@ package com.flummox.otakutsu
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -284,6 +289,7 @@ class OtakutsuProvider : MainAPI() {
         if (epList.isEmpty()) {
             val q = JSONObject().apply {
                 put("id", id); put("ep", 1); put("ne", 0); put("te", 1)
+                put("t", title); put("s", seasonNum)
             }.toString()
             return newMovieLoadResponse(title, url, TvType.AnimeMovie, q) {
                 this.posterUrl = poster
@@ -303,6 +309,7 @@ class OtakutsuProvider : MainAPI() {
             val q = JSONObject().apply {
                 put("id", id); put("ep", e.num)
                 put("ne", next); put("te", totalEps)
+                put("t", title); put("s", seasonNum)
             }.toString()
             newEpisode(q) {
                 this.name = e.name ?: "Episode ${e.num}"
@@ -442,7 +449,26 @@ class OtakutsuProvider : MainAPI() {
         val nextEp = payload.optInt("ne", 0)
         val totalEps = payload.optInt("te", 0).takeIf { it > 0 }
             ?: synchronized(totalEpsByAnime) { totalEpsByAnime[animeId] } ?: Int.MAX_VALUE
+        val title = payload.optString("t").takeIf { it.isNotBlank() } ?: ""
+        val season = payload.optInt("s", 1)
         OLog.section("loadLinks: $animeId E$ep")
+
+// Launch subtitle fetch in parallel with stream probing
+val subScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+val subsDeferred: Deferred<List<SubtitleFetcher.Sub>>? =
+    if (OSettings.isSubtitlesEnabled() && title.isNotBlank()) {
+        subScope.async {
+            try {
+                withTimeoutOrNull(8000) { SubtitleFetcher.fetch(title, season, ep) }
+                    ?: emptyList()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                OLog.e("subs: ${e.message}")
+                emptyList()
+            }
+        }
+    } else null
 
         val key = "$animeId:$ep"
         val result = PrefetchEngine.obtain(key) { fetchChain(animeId, ep) }
@@ -477,11 +503,26 @@ class OtakutsuProvider : MainAPI() {
             }
         }
 
-        OLog.d("loadLinks emitted=$emitted")
+                OLog.d("loadLinks emitted=$emitted")
 
-        PrefetchEngine.recordPlay(animeId, ep)
-        PrefetchEngine.warmAfterPlay(animeId, ep, totalEps) { aid, e -> fetchChain(aid, e) }
+    // Await parallel subtitle fetch, emit results
+    if (subsDeferred != null) {
+        try {
+            val subs = subsDeferred.await()
+            for (s in subs) {
+                subtitleCallback(SubtitleFile(s.label, s.url))
+            }
+            OLog.d("subs emitted=${subs.size}")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            OLog.e("subs await failed: ${e.message}")
+        }
+    }
 
-        return emitted > 0
+    PrefetchEngine.recordPlay(animeId, ep)
+    PrefetchEngine.warmAfterPlay(animeId, ep, totalEps) { aid, e -> fetchChain(aid, e) }
+
+    return emitted > 0
     }
                                }
