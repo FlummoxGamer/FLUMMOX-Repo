@@ -317,7 +317,7 @@ object OSettings {
                 textSize = 11f
                 setPadding(0, dp(ctx, 4), 0, 0)
             })
-            clearRow.addView(clCl)
+            clearRow.addView(clCol)
             clearRow.addView(Button(ctx).apply {
                 text = "CLEAR"
                 textSize = 12f
