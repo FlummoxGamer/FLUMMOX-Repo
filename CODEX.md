@@ -413,7 +413,8 @@ path: Otakutsu/build.gradle.kts
   - fetchChain — bootstrap → session → cookie collect → POST /watch/{id}?ep=N with next-action + state-tree → parse sources[] from RSC flight lines
   - loadLinks — PrefetchEngine.obtain → probe each source (200 + #EXTM3U + STREAM-INF/MEDIA) → emit ExtractorLink (M3U8) → recordPlay + warmAfterPlay
   - clearSectionCache — static; wipes in-memory home section cache
-  - Stale-action heuristic: rsc.len > 20KB + contains "$Sreact.fragment" + no "sources" key → log OTAKUTSU UPDATED
+  - Stale-action heuristic: rsc.len > 20KB + contains "$Sreact.fragment" + no "sources" key → log OTAKUTSU UPDATED + ActionHealth.markStale()
+  - ActionHealth.markOk() on successful sources parse
 
 
 ## PrefetchEngine.kt
@@ -436,12 +437,13 @@ path: Otakutsu/build.gradle.kts
 
 
 ## OCache.kt
-- OtakutsuSource — data class (label, server, subType, url)
+- OtakutsuSource — data class (label, server, subType, url, tracks: List<Pair<String,String>>)
+- tracks holds native Otakutsu subtitle URLs (currently 502, preserved for future)
 - PrefetchCache — data class (sources, cookieHeader)
 - OCache — LRU prefetch cache
-  - getPrefetch, putPrefetch, hasPrefetch
-  - TTL_VALID = 30min, TTL_EMPTY = 60s
-  - clear, size
+- getPrefetch, putPrefetch, hasPrefetch
+- TTL_VALID = 30min, TTL_EMPTY = 60s
+- clear, size
 
 
 ## AniKotoSubs.kt
@@ -474,6 +476,14 @@ path: Otakutsu/build.gradle.kts
 - Sub — data class (label, url) with source prefix applied
 - cache — LruCache<String, Entry>, TTL 7 days in-memory
 - clear — wipes cache
+
+
+## ActionHealth.kt
+- ActionHealth — action-ID health state for OSettings badge
+- K_LAST_OK, K_LAST_STALE — CloudStream pref keys
+- markOk — called by fetchChain when sources parse successfully
+- markStale — called by fetchChain when stale-detection heuristic fires
+- isHealthy — true if last OK >= last stale (or both zero)
 
 
 # ══════════════════════════════════════════════════════════════
