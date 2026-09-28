@@ -38,9 +38,13 @@ object OSettings {
     private const val LOG_TEXT = 0xFFB8B8B8.toInt()
 
     private const val K_PREFETCH = "otakutsu_prefetch"
+    private const val K_SUBS = "otakutsu_subs_enabled"
 
     fun isPrefetchEnabled(): Boolean = getKey<Boolean>(K_PREFETCH) ?: true
     fun setPrefetchEnabled(v: Boolean) { setKey(K_PREFETCH, v) }
+
+    fun isSubtitlesEnabled(): Boolean = getKey<Boolean>(K_SUBS) ?: true
+    fun setSubtitlesEnabled(v: Boolean) { setKey(K_SUBS, v) }
 
     private fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
 
@@ -290,7 +294,42 @@ object OSettings {
                 }
             }
             prefetchRow.addView(prefetchSwitch)
-            root.addView(prefetchRow)
+root.addView(prefetchRow)
+
+val subsRow = LinearLayout(ctx).apply {
+    orientation = LinearLayout.HORIZONTAL
+    gravity = Gravity.CENTER_VERTICAL
+    background = shape(SURFACE, 14, ctx, 1, BORDER)
+    setPadding(dp(ctx, 20), dp(ctx, 18), dp(ctx, 20), dp(ctx, 18))
+    layoutParams = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+    ).apply { bottomMargin = dp(ctx, 12) }
+}
+val subsCol = LinearLayout(ctx).apply {
+    orientation = LinearLayout.VERTICAL
+    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+}
+subsCol.addView(TextView(ctx).apply {
+    text = "Subtitles"
+    setTextColor(TEXT)
+    textSize = 14f
+    setTypeface(typeface, Typeface.BOLD)
+})
+subsCol.addView(TextView(ctx).apply {
+    text = "Auto-fetch from AniKoto and AniZone"
+    setTextColor(SUBTEXT)
+    textSize = 11f
+    setPadding(0, dp(ctx, 4), 0, 0)
+})
+subsRow.addView(subsCol)
+val subsSwitch = Switch(ctx).apply {
+    isChecked = isSubtitlesEnabled()
+    setOnCheckedChangeListener { _: CompoundButton, b: Boolean ->
+        setSubtitlesEnabled(b)
+    }
+}
+subsRow.addView(subsSwitch)
+root.addView(subsRow)
 
             val clearRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -331,6 +370,7 @@ object OSettings {
                 setOnClickListener {
                     OCache.clear()
                     OtakutsuProvider.clearSectionCache()
+                    SubtitleFetcher.clear()
                     Toast.makeText(ctx, "Cache cleared", Toast.LENGTH_SHORT).show()
                 }
             })
