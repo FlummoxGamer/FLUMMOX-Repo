@@ -499,7 +499,7 @@ val allStreams = languages.map { (sid, lang) ->
             mirror = prettyAudio(it.audio ?: "MovieBox"),
             url = it.realUrl,
             source = "MB",
-            headers = it.signCookie?.let { c -> mapOf("X-MB-Token" to c) },
+            headers = it.signCookie?.let { c -> mapOf("Cookie" to c) },
             captions = it.captions
         )
     }
