@@ -957,20 +957,10 @@ val episodes = (1..totalEps).map { epNum ->
                                     BCLog.d("MB link: $display (score=$score)")
                                     val browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                                     val baseHdrs = (m.headers ?: emptyMap()) + mapOf("User-Agent" to browserUA)
-                                    try {
-                                        val p1 = app.get(m.url, headers = baseHdrs)
-                                        BCLog.d("MB probe sbcdn5: code=${p1.code} len=${p1.text.length}")
-                                    } catch (e: Exception) { BCLog.e("MB probe1: ${e.message}") }
-                                    val swapped = m.url.replace("sbcdn5.", "sbcdnw.")
-                                    if (swapped != m.url) {
-                                        try {
-                                            val p2 = app.get(swapped, headers = baseHdrs)
-                                            BCLog.d("MB probe sbcdnw: code=${p2.code} len=${p2.text.length}")
-                                        } catch (e: Exception) { BCLog.e("MB probe2: ${e.message}") }
-                                    }
                                     val link = newExtractorLink("MovieBox", display, m.url, linkType) {
                                         this.headers = baseHdrs
                                     }
+                                    
                                         callback.invoke(link)
                                         emittedCount.incrementAndGet()
                                         HostHealth.recordSuccess("mb.local")
