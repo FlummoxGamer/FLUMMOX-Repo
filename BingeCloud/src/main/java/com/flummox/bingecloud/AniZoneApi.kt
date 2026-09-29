@@ -176,12 +176,28 @@ object AniZoneApi {
            return pool.minByOrNull { it.second }?.first
        }
 
-        // 3. Fuzzy via titleMatches
-        val fuzzy = hits.filter { h -> h.allTitles.any { at -> titleMatches(query, at) } }
-        if (fuzzy.isEmpty()) return null
-        if (fuzzy.size == 1) return fuzzy[0]
-        if (yr != null) fuzzy.firstOrNull { it.year == yr }?.let { return it }
-        return fuzzy.maxByOrNull { it.episodes }
+    // 3. Fuzzy — stricter than titleMatches to prevent single-token
+    //    collisions (e.g. "The Final Problem" matching AoT because
+    //    only "final" overlaps). Require exact equality OR >= 2
+    //    common tokens. Trade-off: short-title prefix matches
+    //    ("Naruto" vs "Naruto Shippuden") no longer match through
+    //    this path — acceptable, prefer no-match over wrong-match.
+    val fuzzy = hits.filter { h ->
+        h.allTitles.any { at ->
+            val sa = stripQualifiers(query)
+            val sb = stripQualifiers(at)
+            if (sa.isEmpty() || sb.isEmpty()) return@any false
+            if (sa == sb) return@any true
+            val ta = sa.split(" ").filter { it.isNotBlank() }.toSet()
+            val tb = sb.split(" ").filter { it.isNotBlank() }.toSet()
+            if (ta.size == 1 && tb.size == 1) return@any ta == tb
+            ta.intersect(tb).size >= 2
+        }
+    }
+    if (fuzzy.isEmpty()) return null
+    if (fuzzy.size == 1) return fuzzy[0]
+    if (yr != null) fuzzy.firstOrNull { it.year == yr }?.let { return it }
+    return fuzzy.maxByOrNull { it.episodes }
     }
 
     // ── episodes (cached) ──
