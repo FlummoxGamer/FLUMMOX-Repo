@@ -281,8 +281,18 @@ private fun parseSearchResults(text: String): List<MBSubject> {
     return out
 }
 
-suspend fun mbDetail(subjectId: String): JSONObject? =
-    mbGet("/wefeed-mobile-bff/subject-api/get", "subjectId=$subjectId")
+suspend fun mbDetail(subjectId: String): JSONObject? {
+    val r = mbGet("/wefeed-mobile-bff/subject-api/get", "subjectId=$subjectId")
+    try {
+        val data = r?.optJSONObject("data")
+        val detailUrl = data?.optString("detailUrl").takeIf { it.isNotBlank() && it != "null" }
+        val detailPath = data?.optString("detailPath").takeIf { it.isNotBlank() && it != "null" }
+        BCLog.d("MB detailUrl=$detailUrl")
+        BCLog.d("MB detailPath=$detailPath")
+        BCLog.d("MB detailKeys=${data?.keys()?.asSequence()?.joinToString(",") ?: "null"}")
+    } catch (_: Exception) {}
+    return r
+}
 
 suspend fun mbLanguages(originalSubjectId: String): List<Pair<String, String>> {
     val detail = try { mbDetail(originalSubjectId) } catch (_: Exception) { null }
