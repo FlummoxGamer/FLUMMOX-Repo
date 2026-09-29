@@ -161,8 +161,14 @@ private suspend fun mbGet(path: String, query: String? = null, retried: Boolean 
             val fullUrl = if (query.isNullOrBlank()) "https://$host$path" else "https://$host$path?$query"
             val res = app.get(fullUrl, headers = buildHeaders("GET", fullUrl, "application/json", "application/json", null, session))
             if (res.code in 200..299) {
-                BCCache.put(cacheKey, res.text)
-                return try { JSONObject(res.text) } catch (e: Exception) { BCLog.e("MB JSON parse: ${e.message}"); null }
+    if (path.contains("subject-api/get")) {
+        val hdrs = res.headers
+        for (name in listOf("x-cdn", "x-edge", "x-region", "x-pool", "x-server", "server", "via", "cf-ray", "x-amz-cf-pop")) {
+            hdrs[name]?.let { BCLog.d("MB hdr $name=$it") }
+        }
+    }
+    BCCache.put(cacheKey, res.text)
+    return try { JSONObject(res.text) } catch (e: Exception) { BCLog.e("MB JSON parse: ${e.message}"); null }
             }
             if ((res.code == 401 || res.code == 403 || res.code == 441) && !retried) {
                 mbSession = null
@@ -285,11 +291,18 @@ suspend fun mbDetail(subjectId: String): JSONObject? {
     val r = mbGet("/wefeed-mobile-bff/subject-api/get", "subjectId=$subjectId")
     try {
         val data = r?.optJSONObject("data")
-        val detailUrl = data?.optString("detailUrl")?.takeIf { it.isNotBlank() && it != "null" }
-        val detailPath = data?.optString("detailPath")?.takeIf { it.isNotBlank() && it != "null" }
-        BCLog.d("MB detailUrl=$detailUrl")
-        BCLog.d("MB detailPath=$detailPath")
-        BCLog.d("MB detailKeys=${data?.keys()?.asSequence()?.joinToString(",") ?: "null"}")
+        if (data != null) {
+            BCLog.d("MB detailUrl=${data.optString("detailUrl").take(200)}")
+            BCLog.d("MB playUrl=${data.optString("playUrl").take(200)}")
+            BCLog.d("MB opt=${data.opt("opt")?.toString()?.take(300)}")
+            BCLog.d("MB ops=${data.opt("ops")?.toString()?.take(400)}")
+            BCLog.d("MB resourceDetectors=${data.opt("resourceDetectors")?.toString()?.take(800)}")
+            BCLog.d("MB subtitles=${data.opt("subtitles")?.toString()?.take(400)}")
+            BCLog.d("MB dubs=${data.opt("dubs")?.toString()?.take(500)}")
+            BCLog.d("MB season=${data.optInt("season", -1)} isCam=${data.optInt("isCam", -1)} restrictKid=${data.optInt("restrictKid", -1)}")
+            BCLog.d("MB hasResource=${data.optInt("hasResource", -1)} subjectType=${data.optInt("subjectType", -1)}")
+            BCLog.d("MB trailer=${data.optString("trailer").take(200)}")
+        }
     } catch (_: Exception) {}
     return r
 }
