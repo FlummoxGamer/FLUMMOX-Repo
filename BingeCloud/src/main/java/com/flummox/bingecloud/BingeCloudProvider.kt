@@ -957,8 +957,7 @@ val episodes = (1..totalEps).map { epNum ->
                                     BCLog.d("MB link: $display (score=$score)")
                                     val hdrs = m.headers
                                     val link = newExtractorLink("MovieBox", display, m.url, linkType) {
-                                        this.referer = "https://h5.aoneroom.com/"
-                                    if (hdrs != null) this.headers = hdrs
+                                        if (hdrs != null) this.headers = hdrs
                                     }
                                         callback.invoke(link)
                                         emittedCount.incrementAndGet()
