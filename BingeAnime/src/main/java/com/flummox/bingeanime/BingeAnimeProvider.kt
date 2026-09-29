@@ -18,29 +18,25 @@ class BingeAnimeProvider : MainAPI() {
 
     // ── home rows (19 total) ──
     // data format: "sort|genre|tag|format|country|status"
-    private val ROWS: List<Pair<String, String>> = listOf(
-        // Dynamic
-        "TRENDING_DESC|||||"           to "Trending",
-        "SCORE_DESC|||TV||"            to "Top Anime Series",
-        "SCORE_DESC|||MOVIE||"         to "Top Anime Movies",
-        "TRENDING_DESC||||CN|"         to "Donghua",
-        // Genres
-        "TRENDING_DESC|Action||||"     to "Action",
-        "TRENDING_DESC|Adventure||||"  to "Adventure",
-        "TRENDING_DESC|Comedy||||"     to "Comedy",
-        "TRENDING_DESC|Drama||||"      to "Drama",
-        "TRENDING_DESC|Fantasy||||"    to "Fantasy",
-        "TRENDING_DESC|Romance||||"    to "Romance",
-        "TRENDING_DESC|Sci-Fi||||"     to "Sci-Fi",
-        "TRENDING_DESC|Slice of Life||||" to "Slice of Life",
-        "TRENDING_DESC|Supernatural||||"  to "Supernatural",
-        "TRENDING_DESC|Mystery||||"    to "Mystery",
-        "TRENDING_DESC|School||||"     to "School",
-        "TRENDING_DESC|Sports||||"     to "Sports",
-        "TRENDING_DESC||Isekai|||"     to "Isekai",
-        "TRENDING_DESC|Mecha||||"      to "Mecha",
-        "TRENDING_DESC|Historical||||" to "Historical"
-    )
+    // Genres (AniList genre enum)
+"POPULARITY_DESC|Action||||"      to "Action",
+"POPULARITY_DESC|Adventure||||"   to "Adventure",
+// Isekai is a tag, sits with the top genres deliberately —
+// it's one of the highest-volume, highest-demand anime tags.
+"POPULARITY_DESC||Isekai|||"      to "Isekai",
+"POPULARITY_DESC|Comedy||||"      to "Comedy",
+"POPULARITY_DESC|Drama||||"       to "Drama",
+"POPULARITY_DESC|Fantasy||||"     to "Fantasy",
+"POPULARITY_DESC|Romance||||"     to "Romance",
+"POPULARITY_DESC|Sci-Fi||||"      to "Sci-Fi",
+"POPULARITY_DESC|Slice of Life||||" to "Slice of Life",
+"POPULARITY_DESC|Supernatural||||"  to "Supernatural",
+"POPULARITY_DESC|Mystery||||"     to "Mystery",
+"POPULARITY_DESC|Sports||||"      to "Sports",
+"POPULARITY_DESC|Mecha||||"       to "Mecha",
+// Remaining tags
+"POPULARITY_DESC||School|||"      to "School",
+"POPULARITY_DESC||Historical|||"  to "Historical"
 
     override val mainPage get() = mainPageOf(
         *ROWS.map { (data, label) -> data to label }.toTypedArray()
