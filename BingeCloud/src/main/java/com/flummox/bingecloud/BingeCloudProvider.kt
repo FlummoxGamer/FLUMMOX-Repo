@@ -956,14 +956,14 @@ val episodes = (1..totalEps).map { epNum ->
                                        val display = "$emoji${m.quality} •MB ${m.mirror}"
                                        BCLog.d("MB link: $display (score=$score)")
                                        val link = newExtractorLink("MovieBox", display, m.url, linkType) {
-                                           this.referer = "https://themoviebox.org/"
+                                           this.referer = "https://movibox.net/"
                                            val hdrs = mutableMapOf(
-                                               "User-Agent" to "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
+                                               "User-Agent" to "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko)",
                                                "Accept" to "*/*",
                                                "Accept-Language" to "en-US,en;q=0.9",
-                                               "Referer" to "https://themoviebox.org/",
-                                               "Origin" to "https://themoviebox.org"
-                                          )
+                                               "Referer" to "https://movibox.net/",
+                                               "Origin" to "https://movibox.net"
+                                           )
                                           m.headers?.let { hdrs.putAll(it) }
                                           this.headers = hdrs
                                       }
