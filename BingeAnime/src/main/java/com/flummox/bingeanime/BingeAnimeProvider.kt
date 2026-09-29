@@ -17,39 +17,40 @@ class BingeAnimeProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
 // ── home rows ──
-// data format: "sort|genre|tag|format|country|status"
-// Dynamic rows use TRENDING_DESC.
-// Genre/tag rows use POPULARITY_DESC — all-time popular, distinct
-// from Trending (TRENDING_DESC genre-filtered overlapped heavily
-// with the unfiltered Trending row since top-trending titles are
-// often the top in broad genres like Action).
+// data format: "sort|genre|tag|format|country|status|year"
+// "year" = 0 → no filter, 1 → current year (dynamic), N → N years back
+//
+// Rows overlap was happening because POPULARITY_DESC + genre returns
+// the same mainstream top-30 for every genre (FMA:B is both Action
+// and Adventure, etc). Fixed by filtering genre rows to CURRENT
+// YEAR — recent-popular Action is genuinely distinct from
+// recent-popular Romance. Genre rows therefore re-order every
+// January when the current year ticks over, keeping them fresh.
 private val ROWS: List<Pair<String, String>> = listOf(
-    // Dynamic
-    "TRENDING_DESC|||||"              to "Trending",
-    "SCORE_DESC|||TV||"               to "Top Anime Series",
-    "SCORE_DESC|||MOVIE||"            to "Top Anime Movies",
-    "POPULARITY_DESC||||CN|"          to "Donghua",
-    // Genres (AniList genre enum)
-"POPULARITY_DESC|Action||||"      to "Action",
-"POPULARITY_DESC|Adventure||||"   to "Adventure",
-// Isekai is a tag, sits with the top genres deliberately —
-// it's one of the highest-volume, highest-demand anime tags.
-"POPULARITY_DESC||Isekai|||"      to "Isekai",
-"POPULARITY_DESC|Comedy||||"      to "Comedy",
-"POPULARITY_DESC|Drama||||"       to "Drama",
-"POPULARITY_DESC|Fantasy||||"     to "Fantasy",
-"POPULARITY_DESC|Romance||||"     to "Romance",
-"POPULARITY_DESC|Sci-Fi||||"      to "Sci-Fi",
-"POPULARITY_DESC|Slice of Life||||" to "Slice of Life",
-"POPULARITY_DESC|Supernatural||||"  to "Supernatural",
-"POPULARITY_DESC|Mystery||||"     to "Mystery",
-"POPULARITY_DESC|Sports||||"      to "Sports",
-"POPULARITY_DESC|Mecha||||"       to "Mecha",
-// Remaining tags
-"POPULARITY_DESC||School|||"      to "School",
-"POPULARITY_DESC||Historical|||"  to "Historical"
-
+    // Dynamic — global, no year filter
+    "TRENDING_DESC||||||0"                    to "Trending",
+    "SCORE_DESC|||TV|||0"                     to "Top Anime Series",
+    "SCORE_DESC|||MOVIE|||0"                  to "Top Anime Movies",
+    "POPULARITY_DESC||||CN||0"                to "Donghua",
+    // Genre rows — current year + popularity, distinct per genre
+    "POPULARITY_DESC|Action||||1"             to "Action",
+    "POPULARITY_DESC|Adventure||||1"          to "Adventure",
+    "POPULARITY_DESC||Isekai|||1"             to "Isekai",
+    "POPULARITY_DESC|Comedy||||1"             to "Comedy",
+    "POPULARITY_DESC|Drama||||1"              to "Drama",
+    "POPULARITY_DESC|Fantasy||||1"            to "Fantasy",
+    "POPULARITY_DESC|Romance||||1"            to "Romance",
+    "POPULARITY_DESC|Sci-Fi||||1"             to "Sci-Fi",
+    "POPULARITY_DESC|Slice of Life||||1"      to "Slice of Life",
+    "POPULARITY_DESC|Supernatural||||1"       to "Supernatural",
+    "POPULARITY_DESC|Mystery||||1"            to "Mystery",
+    "POPULARITY_DESC|Sports||||1"             to "Sports",
+    "POPULARITY_DESC|Mecha||||1"              to "Mecha",
+    "POPULARITY_DESC||School|||1"             to "School",
+    "POPULARITY_DESC||Historical|||1"         to "Historical"
 )
+
+    
 
     override val mainPage get() = mainPageOf(
         *ROWS.map { (data, label) -> data to label }.toTypedArray()
@@ -57,17 +58,22 @@ private val ROWS: List<Pair<String, String>> = listOf(
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val parts = request.data.split(ROW_SEP)
-        if (parts.size < 6) return null
+        if (parts.size < 7) return null
         val sort = parts[0].takeIf { it.isNotBlank() } ?: "TRENDING_DESC"
         val genre = parts[1].takeIf { it.isNotBlank() }
         val tag = parts[2].takeIf { it.isNotBlank() }
         val format = parts[3].takeIf { it.isNotBlank() }
         val country = parts[4].takeIf { it.isNotBlank() }
         val status = parts[5].takeIf { it.isNotBlank() }
+        val yearMarker = parts[6].toIntOrNull() ?: 0
+        val year = when {
+            yearMarker <= 0 -> null
+            else -> java.util.Calendar.getInstance().get(java.util.Calendar.YEAR) - (yearMarker - 1)
+        }
 
         BLog.section("home: ${request.name}")
         val entries = try {
-            AniListApi.fetchCatalog(sort, genre, tag, format, country, status, page, 30)
+            AniListApi.fetchCatalog(sort, genre, tag, format, country, status, year, page, 30)
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) {
             BLog.e("row '${request.name}' failed: ${e.message}")
