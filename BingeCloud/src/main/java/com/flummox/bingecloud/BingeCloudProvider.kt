@@ -958,14 +958,7 @@ val episodes = (1..totalEps).map { epNum ->
                                     val link = newExtractorLink("MovieBox", display, m.url, linkType) {
                                         if (m.headers != null) this.headers = m.headers
                                     }
-                                    try {
-                                        val probe = app.get(m.url, headers = m.headers ?: emptyMap())
-                                        BCLog.d("MB probe ${m.url.take(60)} code=${probe.code} body=${probe.text.take(200)}")
-                                    } catch (e: Exception) {
-                                        BCLog.e("MB probe fail: ${e.message}")
-                                    }
-                                    
-                                        callback.invoke(link)
+                                    callback.invoke(link)
                                         emittedCount.incrementAndGet()
                                         HostHealth.recordSuccess("mb.local")
                                         m.captions.forEach { (lang, subUrl) ->
