@@ -494,18 +494,14 @@ val allStreams = languages.map { (sid, lang) ->
     .filter { it.durationSec == 0L || it.durationSec >= 120L }
     .filter { !it.realUrl.contains("aoneroom.com/other/", ignoreCase = true) }
     .map {
-        ScrapedMirror(
-            quality = it.quality.ifBlank { "Auto" },
-            mirror = prettyAudio(it.audio ?: "MovieBox"),
-            url = it.realUrl,
-            source = "MB",
-            headers = buildMap {
-                put("Referer", "https://api3.aoneroom.com/")
-                put("User-Agent", "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)")
-                it.signCookie?.let { c -> put("Cookie", c) }
-            },
-            captions = it.captions
-        )
+    ScrapedMirror(
+        quality = it.quality.ifBlank { "Auto" },
+        mirror = prettyAudio(it.audio ?: "MovieBox"),
+        url = it.realUrl,
+        source = "MB",
+        headers = it.emitHeaders.ifEmpty { null },
+        captions = it.captions
+    )
     }
 }
 
