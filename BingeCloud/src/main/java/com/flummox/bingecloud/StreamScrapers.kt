@@ -499,9 +499,17 @@ val allStreams = languages.map { (sid, lang) ->
             mirror = prettyAudio(it.audio ?: "MovieBox"),
             url = it.realUrl,
             source = "MB",
-            headers = it.signCookie?.let { c ->
-                val v = if (c.startsWith("Edge-Cache-Cookie=")) c else "Edge-Cache-Cookie=$c"
-                mapOf("X-MB-Token" to v)
+            headers = when {
+                it.realUrl.contains("hakunaymatata.com") && it.realUrl.contains(".mp4?sign=") ->
+                    mapOf(
+                        "Referer" to "https://movie-box.co/",
+                        "Origin" to "https://movie-box.co"
+                    )
+                it.signCookie != null -> {
+                    val v = if (it.signCookie.startsWith("Edge-Cache-Cookie=")) it.signCookie else "Edge-Cache-Cookie=${it.signCookie}"
+                    mapOf("X-MB-Token" to v)
+                }
+                else -> null
             },
             captions = it.captions
         )
