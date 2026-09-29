@@ -1002,8 +1002,9 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
         val mb = all.count { it.source == "MB" }
         val ak = all.count { it.source == "ANIKOTO" }
         val sb = all.count { it.source == "SHOWBOX" }
+        val az = all.count { it.source == "ANIZONE" }
         val ml = all.count { it.source == "MLSBD" }
-        BCLog.d("sources done — VM=$vm MD=$md HDH=$hdh MB=$mb ANIKOTO=$ak SHOWBOX=$sb MLSBD=$ml total=${all.size}")
+        BCLog.d("sources done — VM=$vm MD=$md HDH=$hdh MB=$mb ANIKOTO=$ak ANIZONE=$az SHOWBOX=$sb MLSBD=$ml total=${all.size}")
         all
     }
 }
