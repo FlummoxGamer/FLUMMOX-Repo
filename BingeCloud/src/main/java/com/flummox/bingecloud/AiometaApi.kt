@@ -1,5 +1,6 @@
 package com.flummox.bingecloud
 
+import com.fasterxml.jackson.annotation.JsonIgnore
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.async
@@ -27,7 +28,7 @@ data class AioVideo(
 )
 
 data class AioAppExtras(
-    val seasonPosters: List<String?>? = null,
+    @JsonIgnore val seasonPosters: List<String?>? = null,
     val certification: String? = null,
     val cast: List<AioCast>? = null
 )
