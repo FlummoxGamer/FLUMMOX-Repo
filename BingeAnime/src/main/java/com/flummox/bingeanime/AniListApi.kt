@@ -16,23 +16,36 @@ object AniListApi {
     }
 
     data class Entry(
-        val id: Int,
-        val idMal: Int?,
-        val title: Title,
-        val format: String?,
-        val episodes: Int?,
-        val seasonYear: Int?,
-        val startDate: String?,
-        val description: String? = null,
-        val coverImage: String? = null,
-        val averageScore: Int? = null,
-        val status: String? = null,
-        val genres: List<String>? = null,
-        val country: String? = null,
-        val relations: List<Relation> = emptyList()
-    )
+    val id: Int,
+    val idMal: Int?,
+    val title: Title,
+    val format: String?,
+    val episodes: Int?,
+    val seasonYear: Int?,
+    val startDate: String?,
+    val description: String? = null,
+    val coverImage: String? = null,
+    val averageScore: Int? = null,
+    val status: String? = null,
+    val genres: List<String>? = null,
+    val country: String? = null,
+    val relations: List<Relation> = emptyList()
+)
 
-    data class Relation(val type: String, val entry: Entry)
+// Flattened on purpose. R8 8.13.6's Kotlin-metadata rewriter crashes
+// on mutually recursive data classes (Entry → List<Relation> →
+// Entry → ...). This shape stores only the fields the chain walk
+// needs, so the cycle is broken. Do not add an `entry: Entry` field
+// back here — the CI will fail the same way.
+data class Relation(
+    val type: String,
+    val entryId: Int,
+    val entryTitle: Title,
+    val entryFormat: String?,
+    val entryEpisodes: Int?,
+    val entrySeasonYear: Int?,
+    val entryStartDate: String?
+)
 
     private val MEDIA_FIELDS = """
         id
@@ -230,14 +243,38 @@ object AniListApi {
         } else null
 
         val relations = mutableListOf<Relation>()
-        o.optJSONObject("relations")?.optJSONArray("edges")?.let { edges ->
-            for (i in 0 until edges.length()) {
-                val e = edges.optJSONObject(i) ?: continue
-                val rt = e.optString("relationType").takeIf { it.isNotBlank() } ?: continue
-                val node = parseEntry(e.optJSONObject("node")) ?: continue
-                relations.add(Relation(rt, node))
-            }
-        }
+o.optJSONObject("relations")?.optJSONArray("edges")?.let { edges ->
+    for (i in 0 until edges.length()) {
+        val e = edges.optJSONObject(i) ?: continue
+        val rt = e.optString("relationType").takeIf { it.isNotBlank() } ?: continue
+        val node = e.optJSONObject("node") ?: continue
+        val nodeId = node.optInt("id", 0).takeIf { it > 0 } ?: continue
+        val nodeTitleObj = node.optJSONObject("title")
+        val nodeTitle = Title(
+            romaji = nodeTitleObj?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" },
+            english = nodeTitleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" },
+            native = nodeTitleObj?.optString("native")?.takeIf { it.isNotBlank() && it != "null" }
+        )
+        val sdNode = node.optJSONObject("startDate")
+        val nodeStart = if (sdNode != null) {
+            val y = sdNode.optInt("year", 0)
+            if (y > 0) "%04d-%02d-%02d".format(
+                y,
+                sdNode.optInt("month", 0).coerceAtLeast(1),
+                sdNode.optInt("day", 0).coerceAtLeast(1)
+            ) else null
+        } else null
+        relations.add(Relation(
+            type = rt,
+            entryId = nodeId,
+            entryTitle = nodeTitle,
+            entryFormat = node.optString("format").takeIf { it.isNotBlank() && it != "null" },
+            entryEpisodes = node.optInt("episodes", 0).takeIf { it > 0 },
+            entrySeasonYear = node.optInt("seasonYear", 0).takeIf { it > 0 },
+            entryStartDate = nodeStart
+        ))
+    }
+}
 
         val cover = o.optJSONObject("coverImage")?.let { c ->
             c.optString("extraLarge").takeIf { it.isNotBlank() && it != "null" }
