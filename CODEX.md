@@ -46,7 +46,7 @@ path: patch_plugins.py
 ## BingeCloud/build.gradle.kts
 path: BingeCloud/build.gradle.kts
 - android — namespace com.flummox.bingecloud, compileSdk 35, minSdk 21
-- defaultConfig — TMDB_API_KEY, TVDB_API_KEY, PLUGIN_VERSION from env
+- defaultConfig — TMDB_API_KEY, TVDB_API_KEY, PLUGIN_VERSION, IS_DEV_BUILD from env
 - cloudstream — description, authors, tvTypes, version from bingecloud_version
 - dependencies — cloudstream3 pre-release, NiceHttp, jsoup, okhttp, jackson, coroutines
 
@@ -74,36 +74,6 @@ path: BingeCloud/build.gradle.kts
 - TmdbDiscoverItem.toAioMeta — mapper
 
 
-## AniListApi.kt
-- ENDPOINT — https://graphql.anilist.co
-- RX_PART_N, RX_SEASON_N — regexes for Part/Season parsing
-- Title, Entry, Relation, PartInfo — data models
-- searchAnime — GraphQL search, 10 hits, 24h cache
-- getEntry — single entry by AniList ID
-- resolveChain — walk prequel/sequel to full ordered chain
-- parsePartInfo — extract Part N + Season N from title
-- getPrequelOffset — sum same-franchise prequel episode counts
-- normalizedBase — strip Part/Season for title comparison
-- parseEntry, entryToJson, parseSearchResponse — helpers
-
-
-## AniZoneApi.kt
-- BASE — https://anizone.to
-- RX_NON_ALNUM, RX_WS, RX_JSON_PARSE_TPL, RX_PLAYER, RX_CUT — regexes
-- Hit, Episode, StreamResult — data models
-- searchKey, epsKey, SEARCH_TTL, EPS_TTL — cache keys/TTLs
-- unescapeJs, extractJsonParse, normalize — parsing helpers
-- buildVariants — generate shortened query variants
-- search — AniZone search (cached 30min)
-- searchWithVariants [DEAD] — replaced by inline variant loop in resolve
-- pickBest — pick best AniZone hit
-- getEpisodes — episode list (cached 60min)
-- getStream — resolve m3u8 from vidstackPlayer JSON
-- pickBestAniList — pick best AniList entry by title/year
-- resolve — main entry, uses AniList titles for anime
-- mirror — ScrapedMirror builder
-
-
 ## AnikotoExtractors.kt
 - MEGAPLAY_ENC_IV, MEGAPLAY_ENC_KEY, MEGAPLAY_TOKEN_SECRET — crypto constants
 - ANIKOTO_PROXY_MAP — vault → uwu domain map
@@ -117,17 +87,48 @@ path: BingeCloud/build.gradle.kts
 - AnikotoMegaPlay, AnikotoVidtube, AnikotoVidwish — ExtractorApi classes
 
 
+## AniListApi.kt
+- ENDPOINT — https://graphql.anilist.co
+- RX_PART_N, RX_SEASON_N — regexes for Part/Season parsing
+- Title, Entry, Relation, PartInfo — data models
+- searchAnime — GraphQL search, 10 hits, 24h cache
+- getEntry — single entry by AniList ID
+- resolveChain — walk prequel/sequel to full ordered chain
+- parsePartInfo — extract Part N + Season N from title
+- getPrequelOffset — sum same-franchise prequel episode counts
+- normalizedBase — strip Part/Season for title comparison
+- sameBaseTitle — normalized equality check
+- parseEntry, entryToJson, parseSearchResponse — helpers
+
+
+## AniZoneApi.kt
+- BASE — https://anizone.to
+- RX_NON_ALNUM, RX_WS, RX_JSON_PARSE_TPL, RX_PLAYER, RX_CUT — regexes
+- Hit, Episode, StreamResult — data models
+- searchKey, epsKey, SEARCH_TTL, EPS_TTL — cache keys/TTLs
+- unescapeJs, extractJsonParse, normalize — parsing helpers
+- buildVariants — generate shortened query variants
+- search — AniZone search (cached 30min)
+- pickBest — pick best AniZone hit
+- getEpisodes — episode list (cached 60min)
+- getStream — resolve m3u8 from vidstackPlayer JSON
+- pickBestAniList — pick best AniList entry by title/year
+- tryNextPartInChain — out-of-range ep → next part on site
+- resolve — main entry, uses AniList titles for anime
+- mirror — ScrapedMirror builder
+
+
 ## BCLog.kt
 - init — file + buffer setup
 - d, v, e, section — log levels (d=normal, v=verbose, e=error)
 - allSanitized, count, clear — debug UI support
-- sanitize — regex redaction (JWT, bearer, cookie, CF)
+- sanitize — regex redaction (JWT, bearer, cookie, CF, signCookie)
 - setVerbose, isVerbose — toggle
 
 
 ## BingeCloudPlugin.kt
 - BingeCloudPlugin — @CloudstreamPlugin entry point
-- load — boot: RepoAnalytics.ping, BCLog.init, Prewarm.fire
+- load — boot: RepoAnalytics.ping, BCLog.init, HostHealth.init, restoreMbSession, Prewarm.fire
 - registerMainAPI(BingeCloudProvider)
 - registerExtractorAPI: VCloud, GDirect, Filepress
 
@@ -137,20 +138,25 @@ path: BingeCloud/build.gradle.kts
 - PREFETCH_SCOPE, activePrefetchJob, lastHomeRenderMs — prefetch state
 - StreamQuery.cacheKey — extension
 - ADULT_TERMS, HOME_BLOCKED_GENRES — filter lists
-- isAdultContent, isJunk — filters
+- isAdultContent, AioMeta.isJunk — filters
 - BingeCloudProvider — MainAPI class
   - getMainPage — row dispatch
   - resolveRow — row type → source
+  - jwTypeFor — rowType → JustWatch objectType
   - routeWestern, routeIndian, routeBanglaTVDB — routing
   - getHindiMergedPool, validateHindiSeries — Hindi pool
   - routeLanguageTVDB, routeLanguage — language rows
   - search, searchViaTmdb — search
-  - mergeSearchResults, searchDedupeKey, searchGroupKey — merge + group + Part/season dedupe
-  - isExtraTitle, seasonNumberOf — extra/season tier helpers
+  - RX_SEASON_N, RX_EXTRA_MARKER, GROUP_STOPWORDS
+  - isExtraTitle, seasonNumberOf, searchGroupKey — grouping helpers
+  - mergeSearchResults, searchDedupeKey — merge + group + Part/season dedupe
+  - tmdbSeasonNumbers — fetch TMDB season list for id (24h cache)
+  - AniListApi.Entry.toAniListSearchResponse — mapper
   - searchViaAiometa [DEAD — unused]
   - AioMeta.toSearchResponse, TmdbSearchItem.toSearchResponse — mappers
-  - load — detail fetch (Aiometa → TMDB fallback)
-  - loadLinks — mirror sort + emit
+  - load — detail fetch (Aiometa → TMDB fallback → AniList direct)
+  - loadFromAniList — anilist: URL entry point
+  - loadLinks — mirror sort + emit (no probe — removed v217)
   - hostOf, qualityRank, audioPriority, computeStatusTag — helpers
 - encodeQuery, decodeQuery — JSON serialize StreamQuery
 - TmdbSearchResponse, TmdbSearchItem — data models
@@ -158,21 +164,23 @@ path: BingeCloud/build.gradle.kts
 
 
 ## Cache.kt
-- BCCache — LRU cachemodels
-- response, 16 mirrors)
-  - get, put, getMirrors, putMirrors, clear
+- BCCache — LRU cache
+  - get, put — text cache (5min default)
+  - getMirrors, putMirrors — scrape results (30min, 16 entries)
+  - clear
 
 
 ## CfSolverDialog.kt
-- CfResult — data model
+- CfResult — data model (html, cookie)
 - CfSolverDialog.resolve — main entry, WebView-based solver
 - solve — dialog + WebView + JS bridge
 - JS_INSTALL_OBSERVER, JS_DETECT_CF — injected scripts
-- CfBridge — JS → Kotlin HTML push
+- CfBridge — JS → Kotlin HTML push (drops CF challenge pages)
 
 
 ## CloudflareHelper.kt
 - BingeCloudCtx — context holder
+- CF_INDICATORS — CF page marker list
 - isCfChallenge — HTML marker check
 - currentActivity — reflective Activity finder
 - cloudflareGet — 3-stage GET (stored cookie, plain, solver)
@@ -200,12 +208,12 @@ path: BingeCloud/build.gradle.kts
 - JW_ENDPOINT — https://apis.justwatch.com/graphql
 - JW_QUERY — GraphQL query
 - jwDiscoverByProvider — filter by provider slug
-- jwDiscoverByLanguage [DEAD] — JW doesn't support
+- jwDiscoverByLanguage — filter by originalLanguages
 - jwFetch — internal GraphQL POST + parse
 
 
 ## LinkScore.kt
-- prelimScore — 0-100 score per mirror
+- prelimScore — 0-100 score per mirror; demotes MovieBox sbcdn5 edge (−50) — sbcdn5 serves certain subjects at unsustainable bitrate (Reacher 2022 confirmed, sticky per subject ID)
 - emoji — 🟢🟡🔴 bands
 - hostOf — URL → host
 
@@ -216,9 +224,11 @@ path: BingeCloud/build.gradle.kts
 
 ## MlsbdApi.kt [DISABLED]
 - MLSBD_BASE — https://mlsbd.co
+- MLSBD_UA — must match CF UA exactly
+- mlsbdHttpClient — OkHttp with MlsbdDns
 - mlsbdFetch, mlsbdFetchVia, mlsbdSearch, mlsbdFindPage
 - mlsbdResolveSavelinks, mlsbdExtractFromMulticloud, mlsbdExtractPlayerStream
-- mlsbdDecodeBongHd — x_data decoder
+- mlsbdDecodeBongHd — x_data decoder (URL → strip:N → ROT13 → base64)
 - mlsbdResolveToMirrors, mlsbdExtractRaw
 - REVIVAL NOTES in file header
 
@@ -229,22 +239,29 @@ path: BingeCloud/build.gradle.kts
 
 ## MovieBoxApi.kt
 - MB_SECRET_B64, MB_SECRET_ALT_B64, MB_VERSION_CODE, MB_VERSION_NAME, MB_PACKAGE, MB_INSTALL_STORE, MB_UA — DO NOT TOUCH
-- MB_HOSTS, MB_BOOTSTRAP_HOST, MB_BOOTSTRAP_PATH
+- MB_HOSTS — native API host pool (api3..api6, api4sg)
+- MB_WEB_DOMAINS — 7 candidate web domains for /wefeed-h5api-bff/subject/play
+- MB_WEB_UA — Chrome 154 Mobile UA for web path (matches reference)
+- MB_BOOTSTRAP_HOST, MB_BOOTSTRAP_PATH
 - deviceId, clientInfo — request fingerprint
 - md5Hex, b64DecodeBytes, b64Encode — encoding helpers
 - generateXClientToken, buildCanonicalString, generateXTrSignature, buildHeaders — signing
 - parseJwtExp, restoreMbSession, bootstrapToken, ensureSession
 - mbGet — GET with retry + cache
-- MBSubject, MBStream — data models
-- extractPolicyResource — decodes signCookie (old + new format)
+- MBSubject, MBStream — data models (MBStream has emitHeaders: Map<String,String>)
+- highestQuality — pick max resolution from "1080,720,480" → "1080p"
+- extractPolicyResource — decodes signCookie (new urlprefix + old CloudFront)
 - mbSearch, parseSearchResults — search
 - mbDetail, mbLanguages — detail + audio tracks
-- mbPlay — play-info, returns MBStream list
+- mbPlay — orchestrator: fetch detail → try web → fallback native
+- mbPlayWeb — iterate MB_WEB_DOMAINS, hit /wefeed-h5api-bff/subject/play, parse dash/hls/streams
+- parseWebStreams — apply skip rules, extract signCookie + signHeaderKey, build emitHeaders
+- mbPlayNative — original play-info + resourceDetectors, DASH-first sort
 
 
 ## Settings.kt
 - RowSpec — data class for home row
-- K_* — all pref keys (rows, sources, tokens, quality, prefilter, prefetch, verbose)
+- K_* — all pref keys (rows, sources, tokens, quality, prefilter, prefetch, verbose, CF cookies)
 - K_ROW_STREAM_JIOCINEMA, K_ROW_STREAM_ZEE5 [DEAD] — declared but no RowSpec uses them
 - ALL_ROWS — full list of RowSpec
 - DEFAULT_ON_ROWS — set of keys enabled by default
@@ -256,7 +273,7 @@ path: BingeCloud/build.gradle.kts
 - getFebBoxToken, saveFebBoxToken, clearFebBoxToken
 - getTvdbToken, getTvdbTokenExp, saveTvdbToken
 - isSrcVm, isSrcMd, isSrcHdh, isSrcFebBox, isSrcMovieBox, isSrcAnikoto, isSrcShowBox, isSrcMlsbd, isSrcAniZone
-- Colors — UI palette constants (BG, CARD, ROW, ACCENT, TEXT, etc.)
+- Colors — UI palette constants (BG, SKY_*, CARD, ROW, ACCENT, TEXT, etc.)
 - dp, bg, skyGradient, cardBg, withRipple, accentPill, saveButtonBg, cancelButtonBg, arrowButtonBg — UI helpers
 - ShootingStarsView, NightCloudsView — animated decorations
 - Card — builder
@@ -279,7 +296,7 @@ path: BingeCloud/build.gradle.kts
 
 ## StreamScrapers.kt
 - StreamQuery, ScrapedMirror — data models (StreamQuery at TOP of file)
-  — StreamQuery now has totalEpisodes: Int and originalLanguage: String
+  — StreamQuery has totalEpisodes: Int and originalLanguage: String
 - DOMAIN_JSON_URL, DOMAIN_CACHE_TTL — domain resolver
 - resolveDomain — get latest domain from SaurabhKaperwan/Utils
 - STOP_WORDS, stripQualifiers, titleMatches — title matcher
@@ -288,12 +305,11 @@ path: BingeCloud/build.gradle.kts
 - vegamoviesFindPage, vegamoviesExtractMovieRaw, vegamoviesExtractSeriesRaw — VM
 - moviesdriveFindPage, moviesdriveExtractMovieRaw, moviesdriveExtractSeriesRaw, extractFromArchivePage — MD
 - hdhub4uFindPage, hdhub4uExtractRaw — HDH
-- movieboxExtractRaw — MB (Part-N offset + direct-part-hit applied here)
+- movieboxExtractRaw — MB; wires MBStream.emitHeaders into ScrapedMirror.headers
 - prettyAudio — audio label normalizer
 - ANIKOTO_DOMAIN, ANIKOTO_UA, anikotoBrowserHeaders, anikotoAjaxHeaders
 - anikotoResultString, anikotoResultUrl, anikotoScore
-- AnikotoSeries, anikotoFindSeries, anikotoGetEpInfo, anikotoResolvePlayerUrl
-  - AnikotoEpInfo — strict ep lookup + total count
+- AnikotoSeries, anikotoFindSeries, AnikotoEpInfo, anikotoGetEpInfo, anikotoResolvePlayerUrl
   - anikotoResolveFromServerIds — serverIds → mirrors
   - anikotoChainWalk — out-of-range → AniList chain → next part on site
   - isSeasonSpecific — season-marker check for AniKoto season search
@@ -322,7 +338,7 @@ path: BingeCloud/build.gradle.kts
 - GROUPS — currently empty (MLSBD removed)
 - K_CF_EXPIRY_PREFIX
 - getExpiry, clearCookieAndExpiry — helper
-- State, GroupStatus — status enums
+- State, GroupStatus — status enums/data
 - statusOf — group health check
 - bypassGroup — open WebView solver per domain
 
@@ -351,6 +367,7 @@ path: BingeCloud/build.gradle.kts
 ## Otakutsu/build.gradle.kts
 path: Otakutsu/build.gradle.kts
 - android — namespace com.flummox.otakutsu, compileSdk 35, minSdk 21
+- defaultConfig — PLUGIN_VERSION, IS_DEV_BUILD from env
 - cloudstream — description, authors, tvTypes=[Anime, AnimeMovie], version from otakutsu_version
 - dependencies — cloudstream3 pre-release, NiceHttp, jsoup, okhttp, jackson, coroutines
 
@@ -359,91 +376,12 @@ path: Otakutsu/build.gradle.kts
 ## path: Otakutsu/src/main/java/com/flummox/otakutsu/
 
 
-## OLog.kt
-- init — file + buffer setup; loads persisted verbose pref from CloudStream keys
-- d, v, e, section — normal + verbose log levels (▸ prefix on verbose lines)
-- setVerbose, isVerbose — toggle persisted across sessions
-- allSanitized, allVerboseSanitized — UI feeds for log windows
-- count, countVerbose — line counts for header
-- clear — wipes both files + buffers, reopens writers
-- xorEncrypt, xorDecrypt — obfuscation for otakutsu_verbose.enc
-- sanitize — regex redaction (JWT, bearer, cookie, CF) applied to both views
-- Files: otakutsu_log.txt (plain text), otakutsu_verbose.enc (xor+base64)
-
-
-## OLogScrollbar.kt
-- OLogScrollbar — custom draggable scrollbar View (dim gray 0x8C7A7A7A thumb)
-
-
-## OSettings.kt
-- show — main dialog: OTAKUTSU hero + EXTENSION badge + SETTINGS/LOGS tiles + CLOSE
-- showSettings — sub-window: prefetch toggle row + clear cache row
-- showLogs — sub-window: verbose toggle row, log view, REFRESH/SAVE/COPY/CLEAR buttons, footer note
-- isPrefetchEnabled, setPrefetchEnabled — prefs (K_PREFETCH)
-- makeTile, subWindow, stagger, shape, ripple — UI builders
-- Colors — BG, SURFACE, BORDER, BORDER_HI, TEXT, SUBTEXT, ACTIVE, RED, LOG_TEXT
-- Tile structure: SETTINGS (⚙️) → showSettings, LOGS (📋) → showLogs
-- Badge ACTIVE dot pulses 0.25↔1.0 alpha at 1200ms cycles
-- Staggered entrance: 70ms offset, 420ms duration, DecelerateInterpolator
-
-
-## OtakutsuPlugin.kt
-- OtakutsuPlugin — @CloudstreamPlugin entry point
-- load — OLog.init, registerMainAPI(OtakutsuProvider)
-- openSettings → OSettings.show
-
-
-## OtakutsuProvider.kt
-- OtakutsuProvider — MainAPI class
-  - mainUrl = https://otakutsu.cc
-  - name = Otakutsu
-  - hasMainPage, hasQuickSearch, hasDownloadSupport, supportedTypes = [Anime, AnimeMovie]
-  - NEXT_ACTION_ID — hardcoded fallback (787faac6445fbc39cfe9376659cbfb5168c3f714b2)
-    Turbopack does NOT emit server action IDs to client JS (verified via
-    homepage HTML, homepage chunks, watch route chunks — all miss)
-  - playbackCookie — session cookie state captured from bootstrap+session Set-Cookie
-  - baseHeaders, browserHeaders, playbackHeadersFn — header sets
-  - homeHtml, homeTime, homeDoc, HOME_TTL (10min) — home cache
-  - totalEpsByAnime — per-anime episode count for prefetch planning
-  - getHomeHtml, getHomeDoc — cached accessors
-  - getMainPage — parse <section id=X> cards from home HTML
-  - search — GET /api/feed/search (English → Romaji → Native title chain)
-  - load — parallel /anime/{id} + /watch/{id}?ep=1, parse metadata + episodes, fires PrefetchEngine.warmLoad
-  - buildStateTree — Next.js router state JSON for RSC action POST
-  - fetchChain — bootstrap → session → cookie collect → POST /watch/{id}?ep=N with next-action + state-tree → parse sources[] from RSC flight lines
-  - loadLinks — PrefetchEngine.obtain → probe each source (200 + #EXTM3U + STREAM-INF/MEDIA) → emit ExtractorLink (M3U8) → recordPlay + warmAfterPlay
-  - clearSectionCache — static; wipes in-memory home section cache
-  - Stale-action heuristic: rsc.len > 20KB + contains "$Sreact.fragment" + no "sources" key → log OTAKUTSU UPDATED + ActionHealth.markStale()
-  - ActionHealth.markOk() on successful sources parse
-
-
-## PrefetchEngine.kt
-- DEBOUNCE_MS = 800, HOME_GRACE_MS = 5000, HISTORY_SIZE = 5
-- SCOPE — SupervisorJob + Dispatchers.IO
-- inFlight — ConcurrentHashMap<String, CompletableDeferred<PrefetchCache?>>
-  (dedup; second concurrent caller awaits first, no duplicate network)
-- watchHistory — per-anime last-5 plays (binge detection)
-- currentAnimeId — session tracking
-- sessionJobs — cancelable per-session jobs
-- markHomeRender — sets lastHomeRenderMs for grace check
-- isFromHome — true if within HOME_GRACE_MS
-- beginSession — switch anime; cancels prior session jobs
-- recordPlay — append episode to history (dedup on consecutive)
-- plan — sequential 3-history → warm [ep+1, ep+2]; else warm [ep+1]
-- warmLoad — batch warm E1+E2 on series open
-- warmAfterPlay — history-aware next-ep warming
-- warm — enqueues jobs with debounce + grace + cache checks
-- obtain — public in-flight dedup entry (single network call per key even if many callers race)
-
-
-## OCache.kt
-- OtakutsuSource — data class (label, server, subType, url, tracks: List<Pair<String,String>>)
-- tracks holds native Otakutsu subtitle URLs (currently 502, preserved for future)
-- PrefetchCache — data class (sources, cookieHeader)
-- OCache — LRU prefetch cache
-- getPrefetch, putPrefetch, hasPrefetch
-- TTL_VALID = 30min, TTL_EMPTY = 60s
-- clear, size
+## ActionHealth.kt
+- ActionHealth — action-ID health state for OSettings badge
+- K_LAST_OK, K_LAST_STALE — CloudStream pref keys
+- markOk — called by fetchChain when sources parse successfully
+- markStale — called by fetchChain when stale-detection heuristic fires
+- isHealthy — true if last OK >= last stale (or both zero)
 
 
 ## AniKotoSubs.kt
@@ -470,28 +408,102 @@ path: Otakutsu/build.gradle.kts
 - fetch — top-level entry
 
 
-## SubtitleFetcher.kt
-- SubtitleFetcher — orchestrator for AniKoto + AniZone subs
-- fetch — runs both in parallel, 6s timeout each, merges + dedupes by URL
-- Sub — data class (label, url) with source prefix applied
-- cache — LruCache<String, Entry>, TTL 7 days in-memory
-- clear — wipes cache
-
-
-## ActionHealth.kt
-- ActionHealth — action-ID health state for OSettings badge
-- K_LAST_OK, K_LAST_STALE — CloudStream pref keys
-- markOk — called by fetchChain when sources parse successfully
-- markStale — called by fetchChain when stale-detection heuristic fires
-- isHealthy — true if last OK >= last stale (or both zero)
-
-
 ## OAnalytics.kt
 - OAnalytics — anonymous daily ping (same Worker + AUTH_TOKEN as BingeCloud)
 - PREFS = "otakutsu_repo_analytics" — separate install ID namespace
 - PING_INTERVAL_MS — 24h throttle
 - getOrCreateInstallId — persistent UUID in CloudStream prefs
 - ping — POST {timestamp, installId, repo, ext, ver} with X-Auth-Token
+
+
+## OCache.kt
+- OtakutsuSource — data class (label, server, subType, url, tracks)
+- PrefetchCache — data class (sources, cookieHeader)
+- OCache — LRU prefetch cache
+- getPrefetch, putPrefetch, hasPrefetch
+- TTL_VALID = 30min, TTL_EMPTY = 60s
+- clear, size
+
+
+## OLog.kt
+- init — file + buffer setup; loads persisted verbose pref from CloudStream keys
+- d, v, e, section — normal + verbose log levels (▸ prefix on verbose lines)
+- setVerbose, isVerbose — toggle persisted across sessions
+- allSanitized, allVerboseSanitized — UI feeds for log windows
+- count, countVerbose — line counts for header
+- clear — wipes file + buffer, reopens writers
+- sanitize — regex redaction (JWT, bearer, cookie, CF) applied to both views
+- Files: otakutsu_log.txt (plain), otakutsu_verbose.txt (verbose)
+
+
+## OLogScrollbar.kt
+- OLogScrollbar — custom draggable scrollbar View (dim gray 0x8C7A7A7A thumb)
+
+
+## OSettings.kt
+- show — main dialog: OTAKUTSU hero + EXTENSION badge + SETTINGS/LOGS tiles + CLOSE
+- showSettings — sub-window: prefetch toggle, subtitles toggle, clear cache
+- showLogs — sub-window: verbose toggle row, log view, REFRESH/SAVE/COPY/CLEAR buttons
+- isPrefetchEnabled, setPrefetchEnabled — prefs (K_PREFETCH)
+- isSubtitlesEnabled, setSubtitlesEnabled — prefs (K_SUBS)
+- makeTile, subWindow, stagger, shape, ripple — UI builders
+- Colors — BG, SURFACE, BORDER, TEXT, SUBTEXT, ACTIVE, RED, LOG_TEXT
+- Badge ACTIVE dot pulses 0.25↔1.0 alpha at 1200ms cycles
+
+
+## OtakutsuPlugin.kt
+- OtakutsuPlugin — @CloudstreamPlugin entry point
+- load — OLog.init, OAnalytics.ping, registerMainAPI(OtakutsuProvider)
+- openSettings → OSettings.show
+
+
+## OtakutsuProvider.kt
+- OtakutsuProvider — MainAPI class
+  - mainUrl = https://otakutsu.cc
+  - name = Otakutsu
+  - hasMainPage, hasQuickSearch, hasDownloadSupport, supportedTypes = [Anime, AnimeMovie]
+  - NEXT_ACTION_ID — hardcoded fallback (787faac6445fbc39cfe9376659cbfb5168c3f714b2)
+    Turbopack does NOT emit server action IDs to client JS
+  - playbackCookie — session cookie state captured from bootstrap+session
+  - baseHeaders, browserHeaders, playbackHeadersFn — header sets
+  - homeHtml, homeTime, homeDoc, HOME_TTL (10min) — home cache
+  - totalEpsByAnime — per-anime episode count for prefetch planning
+  - getHomeHtml, getHomeDoc — cached accessors
+  - getMainPage — parse <section id=X> cards from home HTML
+  - search — GET /api/feed/search (English → Romaji → Native title chain)
+  - load — parallel /anime/{id} + /watch/{id}?ep=1, parse metadata + episodes
+  - buildStateTree — Next.js router state JSON for RSC action POST
+  - fetchChain — bootstrap → session → cookie collect → POST /watch/{id}?ep=N → parse sources[]
+  - loadLinks — PrefetchEngine.obtain → probe each source → emit ExtractorLink (M3U8)
+  - clearSectionCache — static; wipes in-memory home section cache
+  - Stale-action heuristic: rsc.len > 20KB + contains "$Sreact.fragment" + no "sources" → markStale()
+  - ActionHealth.markOk() on successful sources parse
+
+
+## PrefetchEngine.kt
+- DEBOUNCE_MS = 800, HOME_GRACE_MS = 5000, HISTORY_SIZE = 5
+- SCOPE — SupervisorJob + Dispatchers.IO
+- inFlight — ConcurrentHashMap<String, CompletableDeferred<PrefetchCache?>>
+- watchHistory — per-anime last-5 plays
+- currentAnimeId — session tracking
+- sessionJobs — cancelable per-session jobs
+- markHomeRender — sets lastHomeRenderMs for grace check
+- isFromHome — true if within HOME_GRACE_MS
+- beginSession — switch anime; cancels prior session jobs
+- recordPlay — append episode to history (dedup on consecutive)
+- plan — sequential 3-history → warm [ep+1, ep+2]; else warm [ep+1]
+- warmLoad — batch warm E1+E2 on series open
+- warmAfterPlay — history-aware next-ep warming
+- warm — enqueues jobs with debounce + grace + cache checks
+- obtain — public in-flight dedup entry
+
+
+## SubtitleFetcher.kt
+- SubtitleFetcher — orchestrator for AniKoto + AniZone subs
+- fetch — runs both in parallel, 6s timeout each, merges + dedupes by URL
+- Sub — data class (label, url) with source prefix applied
+- cache — LruCache<String, Entry>, TTL 7 days in-memory
+- clear — wipes cache
 
 
 # ══════════════════════════════════════════════════════════════
@@ -540,11 +552,8 @@ Body: ["<animeId>", <ep>, "<streamToken>"]
 ## Action ID status (2026-09-28)
 - Hardcoded fallback: 787faac6445fbc39cfe9376659cbfb5168c3f714b2
 - Turbopack does NOT emit server action IDs into client JS bundles
-- Scanned: homepage HTML, homepage chunks (19 files), watch route chunks (12 files)
-- All scans → 0 hits on `[a-f0-9]{40}` pattern
 - Fallback is authoritative until Otakutsu rotates their action source
-- Stale detection heuristic: RSC response >20KB containing "$Sreact.fragment"
-  but no "sources" key → log OTAKUTSU UPDATED
+- Stale detection: RSC >20KB containing "$Sreact.fragment" but no "sources" → log OTAKUTSU UPDATED
 
 
 # ══════════════════════════════════════════════════════════════
@@ -556,4 +565,18 @@ Body: ["<animeId>", <ep>, "<streamToken>"]
 - RepoAnalytics.ping() and OAnalytics.ping() early-return when true
 - Effect: dev branch builds never contribute to Firebase ping counts
 - Stable builds (main branch) ping normally
-- bingecloud_version bumped to 217 to ship this gate to stable users
+
+
+# ══════════════════════════════════════════════════════════════
+# CROSS-CUTTING — MovieBox web-path fix (2026-09-29)
+# ══════════════════════════════════════════════════════════════
+
+- Root cause: mbPlay previously used only the native play-info endpoint
+- Fix: mbPlay now tries mbPlayWeb (7 candidate web domains) first,
+  falls back to mbPlayNative if web returns empty
+- Web path attaches per-stream emitHeaders (Origin/Referer/UA/sign cookie)
+- Scrapers wire MBStream.emitHeaders → ScrapedMirror.headers
+- Pre-flight probe in BingeCloudProvider.loadLinks deleted (was
+  tripping 429 on CDN and poisoning subsequent ExoPlayer fetch)
+- Fix verified: all title types resolve via web path, no 429, no
+  buffering except on sbcdn5 edge (see LinkScore demotion)
