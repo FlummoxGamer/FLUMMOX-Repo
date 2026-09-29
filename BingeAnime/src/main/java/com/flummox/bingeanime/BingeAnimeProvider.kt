@@ -16,8 +16,19 @@ class BingeAnimeProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
-    // ── home rows (19 total) ──
-    // data format: "sort|genre|tag|format|country|status"
+// ── home rows ──
+// data format: "sort|genre|tag|format|country|status"
+// Dynamic rows use TRENDING_DESC.
+// Genre/tag rows use POPULARITY_DESC — all-time popular, distinct
+// from Trending (TRENDING_DESC genre-filtered overlapped heavily
+// with the unfiltered Trending row since top-trending titles are
+// often the top in broad genres like Action).
+private val ROWS: List<Pair<String, String>> = listOf(
+    // Dynamic
+    "TRENDING_DESC|||||"              to "Trending",
+    "SCORE_DESC|||TV||"               to "Top Anime Series",
+    "SCORE_DESC|||MOVIE||"            to "Top Anime Movies",
+    "POPULARITY_DESC||||CN|"          to "Donghua",
     // Genres (AniList genre enum)
 "POPULARITY_DESC|Action||||"      to "Action",
 "POPULARITY_DESC|Adventure||||"   to "Adventure",
@@ -37,6 +48,8 @@ class BingeAnimeProvider : MainAPI() {
 // Remaining tags
 "POPULARITY_DESC||School|||"      to "School",
 "POPULARITY_DESC||Historical|||"  to "Historical"
+
+)
 
     override val mainPage get() = mainPageOf(
         *ROWS.map { (data, label) -> data to label }.toTypedArray()
