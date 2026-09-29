@@ -330,6 +330,47 @@ suspend fun mbLanguages(originalSubjectId: String): List<Pair<String, String>> {
 }
 
 suspend fun mbPlay(subjectId: String, season: Int = 0, episode: Int = 0, audioLabel: String? = null): List<MBStream> {
+    // ── Fast path: resourceDetectors carry fresh signed CDN MP4 URLs ──
+    val detail = try { mbDetail(subjectId) } catch (_: Exception) { null }
+    val detectors = detail?.optJSONObject("data")?.optJSONArray("resourceDetectors")
+    if (detectors != null && detectors.length() > 0) {
+        val out = mutableListOf<MBStream>()
+        for (i in 0 until detectors.length()) {
+            val det = detectors.optJSONObject(i) ?: continue
+            val resList = det.optJSONArray("resolutionList")
+            if (resList != null) {
+                for (j in 0 until resList.length()) {
+                    val r = resList.optJSONObject(j) ?: continue
+                    val link = r.optString("resourceLink").takeIf { it.isNotBlank() } ?: continue
+                    if (!link.startsWith("http")) continue
+                    val title = r.optString("title").ifBlank { "MB" }
+                    val quality = Regex("""(\d{3,4})[pP]""").find(title)?.groupValues?.get(1)?.plus("p")
+                        ?: Regex("""(\d{3,4})[pP]""").find(link)?.groupValues?.get(1)?.plus("p")
+                        ?: "Auto"
+                    out.add(MBStream(
+                        url = link, realUrl = link, quality = quality,
+                        size = r.optString("size").takeIf { it.isNotBlank() },
+                        signCookie = null, audio = audioLabel,
+                        durationSec = 0, captions = emptyList()
+                    ))
+                }
+            }
+            val dl = det.optString("downloadUrl").takeIf { it.isNotBlank() && it != "null" }
+            if (dl != null && out.none { it.url == dl }) {
+                out.add(MBStream(
+                    url = dl, realUrl = dl, quality = "Auto", size = null,
+                    signCookie = null, audio = audioLabel,
+                    durationSec = 0, captions = emptyList()
+                ))
+            }
+        }
+        if (out.isNotEmpty()) {
+            BCLog.d("MB resourceDetectors → ${out.size} direct URLs [$audioLabel]")
+            return out
+        }
+    }
+
+    // ── Fallback: play-info (sbcdn5 for series, still broken) ──
     val q = "subjectId=$subjectId&se=$season&ep=$episode"
     val json = mbGet("/wefeed-mobile-bff/subject-api/play-info", q) ?: return emptyList()
     val root = json.optJSONObject("data") ?: json
