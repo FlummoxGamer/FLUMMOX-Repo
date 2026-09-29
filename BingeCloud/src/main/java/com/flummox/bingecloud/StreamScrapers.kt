@@ -505,10 +505,12 @@ val allStreams = languages.map { (sid, lang) ->
                         "Referer" to "https://movie-box.co/",
                         "Origin" to "https://movie-box.co"
                     )
-                it.signCookie != null -> {
-                    val v = if (it.signCookie.startsWith("Edge-Cache-Cookie=")) it.signCookie else "Edge-Cache-Cookie=${it.signCookie}"
-                    mapOf("X-MB-Token" to v)
-                }
+                it.signCookie != null ->
+                    mapOf(
+                        "Referer" to "https://api3.aoneroom.com/",
+                        "User-Agent" to "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)",
+                        "Cookie" to it.signCookie
+                    )
                 else -> null
             },
             captions = it.captions
