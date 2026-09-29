@@ -4,6 +4,7 @@ import android.util.Base64
 import com.lagradost.cloudstream3.app
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 import java.security.MessageDigest
@@ -14,17 +15,31 @@ import kotlin.random.Random
 
 private const val MB_SECRET_B64 = "76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O"
 private const val MB_SECRET_ALT_B64 = "Xqn2nnO41/L92o1iuXhSLHTbXvY4Z5ZZ62m8mSLA"
-private const val MB_VERSION_CODE = 50020126L
-private const val MB_VERSION_NAME = "4.0.02.0831.03"
+private const val MB_VERSION_CODE = 50020130L
+private const val MB_VERSION_NAME = "4.0.03.0920.03"
 private const val MB_PACKAGE = "com.community.mbox.in"
 private const val MB_INSTALL_STORE = "official"
-private const val MB_UA = "com.community.mbox.in/50020126 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
+private const val MB_UA = "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
 private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
 private val MB_HOSTS = listOf(
-    "api6.aoneroom.com", "api5.aoneroom.com", "api4.aoneroom.com",
-    "api4sg.aoneroom.com", "api3.aoneroom.com"
+    "api3.aoneroom.com",
+    "api4.aoneroom.com", "api4sg.aoneroom.com",
+    "api5.aoneroom.com", "api6.aoneroom.com"
 )
+
+private val MB_WEB_DOMAINS = listOf(
+    "https://123moviesfree.club",
+    "https://movie-box.co",
+    "https://movieboxonline.net",
+    "https://sflix.film",
+    "https://h5-api.aoneroom.com",
+    "https://netnaija.film",
+    "https://movieboxhd.net"
+)
+
+private const val MB_WEB_UA = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
 
 private const val MB_BOOTSTRAP_HOST = "apig.inmoviebox.com"
 private const val MB_BOOTSTRAP_PATH = "/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1"
@@ -115,24 +130,29 @@ private fun parseJwtExp(token: String): Long = try {
 } catch (_: Exception) { 0L }
 
 fun restoreMbSession() {
-    val tok = Settings.getMbToken() ?: return
-    if (Settings.getMbTokenExp() > System.currentTimeMillis() + 60 * 60 * 1000L) {
-        mbSession = tok
-        BCLog.d("MB session restored (exp in ${(Settings.getMbTokenExp() - System.currentTimeMillis()) / 60000}min)")
-    }
+    BCLog.d("MB restore skipped (force bootstrap)")
 }
 
 private suspend fun bootstrapToken(): String? {
     val url = "https://$MB_BOOTSTRAP_HOST$MB_BOOTSTRAP_PATH"
     return try {
         val res = app.get(url, headers = buildHeaders("GET", url, "application/json", "application/json", null, null))
-        if (res.code !in 200..299) return null
-        val xUser = res.headers["x-user"] ?: res.headers["X-User"] ?: return null
+        if (res.code !in 200..299) {
+            BCLog.e("MB bootstrap HTTP ${res.code}")
+            return null
+        }
+        val xUser = res.headers["x-user"] ?: res.headers["X-User"] ?: run {
+            BCLog.e("MB bootstrap: no x-user header")
+            return null
+        }
         val tok = JSONObject(xUser).optString("token").takeIf { it.isNotBlank() }
         if (tok != null) {
             mbSession = tok
             val exp = parseJwtExp(tok)
             if (exp > 0) Settings.saveMbToken(tok, exp)
+            BCLog.d("MB bootstrap OK (exp in ${(exp - System.currentTimeMillis()) / 60000}min)")
+        } else {
+            BCLog.e("MB bootstrap: no token in x-user")
         }
         tok
     } catch (e: Exception) { BCLog.e("MB bootstrap failed: ${e.message}"); null }
@@ -155,8 +175,14 @@ private suspend fun mbGet(path: String, query: String? = null, retried: Boolean 
             val fullUrl = if (query.isNullOrBlank()) "https://$host$path" else "https://$host$path?$query"
             val res = app.get(fullUrl, headers = buildHeaders("GET", fullUrl, "application/json", "application/json", null, session))
             if (res.code in 200..299) {
-                BCCache.put(cacheKey, res.text)
-                return try { JSONObject(res.text) } catch (e: Exception) { BCLog.e("MB JSON parse: ${e.message}"); null }
+    if (path.contains("subject-api/get")) {
+        val hdrs = res.headers
+        for (name in listOf("x-cdn", "x-edge", "x-region", "x-pool", "x-server", "server", "via", "cf-ray", "x-amz-cf-pop")) {
+            hdrs[name]?.let { BCLog.d("MB hdr $name=$it") }
+        }
+    }
+    BCCache.put(cacheKey, res.text)
+    return try { JSONObject(res.text) } catch (e: Exception) { BCLog.e("MB JSON parse: ${e.message}"); null }
             }
             if ((res.code == 401 || res.code == 403 || res.code == 441) && !retried) {
                 mbSession = null
@@ -176,8 +202,17 @@ data class MBStream(
     val signCookie: String? = null,
     val audio: String? = null,
     val durationSec: Long = 0L,
-    val captions: List<Pair<String, String>> = emptyList()
+    val captions: List<Pair<String, String>> = emptyList(),
+    val emitHeaders: Map<String, String> = emptyMap()
 )
+
+    private fun highestQuality(resolutions: String?): String? {
+    if (resolutions.isNullOrBlank()) return null
+    val best = resolutions.split(",")
+        .mapNotNull { it.trim().removeSuffix("p").removeSuffix("P").toIntOrNull() }
+        .maxOrNull() ?: return null
+    return "${best}p"
+}
 
     private fun extractPolicyResource(signCookie: String?): String? {
     if (signCookie.isNullOrBlank()) return null
@@ -275,8 +310,11 @@ private fun parseSearchResults(text: String): List<MBSubject> {
     return out
 }
 
-suspend fun mbDetail(subjectId: String): JSONObject? =
-    mbGet("/wefeed-mobile-bff/subject-api/get", "subjectId=$subjectId")
+suspend fun mbDetail(subjectId: String): JSONObject? {
+    val r = mbGet("/wefeed-mobile-bff/subject-api/get", "subjectId=$subjectId")
+    // diagnostic dump removed
+    return r
+}
 
 suspend fun mbLanguages(originalSubjectId: String): List<Pair<String, String>> {
     val detail = try { mbDetail(originalSubjectId) } catch (_: Exception) { null }
@@ -301,61 +339,234 @@ suspend fun mbLanguages(originalSubjectId: String): List<Pair<String, String>> {
 }
 
 suspend fun mbPlay(subjectId: String, season: Int = 0, episode: Int = 0, audioLabel: String? = null): List<MBStream> {
-    val q = "subjectId=$subjectId&se=$season&ep=$episode"
-    val json = mbGet("/wefeed-mobile-bff/subject-api/play-info", q) ?: return emptyList()
-    val root = json.optJSONObject("data") ?: json
-val arr = root.optJSONArray("streams") ?: root.optJSONArray("videos") ?: root.optJSONArray("list") ?: return emptyList()
+    val detailRoot = try { mbDetail(subjectId) } catch (_: Exception) { null }
+    val detailData = detailRoot?.optJSONObject("data")
 
-val captionsList = mutableListOf<Pair<String, String>>()
-val captionsArr = root.optJSONArray("captions")
-    ?: root.optJSONArray("subtitle")
-    ?: root.optJSONArray("subtitles")
-if (captionsArr != null) {
-    for (i in 0 until captionsArr.length()) {
-        val c = captionsArr.optJSONObject(i) ?: continue
-        val lang = c.optString("language").ifBlank { c.optString("lang") }.ifBlank { "Unknown" }
-        val url = c.optString("url").ifBlank { c.optString("file") }
-        if (url.isNotBlank()) captionsList.add(lang to url)
+    val detailPath = detailData?.optString("detailPath")?.takeIf { it.isNotBlank() }
+        ?: detailData?.optString("detailUrl")?.takeIf { it.isNotBlank() }?.let {
+            try { URI(it).path?.trimEnd('/')?.substringAfterLast('/') } catch (_: Exception) { null }
+        }
+
+    if (!detailPath.isNullOrBlank()) {
+        val webStreams = mbPlayWeb(subjectId, season, episode, detailPath, audioLabel)
+        if (webStreams.isNotEmpty()) return webStreams
     }
+
+    return mbPlayNative(subjectId, season, episode, audioLabel, detailData)
 }
-if (captionsList.isNotEmpty()) BCLog.d("MB captions: ${captionsList.map { it.first }}")
 
-val out = mutableListOf<MBStream>()
+private suspend fun mbPlayWeb(
+    subjectId: String, season: Int, episode: Int, detailPath: String, audioLabel: String?
+): List<MBStream> {
+    val session = ensureSession()
+    for (domain in MB_WEB_DOMAINS) {
+        try {
+            val playUrl = buildString {
+                append(domain)
+                append("/wefeed-h5api-bff/subject/play")
+                append("?subjectId=").append(subjectId)
+                append("&se=").append(season)
+                append("&ep=").append(episode)
+                append("&detailPath=").append(detailPath)
+                append("&streamSignType=1")
+                append("&supportCodecs%5Bhevc%5D=1")
+                append("&supportCodecs%5Bh264%5D=1")
+            }
+            val referer = buildString {
+                append(domain)
+                append("/movies/").append(detailPath)
+                append("?id=").append(subjectId)
+                append("&type=/movie/detail&detailSe=&detailEp=&lang=en")
+            }
+            val headers = buildMap {
+                put("User-Agent", MB_WEB_UA)
+                put("Referer", referer)
+                put("Accept", "application/json")
+                put("x-client-info", "{\"timezone\":\"Asia/Calcutta\"}")
+                put("x-request-lang", "en")
+                put("x-vip-restrict", "0")
+                put("x-no-high-risk-restrict", "0")
+                put("x-source", "")
+                if (!session.isNullOrBlank()) put("Authorization", "Bearer $session")
+            }
+            val res = app.get(playUrl, headers = headers)
+            if (res.code != 200) {
+                BCLog.d("MB web [$domain] code=${res.code}")
+                continue
+            }
+            val root = try { JSONObject(res.text) } catch (_: Exception) { continue }
+            val data = root.optJSONObject("data") ?: continue
+            val dash = data.optJSONArray("dash")
+            val hls = data.optJSONArray("hls")
+            val streams = data.optJSONArray("streams")
+
+            val out = mutableListOf<MBStream>()
+            dash?.let    { out += parseWebStreams(it, "DASH", domain, referer, audioLabel) }
+            hls?.let     { out += parseWebStreams(it, "HLS",  domain, referer, audioLabel) }
+            streams?.let { out += parseWebStreams(it, "MP4",  domain, referer, audioLabel) }
+
+            if (out.isNotEmpty()) {
+                BCLog.d("MB web [$domain] → ${out.size} streams")
+                return out
+            }
+        } catch (e: Exception) {
+            BCLog.e("MB web [$domain] err: ${e.message}")
+        }
+    }
+    return emptyList()
+}
+
+private fun parseWebStreams(
+    arr: JSONArray, formatType: String, domain: String, referer: String, audioLabel: String?
+): List<MBStream> {
+    val out = mutableListOf<MBStream>()
     for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        val url = o.optString("url").ifBlank { o.optString("playUrl").ifBlank { o.optString("src") } }
-        if (url.isBlank()) continue
-        val resolutionsStr = o.optString("resolutions").ifBlank { null }
-        val quality = resolutionsStr?.split(",")
-           ?.mapNotNull { it.trim().removeSuffix("p").removeSuffix("P").toIntOrNull() }
-           ?.maxOrNull()
-           ?.let { "${it}p" }
-           ?: o.optString("quality").ifBlank { "Auto" }
+        val s = arr.optJSONObject(i) ?: continue
+        val rawUrl = s.optString("url").takeIf { it.isNotBlank() } ?: continue
+        val signCookie = s.optString("signCookie").takeIf { it.isNotBlank() }
+        val signHeaderKey = s.optString("signHeaderKey").takeIf { it.isNotBlank() } ?: "X-MB-Token"
+        val resolutions = s.optString("resolutions").takeIf { it.isNotBlank() }
+        val quality = highestQuality(resolutions) ?: "Auto"
+        val finalUrl = extractPolicyResource(signCookie) ?: rawUrl
 
-        var dur = o.optLong("duration", 0L)
-        if (dur <= 0) dur = o.optLong("durationSeconds", 0L)
-        if (dur <= 0) dur = o.optLong("length", 0L)
-        if (dur <= 0) dur = o.optLong("durationMs", 0L).let { if (it > 0) it / 1000 else 0 }
+        if (finalUrl.contains("b164fbfb4347792950bdfbfb563d39d9")) continue
+        if (finalUrl == rawUrl && rawUrl.contains("/other/2026/09/")) continue
 
-        val signCookie = o.optString("signCookie").ifBlank { null }
-        val rawSafe = signCookie?.replace("Cookie", "C00kie")?.replace("cookie", "c00kie") ?: "NULL"
-        BCLog.v("MB signCookie len=${signCookie?.length ?: 0} raw=$rawSafe")
-        val realUrl = extractPolicyResource(signCookie) ?: url
-        
-        val urlHead = realUrl.take(120)
-        BCLog.d("MB raw [$audioLabel] dur=${dur}s fmt=${o.optString("format")} codec=${o.optString("codecName")} size=${o.optString("size")} realUrl=$urlHead")
+        val emitHeaders = mutableMapOf(
+            "Origin" to domain,
+            "Referer" to referer,
+            "User-Agent" to MB_WEB_UA,
+            "Accept" to "*/*"
+        )
+        if (signCookie != null) {
+            emitHeaders[signHeaderKey] = signCookie
+            emitHeaders["Cookie"] = signCookie
+        }
 
         out.add(MBStream(
-    url = url,
-    realUrl = realUrl,
-    quality = quality,
-    size = o.optString("size").ifBlank { null },
-    signCookie = signCookie,
-    audio = audioLabel,
-    durationSec = dur,
-    captions = captionsList
-))
+            url = rawUrl,
+            realUrl = finalUrl,
+            quality = quality,
+            size = null,
+            signCookie = signCookie,
+            audio = audioLabel,
+            durationSec = 0,
+            captions = emptyList(),
+            emitHeaders = emitHeaders
+        ))
     }
-    BCLog.d("MB play [$audioLabel]: ${out.size} streams")
+    return out
+}
+
+private suspend fun mbPlayNative(
+    subjectId: String, season: Int, episode: Int, audioLabel: String?, preloadedDetail: JSONObject?
+): List<MBStream> {
+    val q = "subjectId=$subjectId&se=$season&ep=$episode"
+    val json = mbGet("/wefeed-mobile-bff/subject-api/play-info", q)
+    if (json != null) {
+        val root = json.optJSONObject("data") ?: json
+        val arr = root.optJSONArray("streams")
+            ?: root.optJSONArray("videos")
+            ?: root.optJSONArray("list")
+
+        if (arr != null && arr.length() > 0) {
+            val captionsList = mutableListOf<Pair<String, String>>()
+            (root.optJSONArray("captions")
+                ?: root.optJSONArray("subtitle")
+                ?: root.optJSONArray("subtitles"))?.let { captionsArr ->
+                for (i in 0 until captionsArr.length()) {
+                    val c = captionsArr.optJSONObject(i) ?: continue
+                    val lang = c.optString("language").ifBlank { c.optString("lang") }.ifBlank { "Unknown" }
+                    val url = c.optString("url").ifBlank { c.optString("file") }
+                    if (url.isNotBlank()) captionsList.add(lang to url)
+                }
+            }
+
+            val out = mutableListOf<MBStream>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val rawUrl = o.optString("url").ifBlank {
+                    o.optString("playUrl").ifBlank { o.optString("src") }
+                }
+                if (rawUrl.isBlank()) continue
+
+                val signCookie = o.optString("signCookie").takeIf { it.isNotBlank() }
+                val resolutions = o.optString("resolutions").takeIf { it.isNotBlank() }
+                val finalUrl = extractPolicyResource(signCookie) ?: rawUrl
+
+                if (finalUrl.contains("b164fbfb4347792950bdfbfb563d39d9")) continue
+                if (finalUrl == rawUrl && rawUrl.contains("/other/2026/09/")) continue
+
+                val quality = highestQuality(resolutions) ?: "Auto"
+
+                var dur = o.optLong("duration", 0L)
+                if (dur <= 0) dur = o.optLong("durationSeconds", 0L)
+                if (dur <= 0) dur = o.optLong("length", 0L)
+                if (dur <= 0) dur = o.optLong("durationMs", 0L).let { if (it > 0) it / 1000 else 0 }
+
+                val emitHeaders = buildMap {
+                    put("Referer", "https://api3.aoneroom.com/")
+                    put("User-Agent", MB_UA)
+                    signCookie?.let { put("Cookie", it) }
+                }
+
+                out.add(MBStream(
+                    url = rawUrl,
+                    realUrl = finalUrl,
+                    quality = quality,
+                    size = o.optString("size").ifBlank { null },
+                    signCookie = signCookie,
+                    audio = audioLabel,
+                    durationSec = dur,
+                    captions = captionsList,
+                    emitHeaders = emitHeaders
+                ))
+            }
+            if (out.isNotEmpty()) {
+                return out.sortedByDescending { if (it.realUrl.contains(".mpd", true)) 1 else 0 }
+            }
+        }
+    }
+
+    val detectors = preloadedDetail?.optJSONArray("resourceDetectors") ?: return emptyList()
+    val out = mutableListOf<MBStream>()
+    for (i in 0 until detectors.length()) {
+        val det = detectors.optJSONObject(i) ?: continue
+        val resList = det.optJSONArray("resolutionList") ?: continue
+        for (j in 0 until resList.length()) {
+            val r = resList.optJSONObject(j) ?: continue
+            val link = r.optString("resourceLink").takeIf { it.isNotBlank() } ?: continue
+            if (!link.startsWith("http")) continue
+
+            val rSe = if (r.has("se")) r.optInt("se") else null
+            val rEp = if (r.has("ep")) r.optInt("ep") else null
+            if (!(season == 0 && episode == 0)) {
+                if (rSe == null || rSe != season) continue
+                if (rEp == null || rEp != episode) continue
+            }
+
+            val title = r.optString("title").ifBlank { "MB" }
+            val quality = Regex("""(\d{3,4})[pP]""").find(title)?.groupValues?.get(1)?.plus("p")
+                ?: Regex("""(\d{3,4})[pP]""").find(link)?.groupValues?.get(1)?.plus("p")
+                ?: "Auto"
+
+            val emitHeaders = mapOf(
+                "Referer" to "https://api3.aoneroom.com/",
+                "User-Agent" to MB_UA
+            )
+
+            out.add(MBStream(
+                url = link,
+                realUrl = link,
+                quality = quality,
+                size = r.optString("size").takeIf { it.isNotBlank() },
+                signCookie = null,
+                audio = audioLabel,
+                durationSec = 0,
+                captions = emptyList(),
+                emitHeaders = emitHeaders
+            ))
+        }
+    }
     return out
 }

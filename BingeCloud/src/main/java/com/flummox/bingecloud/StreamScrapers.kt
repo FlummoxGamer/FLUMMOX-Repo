@@ -494,14 +494,14 @@ val allStreams = languages.map { (sid, lang) ->
     .filter { it.durationSec == 0L || it.durationSec >= 120L }
     .filter { !it.realUrl.contains("aoneroom.com/other/", ignoreCase = true) }
     .map {
-        ScrapedMirror(
-            quality = it.quality.ifBlank { "Auto" },
-            mirror = prettyAudio(it.audio ?: "MovieBox"),
-            url = it.realUrl,
-            source = "MB",
-            headers = it.signCookie?.let { c -> mapOf("Cookie" to c) },
-            captions = it.captions
-        )
+    ScrapedMirror(
+        quality = it.quality.ifBlank { "Auto" },
+        mirror = prettyAudio(it.audio ?: "MovieBox"),
+        url = it.realUrl,
+        source = "MB",
+        headers = it.emitHeaders.ifEmpty { null },
+        captions = it.captions
+    )
     }
 }
 
