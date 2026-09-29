@@ -499,19 +499,10 @@ val allStreams = languages.map { (sid, lang) ->
             mirror = prettyAudio(it.audio ?: "MovieBox"),
             url = it.realUrl,
             source = "MB",
-            headers = when {
-                it.realUrl.contains("hakunaymatata.com") && it.realUrl.contains(".mp4?sign=") ->
-                    mapOf(
-                        "Referer" to "https://movie-box.co/",
-                        "Origin" to "https://movie-box.co"
-                    )
-                it.signCookie != null ->
-                    mapOf(
-                        "Referer" to "https://api3.aoneroom.com/",
-                        "User-Agent" to "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)",
-                        "Cookie" to it.signCookie
-                    )
-                else -> null
+            headers = buildMap {
+                put("Referer", "https://api3.aoneroom.com/")
+                put("User-Agent", "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)")
+                it.signCookie?.let { c -> put("Cookie", c) }
             },
             captions = it.captions
         )
