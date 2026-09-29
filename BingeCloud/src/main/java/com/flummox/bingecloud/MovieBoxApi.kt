@@ -14,19 +14,17 @@ import kotlin.random.Random
 
 private const val MB_SECRET_B64 = "76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O"
 private const val MB_SECRET_ALT_B64 = "Xqn2nnO41/L92o1iuXhSLHTbXvY4Z5ZZ62m8mSLA"
-private const val MB_VERSION_CODE = 50020130L
-private const val MB_VERSION_NAME = "4.0.03.0920.03"
+private const val MB_VERSION_CODE = 50020126L
+private const val MB_VERSION_NAME = "4.0.02.0831.03"
 private const val MB_PACKAGE = "com.community.mbox.in"
 private const val MB_INSTALL_STORE = "official"
-private const val MB_UA = "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
+private const val MB_UA = "com.community.mbox.in/50020126 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
 private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
 private val MB_HOSTS = listOf(
     "api6.aoneroom.com", "api5.aoneroom.com", "api4.aoneroom.com",
     "api4sg.aoneroom.com", "api3.aoneroom.com"
 )
-
-
 
 private const val MB_BOOTSTRAP_HOST = "apig.inmoviebox.com"
 private const val MB_BOOTSTRAP_PATH = "/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1"
@@ -47,6 +45,7 @@ private fun deviceId(): String {
 private fun clientInfo(): String {
     return """{"package_name":"$MB_PACKAGE","version_name":"$MB_VERSION_NAME","version_code":$MB_VERSION_CODE,"os":"android","os_version":"14","device_id":"${deviceId()}","install_store":"$MB_INSTALL_STORE","gaid":"1b2212c1-dadf-43c3-a0c8-bd6ce48ae22d","brand":"Google","model":"Pixel 8","system_language":"en","net":"NETWORK_WIFI","region":"IN","timezone":"Asia/Calcutta","sp_code":""}"""
 }
+
 private fun md5Hex(data: ByteArray): String =
     MessageDigest.getInstance("MD5").digest(data).joinToString("") { "%02x".format(it) }
 
@@ -115,57 +114,11 @@ private fun parseJwtExp(token: String): Long = try {
     }
 } catch (_: Exception) { 0L }
 
-// Sessions are not persisted across app launches. Fresh bootstrap on each
-// boot gives a fresh CDN signing tier. Stale tokens route to slow edges.
-// Kept as no-op for API compatibility.
 fun restoreMbSession() {
-    BCLog.d("MB session: fresh bootstrap on boot")
-}
-
-
-private suspend fun fetchResourceStreamUrl(subjectId: String): List<MBStream> {
-    return try {
-        val url = "https://${MB_HOSTS.first()}/wefeed-mobile-bff/subject-api/get?subjectId=$subjectId"
-        val session = ensureSession() ?: return emptyList()
-        val res = app.get(url, headers = buildHeaders("GET", url, "application/json", "application/json", null, session))
-        if (res.code !in 200..299) {
-            BCLog.e("MB get: HTTP ${res.code}")
-            return emptyList()
-        }
-        BCLog.v("MB get raw: ${res.text.take(3000)}")
-        val root = JSONObject(res.text)
-        val data = root.optJSONObject("data") ?: root
-        val detectors = data.optJSONArray("resourceDetectors")
-            ?: data.optJSONArray("resourceList")
-            ?: return emptyList()
-
-        val out = mutableListOf<MBStream>()
-        for (i in 0 until detectors.length()) {
-            val detector = detectors.optJSONObject(i) ?: continue
-            val resolutions = detector.optJSONArray("resolutionList") ?: continue
-            for (j in 0 until resolutions.length()) {
-                val item = resolutions.optJSONObject(j) ?: continue
-                val link = item.optString("resourceLink").takeIf { it.isNotBlank() } ?: continue
-                val resolution = item.optString("resolution").ifBlank { "Auto" }
-                val fmt = item.optString("format").ifBlank { "MP4" }
-                val codec = item.optString("codecName").ifBlank { "" }
-                BCLog.d("MB resource [$resolution $fmt $codec]: $link")
-                out.add(MBStream(
-                    url = link,
-                    realUrl = link,
-                    quality = if (resolution.endsWith("p")) resolution else "${resolution}p",
-                    size = item.optString("size").ifBlank { null },
-                    audio = null,
-                    durationSec = 0L,
-                    captions = emptyList()
-                ))
-            }
-        }
-        BCLog.d("MB get: ${out.size} resources")
-        out
-    } catch (e: Exception) {
-        BCLog.e("MB get failed: ${e.message}")
-        emptyList()
+    val tok = Settings.getMbToken() ?: return
+    if (Settings.getMbTokenExp() > System.currentTimeMillis() + 60 * 60 * 1000L) {
+        mbSession = tok
+        BCLog.d("MB session restored (exp in ${(Settings.getMbTokenExp() - System.currentTimeMillis()) / 60000}min)")
     }
 }
 
@@ -177,8 +130,9 @@ private suspend fun bootstrapToken(): String? {
         val xUser = res.headers["x-user"] ?: res.headers["X-User"] ?: return null
         val tok = JSONObject(xUser).optString("token").takeIf { it.isNotBlank() }
         if (tok != null) {
-    mbSession = tok
-    BCLog.d("MB session: fresh token (mem only)")
+            mbSession = tok
+            val exp = parseJwtExp(tok)
+            if (exp > 0) Settings.saveMbToken(tok, exp)
         }
         tok
     } catch (e: Exception) { BCLog.e("MB bootstrap failed: ${e.message}"); null }
@@ -347,14 +301,6 @@ suspend fun mbLanguages(originalSubjectId: String): List<Pair<String, String>> {
 }
 
 suspend fun mbPlay(subjectId: String, season: Int = 0, episode: Int = 0, audioLabel: String? = null): List<MBStream> {
-    // Try resource-api first — returns all formats (MP4/HLS/DASH)
-val resources = fetchResourceStreamUrl(subjectId)
-val mp4 = resources.filter { it.realUrl.contains(".mp4") && !it.realUrl.contains("macdn.aoneroom.com") }
-if (mp4.isNotEmpty()) {
-    BCLog.d("MB resource hit [$audioLabel]: ${mp4.size} MP4 links")
-    return mp4.map { it.copy(audio = audioLabel) }
-}
-BCLog.v("MB resource miss [$audioLabel], falling back to play-info")
     val q = "subjectId=$subjectId&se=$season&ep=$episode"
     val json = mbGet("/wefeed-mobile-bff/subject-api/play-info", q) ?: return emptyList()
     val root = json.optJSONObject("data") ?: json
@@ -373,9 +319,6 @@ if (captionsArr != null) {
     }
 }
 if (captionsList.isNotEmpty()) BCLog.d("MB captions: ${captionsList.map { it.first }}")
-
-    // DEBUG: dump the raw streams array so we can see every available field
-    BCLog.v("MB play-info raw streams: ${arr.toString().take(4000)}")
 
 val out = mutableListOf<MBStream>()
     for (i in 0 until arr.length()) {
