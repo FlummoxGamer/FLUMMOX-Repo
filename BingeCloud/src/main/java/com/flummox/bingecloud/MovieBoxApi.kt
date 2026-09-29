@@ -116,24 +116,29 @@ private fun parseJwtExp(token: String): Long = try {
 } catch (_: Exception) { 0L }
 
 fun restoreMbSession() {
-    val tok = Settings.getMbToken() ?: return
-    if (Settings.getMbTokenExp() > System.currentTimeMillis() + 60 * 60 * 1000L) {
-        mbSession = tok
-        BCLog.d("MB session restored (exp in ${(Settings.getMbTokenExp() - System.currentTimeMillis()) / 60000}min)")
-    }
+    BCLog.d("MB restore skipped (force bootstrap)")
 }
 
 private suspend fun bootstrapToken(): String? {
     val url = "https://$MB_BOOTSTRAP_HOST$MB_BOOTSTRAP_PATH"
     return try {
         val res = app.get(url, headers = buildHeaders("GET", url, "application/json", "application/json", null, null))
-        if (res.code !in 200..299) return null
-        val xUser = res.headers["x-user"] ?: res.headers["X-User"] ?: return null
+        if (res.code !in 200..299) {
+            BCLog.e("MB bootstrap HTTP ${res.code}")
+            return null
+        }
+        val xUser = res.headers["x-user"] ?: res.headers["X-User"] ?: run {
+            BCLog.e("MB bootstrap: no x-user header")
+            return null
+        }
         val tok = JSONObject(xUser).optString("token").takeIf { it.isNotBlank() }
         if (tok != null) {
             mbSession = tok
             val exp = parseJwtExp(tok)
             if (exp > 0) Settings.saveMbToken(tok, exp)
+            BCLog.d("MB bootstrap OK (exp in ${(exp - System.currentTimeMillis()) / 60000}min)")
+        } else {
+            BCLog.e("MB bootstrap: no token in x-user")
         }
         tok
     } catch (e: Exception) { BCLog.e("MB bootstrap failed: ${e.message}"); null }
