@@ -285,8 +285,8 @@ suspend fun mbDetail(subjectId: String): JSONObject? {
     val r = mbGet("/wefeed-mobile-bff/subject-api/get", "subjectId=$subjectId")
     try {
         val data = r?.optJSONObject("data")
-        val detailUrl = data?.optString("detailUrl").takeIf { it.isNotBlank() && it != "null" }
-        val detailPath = data?.optString("detailPath").takeIf { it.isNotBlank() && it != "null" }
+        val detailUrl = data?.optString("detailUrl")?.takeIf { it.isNotBlank() && it != "null" }
+        val detailPath = data?.optString("detailPath")?.takeIf { it.isNotBlank() && it != "null" }
         BCLog.d("MB detailUrl=$detailUrl")
         BCLog.d("MB detailPath=$detailPath")
         BCLog.d("MB detailKeys=${data?.keys()?.asSequence()?.joinToString(",") ?: "null"}")
