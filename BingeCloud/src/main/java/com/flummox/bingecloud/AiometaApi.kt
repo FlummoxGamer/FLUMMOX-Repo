@@ -61,11 +61,19 @@ data class AioCatalogResponse(val metas: List<AioMeta>? = null)
 suspend fun aioFetchMeta(type: String, id: String): AioMeta? {
     return try {
         val url = "$AIOMETA_BASE/meta/$type/$id.json"
-        val json = app.get(url).text
-        tryParseJson<AioMetaResponse>(json)?.meta
+        val res = app.get(url)
+        BCLog.d("Aiometa meta $type/$id → HTTP ${res.code} len=${res.text.length}")
+        if (res.code !in 200..299) {
+            BCLog.d("Aiometa meta body: ${res.text.take(300)}")
+            null
+        } else {
+            tryParseJson<AioMetaResponse>(res.text)?.meta
+                ?: run { BCLog.d("Aiometa parse null: ${res.text.take(200)}"); null }
+        }
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
+        BCLog.e("Aiometa meta exception: ${e.javaClass.simpleName}: ${e.message}")
         null
     }
 }
