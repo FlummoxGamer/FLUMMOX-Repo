@@ -499,7 +499,10 @@ val allStreams = languages.map { (sid, lang) ->
             mirror = prettyAudio(it.audio ?: "MovieBox"),
             url = it.realUrl,
             source = "MB",
-            headers = it.signCookie?.let { c -> mapOf("Cookie" to c) },
+            headers = it.signCookie?.let { c ->
+                val v = if (c.startsWith("Edge-Cache-Cookie=")) c else "Edge-Cache-Cookie=$c"
+                mapOf("X-MB-Token" to v)
+            },
             captions = it.captions
         )
     }
