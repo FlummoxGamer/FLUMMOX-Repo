@@ -130,7 +130,14 @@ private fun parseJwtExp(token: String): Long = try {
 } catch (_: Exception) { 0L }
 
 fun restoreMbSession() {
-    BCLog.d("MB restore skipped (force bootstrap)")
+    val token = Settings.getMbToken()
+    val exp = Settings.getMbTokenExp()
+    if (!token.isNullOrBlank() && exp > System.currentTimeMillis()) {
+        mbSession = token
+        BCLog.d("MB session restored (exp in ${(exp - System.currentTimeMillis()) / 60000}min)")
+    } else {
+        BCLog.d("MB restore skipped (no valid saved token)")
+    }
 }
 
 private suspend fun bootstrapToken(): String? {

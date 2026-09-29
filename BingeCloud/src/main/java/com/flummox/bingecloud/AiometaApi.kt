@@ -1,5 +1,6 @@
 package com.flummox.bingecloud
 
+import com.fasterxml.jackson.annotation.JsonIgnore
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.async
@@ -27,7 +28,7 @@ data class AioVideo(
 )
 
 data class AioAppExtras(
-    val seasonPosters: List<String?>? = null,
+    @JsonIgnore val seasonPosters: List<String?>? = null,
     val certification: String? = null,
     val cast: List<AioCast>? = null
 )
@@ -61,11 +62,28 @@ data class AioCatalogResponse(val metas: List<AioMeta>? = null)
 suspend fun aioFetchMeta(type: String, id: String): AioMeta? {
     return try {
         val url = "$AIOMETA_BASE/meta/$type/$id.json"
-        val json = app.get(url).text
-        tryParseJson<AioMetaResponse>(json)?.meta
+        val res = app.get(url)
+        BCLog.d("Aiometa meta $type/$id → HTTP ${res.code} len=${res.text.length}")
+        if (res.code !in 200..299) {
+            BCLog.d("Aiometa meta body: ${res.text.take(300)}")
+            null
+        } else {
+    val parsed = tryParseJson<AioMetaResponse>(res.text)
+    if (parsed?.meta == null) {
+        try {
+            com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+                .readValue(res.text, AioMetaResponse::class.java)
+        } catch (e: Exception) {
+            BCLog.e("Aiometa jackson: ${e.javaClass.simpleName}: ${e.message?.take(250)}")
+        }
+        BCLog.d("Aiometa parse null: ${res.text.take(200)}")
+        null
+    } else parsed.meta
+        }
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
+        BCLog.e("Aiometa meta exception: ${e.javaClass.simpleName}: ${e.message}")
         null
     }
 }
