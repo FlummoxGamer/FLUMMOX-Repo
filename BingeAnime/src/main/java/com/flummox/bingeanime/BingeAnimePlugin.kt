@@ -10,6 +10,8 @@ class BingeAnimePlugin : Plugin() {
         BLog.init(context)
         BLog.d("BingeAnime boot v${BuildConfig.PLUGIN_VERSION}")
         registerMainAPI(BingeAnimeProvider())
-        // TODO Phase 4: openSettings = { ctx -> BSettings.show(ctx) }
+        this.openSettings = { ctx ->
+            BingeAnimeSettings.show(ctx)
+        }
     }
 }
