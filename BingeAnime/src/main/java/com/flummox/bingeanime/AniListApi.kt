@@ -83,18 +83,19 @@ data class Relation(
         format: String? = null,
         country: String? = null,
         status: String? = null,
+        year: Int? = null,
         page: Int = 1,
         perPage: Int = 30
     ): List<Entry> {
-        val ck = "anilist:cat:$sort:$genre:$tag:$format:$country:$status:$page:$perPage"
+        val ck = "anilist:cat:$sort:$genre:$tag:$format:$country:$status:$year:$page:$perPage"
         BCCache.get(ck, CACHE_TTL)?.let { cached ->
             return try { parseList(JSONObject(cached)) } catch (_: Exception) { emptyList() }
         }
 
         val q = """
-            query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}sort: [MediaSort], ${'$'}genre: String, ${'$'}tag: String, ${'$'}format: MediaFormat, ${'$'}country: CountryCode, ${'$'}status: MediaStatus) {
+            query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}sort: [MediaSort], ${'$'}genre: String, ${'$'}tag: String, ${'$'}format: MediaFormat, ${'$'}country: CountryCode, ${'$'}status: MediaStatus, ${'$'}year: Int) {
               Page(page: ${'$'}page, perPage: ${'$'}perPage) {
-                media(type: ANIME, sort: ${'$'}sort, genre: ${'$'}genre, tag: ${'$'}tag, format: ${'$'}format, countryOfOrigin: ${'$'}country, status: ${'$'}status, isAdult: false) {
+                media(type: ANIME, sort: ${'$'}sort, genre: ${'$'}genre, tag: ${'$'}tag, format: ${'$'}format, countryOfOrigin: ${'$'}country, status: ${'$'}status, seasonYear: ${'$'}year, isAdult: false) {
                   $MEDIA_FIELDS
                 }
               }
@@ -110,6 +111,7 @@ data class Relation(
             if (format != null) put("format", format)
             if (country != null) put("country", country)
             if (status != null) put("status", status)
+            if (year != null) put("year", year)
         }
 
         return try {
