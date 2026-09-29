@@ -67,8 +67,17 @@ suspend fun aioFetchMeta(type: String, id: String): AioMeta? {
             BCLog.d("Aiometa meta body: ${res.text.take(300)}")
             null
         } else {
-            tryParseJson<AioMetaResponse>(res.text)?.meta
-                ?: run { BCLog.d("Aiometa parse null: ${res.text.take(200)}"); null }
+    val parsed = tryParseJson<AioMetaResponse>(res.text)
+    if (parsed?.meta == null) {
+        try {
+            com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+                .readValue(res.text, AioMetaResponse::class.java)
+        } catch (e: Exception) {
+            BCLog.e("Aiometa jackson: ${e.javaClass.simpleName}: ${e.message?.take(250)}")
+        }
+        BCLog.d("Aiometa parse null: ${res.text.take(200)}")
+        null
+    } else parsed.meta
         }
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
