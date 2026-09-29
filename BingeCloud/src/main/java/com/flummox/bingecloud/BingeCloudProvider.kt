@@ -955,10 +955,8 @@ val episodes = (1..totalEps).map { epNum ->
                                     }
                                     val display = "$emoji${m.quality} •MB ${m.mirror}"
                                     BCLog.d("MB link: $display (score=$score)")
-                                    val browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                                    val baseHdrs = (m.headers ?: emptyMap()) + mapOf("User-Agent" to browserUA)
                                     val link = newExtractorLink("MovieBox", display, m.url, linkType) {
-                                        this.headers = baseHdrs
+                                        if (m.headers != null) this.headers = m.headers
                                     }
                                     
                                         callback.invoke(link)
