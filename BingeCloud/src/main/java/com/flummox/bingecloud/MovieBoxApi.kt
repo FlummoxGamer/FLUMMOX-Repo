@@ -4,6 +4,7 @@ import android.util.Base64
 import com.lagradost.cloudstream3.app
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 import java.security.MessageDigest
@@ -567,66 +568,5 @@ private suspend fun mbPlayNative(
             ))
         }
     }
-    return out
-}
-
-    // ── Fallback: play-info (sbcdn5 for series, still broken) ──
-    val q = "subjectId=$subjectId&se=$season&ep=$episode"
-    val json = mbGet("/wefeed-mobile-bff/subject-api/play-info", q) ?: return emptyList()
-    val root = json.optJSONObject("data") ?: json
-val arr = root.optJSONArray("streams") ?: root.optJSONArray("videos") ?: root.optJSONArray("list") ?: return emptyList()
-
-val captionsList = mutableListOf<Pair<String, String>>()
-val captionsArr = root.optJSONArray("captions")
-    ?: root.optJSONArray("subtitle")
-    ?: root.optJSONArray("subtitles")
-if (captionsArr != null) {
-    for (i in 0 until captionsArr.length()) {
-        val c = captionsArr.optJSONObject(i) ?: continue
-        val lang = c.optString("language").ifBlank { c.optString("lang") }.ifBlank { "Unknown" }
-        val url = c.optString("url").ifBlank { c.optString("file") }
-        if (url.isNotBlank()) captionsList.add(lang to url)
-    }
-}
-if (captionsList.isNotEmpty()) BCLog.d("MB captions: ${captionsList.map { it.first }}")
-
-val out = mutableListOf<MBStream>()
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        val url = o.optString("url").ifBlank { o.optString("playUrl").ifBlank { o.optString("src") } }
-        if (url.isBlank()) continue
-        val resolutionsStr = o.optString("resolutions").ifBlank { null }
-        val quality = resolutionsStr?.split(",")
-           ?.mapNotNull { it.trim().removeSuffix("p").removeSuffix("P").toIntOrNull() }
-           ?.maxOrNull()
-           ?.let { "${it}p" }
-           ?: o.optString("quality").ifBlank { "Auto" }
-
-        var dur = o.optLong("duration", 0L)
-        if (dur <= 0) dur = o.optLong("durationSeconds", 0L)
-        if (dur <= 0) dur = o.optLong("length", 0L)
-        if (dur <= 0) dur = o.optLong("durationMs", 0L).let { if (it > 0) it / 1000 else 0 }
-
-        val signCookie = o.optString("signCookie").ifBlank { null }
-        BCLog.d("MB signCookie RAW: ${signCookie?.take(150) ?: "NULL"}")
-        val rawSafe = signCookie?.replace("Cookie", "C00kie")?.replace("cookie", "c00kie") ?: "NULL"
-        BCLog.v("MB signCookie len=${signCookie?.length ?: 0} raw=$rawSafe")
-        val realUrl = extractPolicyResource(signCookie) ?: url
-        
-        val urlHead = realUrl.take(120)
-        BCLog.d("MB raw [$audioLabel] dur=${dur}s fmt=${o.optString("format")} codec=${o.optString("codecName")} size=${o.optString("size")} realUrl=$urlHead")
-
-        out.add(MBStream(
-    url = url,
-    realUrl = realUrl,
-    quality = quality,
-    size = o.optString("size").ifBlank { null },
-    signCookie = signCookie,
-    audio = audioLabel,
-    durationSec = dur,
-    captions = captionsList
-))
-    }
-    BCLog.d("MB play [$audioLabel]: ${out.size} streams")
     return out
 }
