@@ -338,6 +338,7 @@ val out = mutableListOf<MBStream>()
         if (dur <= 0) dur = o.optLong("durationMs", 0L).let { if (it > 0) it / 1000 else 0 }
 
         val signCookie = o.optString("signCookie").ifBlank { null }
+        BCLog.d("MB signCookie RAW: ${signCookie?.take(150) ?: "NULL"}")
         val rawSafe = signCookie?.replace("Cookie", "C00kie")?.replace("cookie", "c00kie") ?: "NULL"
         BCLog.v("MB signCookie len=${signCookie?.length ?: 0} raw=$rawSafe")
         val realUrl = extractPolicyResource(signCookie) ?: url
