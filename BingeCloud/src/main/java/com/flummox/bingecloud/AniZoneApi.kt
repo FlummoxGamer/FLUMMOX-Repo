@@ -177,21 +177,21 @@ object AniZoneApi {
        }
 
     // 3. Fuzzy — stricter than titleMatches to prevent single-token
-    //    collisions (e.g. "The Final Problem" matching AoT because
-    //    only "final" overlaps). Require exact equality OR >= 2
-    //    common tokens. Trade-off: short-title prefix matches
-    //    ("Naruto" vs "Naruto Shippuden") no longer match through
-    //    this path — acceptable, prefer no-match over wrong-match.
+        // 3. Fuzzy — candidate tokens must contain query tokens, or
+    //    query tokens must contain candidate tokens. Blocks
+    //    "The Final Problem" (query) matching AoT alt-titles
+    //    where the only overlap is 2 stopwords. Uses local
+    //    normalize since StreamScrapers.stripQualifiers is
+    //    private to its own file.
     val fuzzy = hits.filter { h ->
         h.allTitles.any { at ->
-            val sa = stripQualifiers(query)
-            val sb = stripQualifiers(at)
+            val sa = normalize(query)
+            val sb = normalize(at)
             if (sa.isEmpty() || sb.isEmpty()) return@any false
             if (sa == sb) return@any true
             val ta = sa.split(" ").filter { it.isNotBlank() }.toSet()
             val tb = sb.split(" ").filter { it.isNotBlank() }.toSet()
-            if (ta.size == 1 && tb.size == 1) return@any ta == tb
-            ta.intersect(tb).size >= 2
+            ta.containsAll(tb) || tb.containsAll(ta)
         }
     }
     if (fuzzy.isEmpty()) return null
