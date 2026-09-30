@@ -113,6 +113,28 @@ object JikanApi {
         }
     }
 
+     // ── detail ──
+suspend fun detail(malId: Int): AniListApi.Entry? {
+    val ck = "jikan:detail:$malId"
+    BCCache.get(ck, CACHE_TTL)?.let { cached ->
+        return try { parseEntry(JSONObject(cached).optJSONObject("data")) } catch (_: Exception) { null }
+    }
+    return try {
+        val res = app.get("$BASE/anime/$malId/full", headers = headers())
+        if (res.code == 429) {
+            BLog.e("Jikan detail 429 for $malId")
+            return null
+        }
+        val root = JSONObject(res.text)
+        BCCache.put(ck, root.toString())
+        parseEntry(root.optJSONObject("data"))
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("Jikan detail $malId failed: ${e.message}")
+        null
+    }
+}
     // ── parse ──
     private fun parseList(root: JSONObject): List<AniListApi.Entry> {
         val arr = root.optJSONArray("data") ?: return emptyList()
