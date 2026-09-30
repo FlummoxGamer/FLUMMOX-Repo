@@ -13,6 +13,8 @@ android {
         buildConfigField("int", "PLUGIN_VERSION", "$pluginVer")
         val isDev = (System.getenv("IS_DEV_BUILD") ?: "false").equals("true", ignoreCase = true)
         buildConfigField("boolean", "IS_DEV_BUILD", "$isDev")
+        val malId = (System.getenv("MAL_CLIENT_ID") ?: "").trim()
+        buildConfigField("String", "MAL_CLIENT_ID", "\"$malId\"")
     }
     buildFeatures {
         buildConfig = true
