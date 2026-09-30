@@ -444,21 +444,24 @@ private fun partOrdinal(e: Entry): Int {
 
 // Sort:
 //   1. relevanceRank vs query
-//   2. base-key first-occurrence index (respects SEARCH_MATCH order)
-//   3. format priority (TV → ONA → Movie → OVA → Special → spinoff)
-//   4. season number  (S1 < S2 < ... < Final)
-//   5. part number    (S3P1 < S3P2)
-//   6. year, then date (tie-break)
+//   2. format priority (TV → ONA → Movie → OVA → Special → spinoff)
+//   3. season number  (S1 < S2 < ... < Final Season → 99)
+//   4. part number    (S3P1 < S3P2)
+//   5. year, then date (tie-break)
+//
+// baseIndex was removed: AniList sometimes returns romaji-only for
+// later seasons (e.g. "Shingeki no Kyojin: The Final Season") while
+// earlier seasons carry English ("Attack on Titan"). The two titles
+// produced different base keys, splitting one franchise into two
+// groups and pushing Final Season after spinoffs. Same bug pushed
+// MHA FINAL SEASON to the end ("final season" doesn't strip via the
+// season regex — it needs a digit). Relevance + format + season is
+// sufficient — AniList's SEARCH_MATCH keeps unrelated franchises in
+// separate relevance tiers already.
 fun sortChronological(entries: List<Entry>, query: String): List<Entry> {
-    val baseIndex = mutableMapOf<String, Int>()
-    for ((i, e) in entries.withIndex()) {
-        val k = baseTitleKey(titleOf(e))
-        if (k.isNotBlank() && k !in baseIndex) baseIndex[k] = i
-    }
     return entries.sortedWith(
         compareBy(
             { relevanceRank(it, query) },
-            { baseIndex[baseTitleKey(titleOf(it))] ?: 9999 },
             { effectiveFormatPriority(it) },
             { seasonOrdinal(it) },
             { partOrdinal(it) },
