@@ -303,4 +303,56 @@ o.optJSONObject("relations")?.optJSONArray("edges")?.let { edges ->
             relations = relations
         )
     }
+
+    // ── display helpers ──
+    private val RX_COUR_N = Regex("""\bcour\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+    private val RX_PART_N = Regex("""\bpart\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+    private val RX_SEASON_N = Regex("""\bseason\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+    private val RX_ROMAN = Regex("""\b(II|III|IV|V|VI|VII|VIII|IX|X)\b""", RegexOption.IGNORE_CASE)
+
+    // Strip "Cour N" branding from display titles.
+    //   "X Cour 1" → "X"
+    //   "X Cour 2" → "X Part 2"
+    fun stripCourBranding(title: String): String {
+        val m = RX_COUR_N.find(title) ?: return title
+        val n = m.groupValues[1].toIntOrNull() ?: return title
+        val replaced = if (n <= 1) title.replace(RX_COUR_N, "")
+            else title.replace(RX_COUR_N, "Part $n")
+        return replaced.replace(Regex("""\s{2,}"""), " ").trim()
+    }
+
+    // Key used to group entries from the same franchise together.
+    // Strips season/part/cour markers, punctuation, casing.
+    fun baseTitleKey(title: String): String {
+        var s = title.lowercase()
+        s = RX_PART_N.replace(s, "")
+        s = RX_SEASON_N.replace(s, "")
+        s = RX_COUR_N.replace(s, "")
+        s = s.replace(Regex("""[^a-z0-9 ]"""), " ")
+        s = s.replace(Regex("""\s+"""), " ").trim()
+        return s
+    }
+
+    // Format ordering: TV first, then ONA, Movie, OVA, Special, Short.
+    // Matches user intent: "after [seasons], movies, ova, extras and all".
+    fun formatPriority(format: String?): Int = when (format) {
+        "TV" -> 0
+        "ONA" -> 1
+        "MOVIE" -> 2
+        "OVA" -> 3
+        "SPECIAL" -> 4
+        "TV_SHORT" -> 5
+        else -> 99
+    }
+
+    // Chronological sort within a franchise:
+    //   baseTitleKey → formatPriority → seasonYear → startDate
+    fun sortChronological(entries: List<Entry>): List<Entry> = entries.sortedWith(
+        compareBy(
+            { baseTitleKey(it.title.english ?: it.title.romaji ?: it.title.native ?: "") },
+            { formatPriority(it.format) },
+            { it.seasonYear ?: 9999 },
+            { it.startDate ?: "9999-99-99" }
+        )
+    )
 }
