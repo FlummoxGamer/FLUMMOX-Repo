@@ -145,8 +145,8 @@ class BingeAnimeProvider : MainAPI() {
         val entry = when {
             malMatch != null -> {
                 val id = malMatch.groupValues[1].toIntOrNull() ?: return null
-                BLog.section("load MAL: $id")
-                MalApi.detail(id)
+                BLog.section("load Jikan/MAL: $id")
+                JikanApi.detail(id)
             }
             aniMatch != null -> {
                 val id = aniMatch.groupValues[1].toIntOrNull() ?: return null
