@@ -32,9 +32,6 @@ object AniListApi {
         val relations: List<Relation> = emptyList()
     )
 
-    // Flattened on purpose. R8 8.13.6's Kotlin-metadata rewriter crashes
-    // on mutually recursive data classes (Entry -> List<Relation> ->
-    // Entry -> ...). This shape stores only the fields needed.
     data class Relation(
         val type: String,
         val entryId: Int,
@@ -100,16 +97,20 @@ object AniListApi {
             }
         """.trimIndent()
 
+        // Every declared variable MUST be present in the payload.
+        // AniList silently returns an empty data object if a declared
+        // variable is missing — verified against the empty-home-rows
+        // bug where 8 of 9 vars were being omitted when null.
         val vars = JSONObject().apply {
             put("page", page)
             put("perPage", perPage)
             put("sort", org.json.JSONArray().put(sort))
-            if (genre != null) put("genre", genre)
-            if (tag != null) put("tag", tag)
-            if (format != null) put("format", format)
-            if (country != null) put("country", country)
-            if (status != null) put("status", status)
-            if (year != null) put("year", year)
+            put("genre", genre ?: JSONObject.NULL)
+            put("tag", tag ?: JSONObject.NULL)
+            put("format", format ?: JSONObject.NULL)
+            put("country", country ?: JSONObject.NULL)
+            put("status", status ?: JSONObject.NULL)
+            put("year", year ?: JSONObject.NULL)
         }
 
         return try {
@@ -129,7 +130,11 @@ object AniListApi {
     }
 
     private fun parseList(root: JSONObject): List<Entry> {
-        val arr = root.optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media") ?: return emptyList()
+        val pageObj = root.optJSONObject("data")?.optJSONObject("Page")
+        val arr = pageObj?.optJSONArray("media") ?: run {
+            BLog.e("AniList parse empty — response: ${root.toString().take(400)}")
+            return emptyList()
+        }
         val out = mutableListOf<Entry>()
         for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
         return out
@@ -162,7 +167,7 @@ object AniListApi {
 
         val vars = JSONObject().apply {
             put("search", query)
-            if (year != null) put("year", year)
+            if (year != null) put("year", year) else put("year", JSONObject.NULL)
         }
 
         return try {
@@ -238,9 +243,6 @@ object AniListApi {
         "VI" to 6, "VII" to 7, "VIII" to 8, "IX" to 9, "X" to 10
     )
 
-    // Strip "Cour N" branding from display titles.
-    //   "X Cour 1" -> "X"
-    //   "X Cour 2" -> "X Part 2"
     fun stripCourBranding(title: String): String {
         val m = RX_COUR_N.find(title) ?: return title
         val n = m.groupValues[1].toIntOrNull() ?: return title
@@ -249,10 +251,6 @@ object AniListApi {
         return replaced.replace(Regex("""\s{2,}"""), " ").trim()
     }
 
-    // Franchise key for grouping.
-    //   "Mushoku Tensei III: Isekai Ittara Honki Dasu Part 2"
-    //   "Mushoku Tensei: Jobless Reincarnation Cour 2"
-    //   -> both collapse to "mushoku tensei"
     fun baseTitleKey(title: String): String {
         var s = title.lowercase()
         s = s.substringBefore(':').substringBefore('–').substringBefore('—')
@@ -265,9 +263,6 @@ object AniListApi {
         return s
     }
 
-    // Rewrite roman-numeral season markers to "Season N" for display.
-    // Only touches numerals that appear BEFORE the first colon/dash.
-    // "Mushoku Tensei III: ..." -> "Mushoku Tensei Season 3: ..."
     fun convertRomanSeasons(title: String): String {
         val colonIdx = title.indexOf(':')
         val searchEnd = if (colonIdx > 0) colonIdx else title.length
@@ -277,7 +272,6 @@ object AniListApi {
         return head.replaceRange(m.range, "Season $num") + title.substring(searchEnd)
     }
 
-    // Format ordering: TV first, then ONA, Movie, OVA, Special, Short.
     fun formatPriority(format: String?): Int = when (format) {
         "TV" -> 0
         "ONA" -> 1
@@ -288,11 +282,6 @@ object AniListApi {
         else -> 99
     }
 
-    // Relevance tier vs the user query:
-    //   0 = exact title match
-    //   1 = title starts with query
-    //   2 = title contains query
-    //   3 = fuzzy / unrelated
     private fun relevanceRank(e: Entry, query: String): Int {
         val q = query.lowercase().trim()
         if (q.isBlank()) return 3
@@ -309,9 +298,6 @@ object AniListApi {
     private fun titleOf(e: Entry): String =
         e.title.english ?: e.title.romaji ?: e.title.native ?: ""
 
-    // Titles containing any of these are treated as side content,
-    // regardless of format. Keeps spinoffs from interleaving with
-    // main-series seasons.
     private val SPINOFF_MARKERS = listOf(
         "junior high", "spin-off", "spinoff", "picture drama",
         "recap", "compilation", "no regrets", "vigilantes",
@@ -323,15 +309,11 @@ object AniListApi {
         return SPINOFF_MARKERS.any { t.contains(it) }
     }
 
-    // TV -> ONA -> Movie -> OVA -> Special -> Short -> unknown.
-    // Spinoffs forced to 100 so they sort after every format tier.
     private fun effectiveFormatPriority(e: Entry): Int {
         if (isSpinoff(e)) return 100
         return formatPriority(e.format)
     }
 
-    // Season number from title. Season N -> N. Roman II..X -> 2..10.
-    // "Final Season" -> 99 (last). No marker -> 1.
     private fun seasonOrdinal(e: Entry): Int {
         val t = titleOf(e).lowercase()
         Regex("""\bseason\s+(\d+)\b""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
@@ -343,7 +325,6 @@ object AniListApi {
         return 1
     }
 
-    // Part number from title. "Part N" or "Cour N" -> N. Else 1.
     private fun partOrdinal(e: Entry): Int {
         val t = titleOf(e).lowercase()
         Regex("""\bpart\s+(\d+)\b""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
@@ -351,12 +332,6 @@ object AniListApi {
         return 1
     }
 
-    // Sort order:
-    //   1. relevanceRank vs query
-    //   2. format priority (TV -> ONA -> Movie -> OVA -> Special -> spinoff)
-    //   3. season number  (S1 < S2 < ... < Final Season -> 99)
-    //   4. part number    (S3P1 < S3P2)
-    //   5. year, then date (tie-break)
     fun sortChronological(entries: List<Entry>, query: String): List<Entry> {
         return entries.sortedWith(
             compareBy(
