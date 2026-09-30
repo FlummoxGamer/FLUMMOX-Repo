@@ -1,8 +1,6 @@
 package com.flummox.bingeanime
 
 import com.lagradost.cloudstream3.app
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
@@ -11,11 +9,6 @@ object AniListApi {
     private const val ENDPOINT = "https://graphql.anilist.co"
     private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     private const val CACHE_TTL = 24 * 60 * 60 * 1000L
-
-    // CloudStream's shared HTTP client has ~5 connections per host.
-    // 19 home rows firing at once saturate the pool and get cancelled.
-    // Cap concurrency at 4 so every request completes.
-    private val catalogSemaphore = Semaphore(4)
 
     data class Title(val romaji: String?, val english: String?, val native: String?) {
         fun all(): List<String> = listOfNotNull(romaji, english, native)
@@ -40,10 +33,8 @@ object AniListApi {
     )
 
     // Flattened on purpose. R8 8.13.6's Kotlin-metadata rewriter crashes
-    // on mutually recursive data classes (Entry → List<Relation> →
-    // Entry → ...). This shape stores only the fields the chain walk
-    // needs, so the cycle is broken. Do not add an `entry: Entry` field
-    // back here — the CI will fail the same way.
+    // on mutually recursive data classes (Entry -> List<Relation> ->
+    // Entry -> ...). This shape stores only the fields needed.
     data class Relation(
         val type: String,
         val entryId: Int,
@@ -121,21 +112,19 @@ object AniListApi {
             if (year != null) put("year", year)
         }
 
-        return catalogSemaphore.withPermit {
-            try {
-                val body = JSONObject().apply { put("query", q); put("variables", vars) }.toString()
-                val res = app.post(ENDPOINT,
-                    requestBody = body.toRequestBody(JSON_MEDIA),
-                    headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
-                val root = JSONObject(res.text)
-                BCCache.put(ck, root.toString())
-                parseList(root)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                BLog.e("AniList catalog failed: ${e.message}")
-                emptyList()
-            }
+        return try {
+            val body = JSONObject().apply { put("query", q); put("variables", vars) }.toString()
+            val res = app.post(ENDPOINT,
+                requestBody = body.toRequestBody(JSON_MEDIA),
+                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+            val root = JSONObject(res.text)
+            BCCache.put(ck, root.toString())
+            parseList(root)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("AniList catalog failed: ${e.message}")
+            emptyList()
         }
     }
 
@@ -176,21 +165,19 @@ object AniListApi {
             if (year != null) put("year", year)
         }
 
-        return catalogSemaphore.withPermit {
-            try {
-                val body = JSONObject().apply { put("query", q); put("variables", vars) }.toString()
-                val res = app.post(ENDPOINT,
-                    requestBody = body.toRequestBody(JSON_MEDIA),
-                    headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
-                val root = JSONObject(res.text)
-                BCCache.put(ck, root.toString())
-                parseList(root)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                BLog.e("AniList search failed: ${e.message}")
-                emptyList()
-            }
+        return try {
+            val body = JSONObject().apply { put("query", q); put("variables", vars) }.toString()
+            val res = app.post(ENDPOINT,
+                requestBody = body.toRequestBody(JSON_MEDIA),
+                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+            val root = JSONObject(res.text)
+            BCCache.put(ck, root.toString())
+            parseList(root)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("AniList search failed: ${e.message}")
+            emptyList()
         }
     }
 
@@ -207,24 +194,22 @@ object AniListApi {
               }
             }
         """.trimIndent()
-        return catalogSemaphore.withPermit {
-            try {
-                val body = JSONObject().apply {
-                    put("query", q); put("variables", JSONObject().put("id", id))
-                }.toString()
-                val res = app.post(ENDPOINT,
-                    requestBody = body.toRequestBody(JSON_MEDIA),
-                    headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
-                val root = JSONObject(res.text)
-                val entry = parseEntry(root.optJSONObject("data")?.optJSONObject("Media"))
-                if (entry != null) BCCache.put(ck, root.toString())
-                entry
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                BLog.e("AniList getEntry failed: ${e.message}")
-                null
-            }
+        return try {
+            val body = JSONObject().apply {
+                put("query", q); put("variables", JSONObject().put("id", id))
+            }.toString()
+            val res = app.post(ENDPOINT,
+                requestBody = body.toRequestBody(JSON_MEDIA),
+                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+            val root = JSONObject(res.text)
+            val entry = parseEntry(root.optJSONObject("data")?.optJSONObject("Media"))
+            if (entry != null) BCCache.put(ck, root.toString())
+            entry
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("AniList getEntry failed: ${e.message}")
+            null
         }
     }
 
@@ -254,8 +239,8 @@ object AniListApi {
     )
 
     // Strip "Cour N" branding from display titles.
-    //   "X Cour 1" → "X"
-    //   "X Cour 2" → "X Part 2"
+    //   "X Cour 1" -> "X"
+    //   "X Cour 2" -> "X Part 2"
     fun stripCourBranding(title: String): String {
         val m = RX_COUR_N.find(title) ?: return title
         val n = m.groupValues[1].toIntOrNull() ?: return title
@@ -267,7 +252,7 @@ object AniListApi {
     // Franchise key for grouping.
     //   "Mushoku Tensei III: Isekai Ittara Honki Dasu Part 2"
     //   "Mushoku Tensei: Jobless Reincarnation Cour 2"
-    //   → both collapse to "mushoku tensei"
+    //   -> both collapse to "mushoku tensei"
     fun baseTitleKey(title: String): String {
         var s = title.lowercase()
         s = s.substringBefore(':').substringBefore('–').substringBefore('—')
@@ -281,9 +266,8 @@ object AniListApi {
     }
 
     // Rewrite roman-numeral season markers to "Season N" for display.
-    // Only touches numerals that appear BEFORE the first colon/dash, so
-    // subtitles like "Code Geass: Lelouch of the Rebellion R2" are left
-    // alone. "Mushoku Tensei III: ..." → "Mushoku Tensei Season 3: ...".
+    // Only touches numerals that appear BEFORE the first colon/dash.
+    // "Mushoku Tensei III: ..." -> "Mushoku Tensei Season 3: ..."
     fun convertRomanSeasons(title: String): String {
         val colonIdx = title.indexOf(':')
         val searchEnd = if (colonIdx > 0) colonIdx else title.length
@@ -308,7 +292,7 @@ object AniListApi {
     //   0 = exact title match
     //   1 = title starts with query
     //   2 = title contains query
-    //   3 = fuzzy / unrelated (AniList's SEARCH_MATCH picks these up)
+    //   3 = fuzzy / unrelated
     private fun relevanceRank(e: Entry, query: String): Int {
         val q = query.lowercase().trim()
         if (q.isBlank()) return 3
@@ -325,9 +309,9 @@ object AniListApi {
     private fun titleOf(e: Entry): String =
         e.title.english ?: e.title.romaji ?: e.title.native ?: ""
 
-    // Entries whose titles contain any of these are treated as
-    // side content, regardless of format. Keeps spinoffs from
-    // interleaving with main-series seasons.
+    // Titles containing any of these are treated as side content,
+    // regardless of format. Keeps spinoffs from interleaving with
+    // main-series seasons.
     private val SPINOFF_MARKERS = listOf(
         "junior high", "spin-off", "spinoff", "picture drama",
         "recap", "compilation", "no regrets", "vigilantes",
@@ -339,15 +323,15 @@ object AniListApi {
         return SPINOFF_MARKERS.any { t.contains(it) }
     }
 
-    // TV → ONA → Movie → OVA → Special → Short → unknown.
+    // TV -> ONA -> Movie -> OVA -> Special -> Short -> unknown.
     // Spinoffs forced to 100 so they sort after every format tier.
     private fun effectiveFormatPriority(e: Entry): Int {
         if (isSpinoff(e)) return 100
         return formatPriority(e.format)
     }
 
-    // Season number from title. Season N → N. Roman II..X → 2..10.
-    // "Final Season" → 99 (last). No marker → 1.
+    // Season number from title. Season N -> N. Roman II..X -> 2..10.
+    // "Final Season" -> 99 (last). No marker -> 1.
     private fun seasonOrdinal(e: Entry): Int {
         val t = titleOf(e).lowercase()
         Regex("""\bseason\s+(\d+)\b""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
@@ -359,7 +343,7 @@ object AniListApi {
         return 1
     }
 
-    // Part number from title. "Part N" or "Cour N" → N. Else 1.
+    // Part number from title. "Part N" or "Cour N" -> N. Else 1.
     private fun partOrdinal(e: Entry): Int {
         val t = titleOf(e).lowercase()
         Regex("""\bpart\s+(\d+)\b""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
@@ -367,22 +351,12 @@ object AniListApi {
         return 1
     }
 
-    // Sort:
+    // Sort order:
     //   1. relevanceRank vs query
-    //   2. format priority (TV → ONA → Movie → OVA → Special → spinoff)
-    //   3. season number  (S1 < S2 < ... < Final Season → 99)
+    //   2. format priority (TV -> ONA -> Movie -> OVA -> Special -> spinoff)
+    //   3. season number  (S1 < S2 < ... < Final Season -> 99)
     //   4. part number    (S3P1 < S3P2)
     //   5. year, then date (tie-break)
-    //
-    // baseIndex was removed: AniList sometimes returns romaji-only for
-    // later seasons (e.g. "Shingeki no Kyojin: The Final Season") while
-    // earlier seasons carry English ("Attack on Titan"). The two titles
-    // produced different base keys, splitting one franchise into two
-    // groups and pushing Final Season after spinoffs. Same bug pushed
-    // MHA FINAL SEASON to the end ("final season" doesn't strip via the
-    // season regex — it needs a digit). Relevance + format + season is
-    // sufficient — AniList's SEARCH_MATCH keeps unrelated franchises in
-    // separate relevance tiers already.
     fun sortChronological(entries: List<Entry>, query: String): List<Entry> {
         return entries.sortedWith(
             compareBy(
