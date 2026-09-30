@@ -40,11 +40,7 @@ internal val ROWS: List<Pair<String, String>> = listOf(
 
 class BingeAnimeProvider : MainAPI() {
 
-    // CloudStream built-in: fire home rows sequentially with a 500ms gap.
-    // Prevents 19 parallel requests from tripping AniList's 30/min limit.
-    // Verified against cloudstream MainAPI.kt source + FilmpertuttiProvider.
-    override var sequentialMainPage = true
-    override var sequentialMainPageDelay: Long = 500
+    
 
     override var mainUrl = "https://graphql.anilist.co"
     override var name = "BingeAnime"
@@ -60,34 +56,47 @@ class BingeAnimeProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val parts = request.data.split(ROW_SEP)
-        if (parts.size < 7) return null
-        val sort = parts[0].takeIf { it.isNotBlank() } ?: "TRENDING_DESC"
-        val genre = parts[1].takeIf { it.isNotBlank() }
-        val tag = parts[2].takeIf { it.isNotBlank() }
-        val format = parts[3].takeIf { it.isNotBlank() }
-        val country = parts[4].takeIf { it.isNotBlank() }
-        val status = parts[5].takeIf { it.isNotBlank() }
-        val yearMarker = parts[6].toIntOrNull() ?: 0
-        val year = when {
-            yearMarker <= 0 -> null
-            else -> java.util.Calendar.getInstance().get(java.util.Calendar.YEAR) - (yearMarker - 1)
-        }
+    val rowName = request.name
+    BLog.section("home: $rowName")
 
-        BLog.section("home: ${request.name}")
-        val entries = try {
-            AniListApi.fetchCatalog(sort, genre, tag, format, country, status, year, page, 30)
-        } catch (e: CancellationException) { throw e
-        } catch (e: Exception) {
-            BLog.e("row '${request.name}' failed: ${e.message}")
-            emptyList()
-        }
-        BLog.d("row '${request.name}' → ${entries.size}")
-
-        val items = entries.mapNotNull { it.toSearchResponse() }
-        return newHomePageResponse(request.name, items, hasNext = items.size >= 30)
+    // Single aliased GraphQL request covers every row. First call
+    // triggers the batch; subsequent calls read from BCCache.
+    val specs = ROWS.map { (data, label) ->
+        val parts = data.split(ROW_SEP)
+        val sort = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: "TRENDING_DESC"
+        val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+        val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+        val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+        val country = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+        val status = parts.getOrNull(5)?.takeIf { it.isNotBlank() }
+        val yearMarker = parts.getOrNull(6)?.toIntOrNull() ?: 0
+        val year = if (yearMarker <= 0) null
+            else java.util.Calendar.getInstance().get(java.util.Calendar.YEAR) - (yearMarker - 1)
+        AniListApi.CatalogSpec(
+            key = label,
+            sort = sort,
+            genre = genre,
+            tag = tag,
+            format = format,
+            country = country,
+            status = status,
+            year = year
+        )
     }
 
+    val batch = try {
+        AniListApi.fetchCatalogBatch(specs)
+    } catch (e: CancellationException) { throw e
+    } catch (e: Exception) {
+        BLog.e("home batch failed: ${e.message}")
+        emptyMap()
+    }
+
+    val entries = batch[rowName] ?: emptyList()
+    BLog.d("row '$rowName' → ${entries.size}")
+    val items = entries.mapNotNull { it.toSearchResponse() }
+    return newHomePageResponse(rowName, items, hasNext = items.size >= 30)
+    }
     override suspend fun search(query: String): List<SearchResponse>? {
     BLog.section("search: $query")
     val entries = try { AniListApi.searchAnime(query) } catch (e: Exception) {
