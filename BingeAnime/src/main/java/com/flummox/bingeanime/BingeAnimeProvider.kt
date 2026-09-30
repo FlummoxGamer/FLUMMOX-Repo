@@ -17,27 +17,25 @@ private const val ROW_SEP = "|"
 // recent-popular Romance. Genre rows re-order every January when
 // the current year ticks over.
 internal val ROWS: List<Pair<String, String>> = listOf(
-    // Dynamic — global, no year filter
-    "TRENDING_DESC||||||0"                    to "Trending",
-    "SCORE_DESC|||TV|||0"                     to "Top Anime Series",
-    "SCORE_DESC|||MOVIE|||0"                  to "Top Anime Movies",
-    "POPULARITY_DESC||||CN||0"                to "Donghua",
-    // Genre rows — current year + popularity, distinct per genre
-    "POPULARITY_DESC|Action||||1"             to "Action",
-    "POPULARITY_DESC|Adventure||||1"          to "Adventure",
-    "POPULARITY_DESC||Isekai|||1"             to "Isekai",
-    "POPULARITY_DESC|Comedy||||1"             to "Comedy",
-    "POPULARITY_DESC|Drama||||1"              to "Drama",
-    "POPULARITY_DESC|Fantasy||||1"            to "Fantasy",
-    "POPULARITY_DESC|Romance||||1"            to "Romance",
-    "POPULARITY_DESC|Sci-Fi||||1"             to "Sci-Fi",
-    "POPULARITY_DESC|Slice of Life||||1"      to "Slice of Life",
-    "POPULARITY_DESC|Supernatural||||1"       to "Supernatural",
-    "POPULARITY_DESC|Mystery||||1"            to "Mystery",
-    "POPULARITY_DESC|Sports||||1"             to "Sports",
-    "POPULARITY_DESC|Mecha||||1"              to "Mecha",
-    "POPULARITY_DESC||School|||1"             to "School",
-    "POPULARITY_DESC||Historical|||1"         to "Historical"
+    "TRENDING_DESC||||||0"              to "Trending",
+    "SCORE_DESC|||TV|||0"               to "Top Anime Series",
+    "SCORE_DESC|||MOVIE|||0"            to "Top Anime Movies",
+    "POPULARITY_DESC||||CN||0"          to "Donghua",
+    "POPULARITY_DESC|Action|||||1"      to "Action",
+    "POPULARITY_DESC|Adventure|||||1"   to "Adventure",
+    "POPULARITY_DESC||Isekai||||1"      to "Isekai",
+    "POPULARITY_DESC|Comedy|||||1"      to "Comedy",
+    "POPULARITY_DESC|Drama|||||1"       to "Drama",
+    "POPULARITY_DESC|Fantasy|||||1"     to "Fantasy",
+    "POPULARITY_DESC|Romance|||||1"     to "Romance",
+    "POPULARITY_DESC|Sci-Fi|||||1"      to "Sci-Fi",
+    "POPULARITY_DESC|Slice of Life|||||1" to "Slice of Life",
+    "POPULARITY_DESC|Supernatural|||||1"  to "Supernatural",
+    "POPULARITY_DESC|Mystery|||||1"     to "Mystery",
+    "POPULARITY_DESC|Sports|||||1"      to "Sports",
+    "POPULARITY_DESC|Mecha|||||1"       to "Mecha",
+    "POPULARITY_DESC||School||||1"      to "School",
+    "POPULARITY_DESC||Historical||||1"  to "Historical"
 )
 
 class BingeAnimeProvider : MainAPI() {
