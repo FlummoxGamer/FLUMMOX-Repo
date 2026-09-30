@@ -86,13 +86,18 @@ class BingeAnimeProvider : MainAPI() {
     // MAL ranking cannot filter by genre, so genre/tag rows return empty
     // and re-populate on the next AniList refresh.
     private suspend fun malFallbackForRow(rowName: String, data: String): List<AniListApi.Entry> {
-        val parts = data.split(ROW_SEP)
-        val sort = parts.getOrNull(0) ?: ""
-        val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
-        val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
-        val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+    val parts = data.split(ROW_SEP)
+    val sort = parts.getOrNull(0) ?: ""
+    val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+    val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+    val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+    val country = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
 
-        if (genre != null || tag != null) return emptyList()
+    // MAL ranking has no genre, tag, or country filter. Returning
+    // generic bypopularity for those rows would show wrong content
+    // (e.g. Japanese anime under "Donghua"). Leave empty — the row
+    // repopulates on the next AniList refresh.
+    if (genre != null || tag != null || country != null) return emptyList()
 
         return when {
             format == "TV" && sort == "SCORE_DESC" -> MalApi.ranking("tv")
