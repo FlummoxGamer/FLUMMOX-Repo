@@ -108,29 +108,55 @@ class BingeAnimeProvider : MainAPI() {
         }
     }
 
-    // ── search: MAL primary, AniList fallback ──
-    override suspend fun search(query: String): List<SearchResponse>? {
-        BLog.section("search: $query")
+    // ── search: MAL + AniList in parallel, merged ──
+override suspend fun search(query: String): List<SearchResponse>? {
+    BLog.section("search: $query")
 
-        val mal = try { MalApi.search(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) {
-            BLog.e("MAL search threw: ${e.message}"); emptyList()
-        }
-        if (mal.isNotEmpty()) {
-            BLog.d("search '$query' → MAL=${mal.size}")
-            val sorted = AniListApi.sortChronological(mal, query)
-            return sorted.mapNotNull { it.toSearchResponse() }
-        }
+    val baseTitle = query.substringBefore(':').trim()
 
-        BLog.d("MAL empty for '$query' — falling back to AniList")
-        val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) {
-            BLog.e("AniList search threw: ${e.message}"); emptyList()
-        }
-        val sorted = AniListApi.sortChronological(ani, query)
-        BLog.d("search '$query' → AniList=${sorted.size}")
-        return sorted.mapNotNull { it.toSearchResponse() }
+    // MAL — query original + base title (if different). MAL's search
+    // matches on title substring, so "Mushoku Tensei: Jobless
+    // Reincarnation" misses the S2/S3 entries titled "Mushoku Tensei
+    // II: ...". Base-title fallback catches them.
+    val malDeferred = kotlinx.coroutines.coroutineScope {
+        val a = async { try { MalApi.search(query) } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { emptyList() } }
+        val b = if (baseTitle.isNotBlank() && baseTitle.length >= 4 && baseTitle != query) {
+            async { try { MalApi.search(baseTitle, limit = 30) } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { emptyList() } }
+        } else null
+        val merged = mutableListOf<AniListApi.Entry>()
+        val seenMalIds = mutableSetOf<Int>()
+        for (e in a.await()) if (seenMalIds.add(e.id)) merged.add(e)
+        b?.await()?.let { for (e in it) if (seenMalIds.add(e.id)) merged.add(e) }
+        merged
     }
+
+    val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
+    } catch (e: Exception) {
+        BLog.e("AniList search threw: ${e.message}"); emptyList()
+    }
+
+    BLog.d("search '$query' → MAL=${malDeferred.size} AniList=${ani.size}")
+
+    // Merge: AniList entries win on collision (richer data), MAL
+    // entries that AniList didn't cover are kept. Dedupe by
+    // mergeKey (normalized title + format).
+    val seen = mutableSetOf<String>()
+    val merged = mutableListOf<AniListApi.Entry>()
+    for (e in ani) {
+        val k = AniListApi.mergeKey(e)
+        if (k.isNotBlank() && seen.add(k)) merged.add(e)
+    }
+    for (e in malDeferred) {
+        val k = AniListApi.mergeKey(e)
+        if (k.isNotBlank() && seen.add(k)) merged.add(e)
+    }
+
+    val sorted = AniListApi.sortChronological(merged, query)
+    BLog.d("search '$query' → merged=${sorted.size}")
+    return sorted.mapNotNull { it.toSearchResponse() }
+}
 
     // ── load ──
     override suspend fun load(url: String): LoadResponse? {
