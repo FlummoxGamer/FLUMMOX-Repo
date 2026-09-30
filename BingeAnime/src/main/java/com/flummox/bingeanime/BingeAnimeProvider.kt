@@ -3,6 +3,7 @@ package com.flummox.bingeanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 
 private const val ROW_SEP = "|"
 
