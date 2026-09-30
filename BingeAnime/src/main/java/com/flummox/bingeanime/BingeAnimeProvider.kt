@@ -83,10 +83,13 @@ class BingeAnimeProvider : MainAPI() {
         return newHomePageResponse(rowName, items, hasNext = items.size >= 30)
     }
 
-    // MAL fallback: map AniList row config to closest MAL ranking type.
-    // MAL ranking cannot filter by genre, so genre/tag rows return empty
-    // and re-populate on the next AniList refresh.
-    private suspend fun malFallbackForRow(rowName: String, data: String): List<AniListApi.Entry> {
+
+    // Fallback chain when AniList is in cooldown:
+//   1. Genre/tag rows → Jikan (unofficial MAL API with genre filter)
+//   2. Country rows (Donghua) → empty (no API can replicate
+//      AniList's countryOfOrigin filter)
+//   3. Format/score rows → MAL official ranking
+private suspend fun malFallbackForRow(rowName: String, data: String): List<AniListApi.Entry> {
     val parts = data.split(ROW_SEP)
     val sort = parts.getOrNull(0) ?: ""
     val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
@@ -94,20 +97,28 @@ class BingeAnimeProvider : MainAPI() {
     val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
     val country = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
 
-    // MAL ranking has no genre, tag, or country filter. Returning
-    // generic bypopularity for those rows would show wrong content
-    // (e.g. Japanese anime under "Donghua"). Leave empty — the row
-    // repopulates on the next AniList refresh.
-    if (genre != null || tag != null || country != null) return emptyList()
+    // Donghua — no API has this filter, stay empty
+    if (country != null) return emptyList()
 
-        return when {
-            format == "TV" && sort == "SCORE_DESC" -> MalApi.ranking("tv")
-            format == "MOVIE" && sort == "SCORE_DESC" -> MalApi.ranking("movie")
-            sort == "TRENDING_DESC" -> MalApi.ranking("bypopularity")
-            sort == "POPULARITY_DESC" -> MalApi.ranking("bypopularity")
-            else -> MalApi.ranking("all")
+    // Genre / tag rows → Jikan
+    if (genre != null || tag != null) {
+        val jikan = JikanApi.genreTop(rowName, limit = 30)
+        if (jikan.isNotEmpty()) {
+            BLog.d("row '$rowName' filled by Jikan (${jikan.size})")
+            return jikan
         }
+        return emptyList()
     }
+
+    // Format/score rows → MAL ranking
+    return when {
+        format == "TV" && sort == "SCORE_DESC" -> MalApi.ranking("tv")
+        format == "MOVIE" && sort == "SCORE_DESC" -> MalApi.ranking("movie")
+        sort == "TRENDING_DESC" -> MalApi.ranking("bypopularity")
+        sort == "POPULARITY_DESC" -> MalApi.ranking("bypopularity")
+        else -> MalApi.ranking("all")
+    }
+}
 
     // ── search: MAL + AniList in parallel, merged ──
 override suspend fun search(query: String): List<SearchResponse>? {
