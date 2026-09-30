@@ -1,14 +1,24 @@
 package com.flummox.bingeanime
 
 import com.lagradost.cloudstream3.app
+import kotlinx.coroutines.CompletableDeferred
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 object AniListApi {
     private const val ENDPOINT = "https://graphql.anilist.co"
     private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     private const val CACHE_TTL = 24 * 60 * 60 * 1000L
+
+    // In-flight dedup. All 19 home rows ask for the same batch at the
+    // same moment on cold start. Only the first caller fires the HTTP
+    // request; the other 18 await the same CompletableDeferred. Prevents
+    // a burst of 19 GraphQL calls in under a second (which trips the
+    // rate limiter and 429s the whole batch).
+    private val inFlightBatch =
+        ConcurrentHashMap<String, CompletableDeferred<Map<String, List<Entry>>>>()
 
     data class Title(val romaji: String?, val english: String?, val native: String?) {
         fun all(): List<String> = listOfNotNull(romaji, english, native)
@@ -30,8 +40,6 @@ object AniListApi {
         val genres: List<String>? = null,
         val country: String? = null,
         val relations: List<Relation> = emptyList(),
-        // Which metadata source this entry came from. Used by the
-        // provider to build the correct load URL. Values: "anilist" | "mal".
         val source: String = "anilist"
     )
 
@@ -73,7 +81,12 @@ object AniListApi {
         }
     """.trimIndent()
 
-    // ── batched catalog fetch ──
+    // GraphQL aliases must match [A-Za-z_][A-Za-z0-9_]*. Row labels
+    // have spaces ("Top Anime Series"), so sanitize to use as alias.
+    // Same sanitized string is used to read the response back.
+    private fun safeAlias(key: String): String =
+        key.replace(Regex("[^A-Za-z0-9_]"), "_")
+
     data class CatalogSpec(
         val key: String,
         val sort: String,
@@ -87,48 +100,76 @@ object AniListApi {
 
     suspend fun fetchCatalogBatch(specs: List<CatalogSpec>, perPage: Int = 30): Map<String, List<Entry>> {
         val batchKey = "anilist:batch:" + specs.joinToString("|") { it.key }
+
         BCCache.get(batchKey, CACHE_TTL)?.let { cached ->
             return try {
                 val data = JSONObject(cached).optJSONObject("data") ?: return emptyMap()
-                specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
+                specs.associate { it.key to parsePageArray(data.optJSONObject(safeAlias(it.key))) }
             } catch (_: Exception) { emptyMap() }
         }
 
-        val q = buildString {
-            append("query {\n")
-            for (spec in specs) {
-                val args = buildString {
-                    append("type: ANIME, sort: [${spec.sort}]")
-                    spec.genre?.let { append(", genre: \"$it\"") }
-                    spec.tag?.let { append(", tag: \"$it\"") }
-                    spec.format?.let { append(", format: $it") }
-                    spec.country?.let { append(", countryOfOrigin: $it") }
-                    spec.status?.let { append(", status: $it") }
-                    spec.year?.let { append(", seasonYear: $it") }
-                    append(", isAdult: false")
-                }
-                append("  ${spec.key}: Page(page: 1, perPage: $perPage) { media($args) { $MEDIA_FIELDS } }\n")
-            }
-            append("}")
+        // In-flight dedup — if another caller is already fetching this
+        // batch, wait for their result instead of firing a second request.
+        inFlightBatch[batchKey]?.let {
+            BLog.d("AniList batch join in-flight: ${specs.size} rows")
+            return it.await()
+        }
+        val deferred = CompletableDeferred<Map<String, List<Entry>>>()
+        val prior = inFlightBatch.putIfAbsent(batchKey, deferred)
+        if (prior != null) {
+            BLog.d("AniList batch join race: ${specs.size} rows")
+            return prior.await()
         }
 
         return try {
+            val q = buildString {
+                append("query {\n")
+                for (spec in specs) {
+                    val args = buildString {
+                        append("type: ANIME, sort: [${spec.sort}]")
+                        spec.genre?.let { append(", genre: \"$it\"") }
+                        spec.tag?.let { append(", tag: \"$it\"") }
+                        spec.format?.let { append(", format: $it") }
+                        spec.country?.let { append(", countryOfOrigin: $it") }
+                        spec.status?.let { append(", status: $it") }
+                        spec.year?.let { append(", seasonYear: $it") }
+                        append(", isAdult: false")
+                    }
+                    append("  ${safeAlias(spec.key)}: Page(page: 1, perPage: $perPage) { media($args) { $MEDIA_FIELDS } }\n")
+                }
+                append("}")
+            }
+
+            BLog.d("AniList batch fetch: ${specs.size} rows, 1 request")
             val body = JSONObject().put("query", q).toString()
             val res = app.post(ENDPOINT,
                 requestBody = body.toRequestBody(JSON_MEDIA),
                 headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
             val root = JSONObject(res.text)
-            val data = root.optJSONObject("data") ?: run {
-                BLog.e("AniList batch empty — ${root.toString().take(200)}")
-                return emptyMap()
+            val data = root.optJSONObject("data")
+            if (data == null) {
+                BLog.e("AniList batch empty — ${root.toString().take(300)}")
+                deferred.complete(emptyMap())
+                emptyMap()
+            } else {
+                BCCache.put(batchKey, root.toString())
+                val result = specs.associate {
+                    it.key to parsePageArray(data.optJSONObject(safeAlias(it.key)))
+                }
+                val filled = result.values.count { it.isNotEmpty() }
+                BLog.d("AniList batch OK: $filled/${specs.size} rows non-empty")
+                deferred.complete(result)
+                result
             }
-            BCCache.put(batchKey, root.toString())
-            specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
         } catch (e: kotlinx.coroutines.CancellationException) {
+            deferred.completeExceptionally(e)
             throw e
         } catch (e: Exception) {
             BLog.e("AniList batch failed: ${e.message}")
+            deferred.complete(emptyMap())
             emptyMap()
+        } finally {
+            inFlightBatch.remove(batchKey)
         }
     }
 
@@ -137,61 +178,6 @@ object AniListApi {
         val out = mutableListOf<Entry>()
         for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
         return out
-    }
-
-    // ── single catalog (kept for direct use if ever needed) ──
-    suspend fun fetchCatalog(
-        sort: String = "TRENDING_DESC",
-        genre: String? = null,
-        tag: String? = null,
-        format: String? = null,
-        country: String? = null,
-        status: String? = null,
-        year: Int? = null,
-        page: Int = 1,
-        perPage: Int = 30
-    ): List<Entry> {
-        val ck = "anilist:cat:$sort:$genre:$tag:$format:$country:$status:$year:$page:$perPage"
-        BCCache.get(ck, CACHE_TTL)?.let { cached ->
-            return try { parseList(JSONObject(cached)) } catch (_: Exception) { emptyList() }
-        }
-
-        val q = """
-            query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}sort: [MediaSort], ${'$'}genre: String, ${'$'}tag: String, ${'$'}format: MediaFormat, ${'$'}country: CountryCode, ${'$'}status: MediaStatus, ${'$'}year: Int) {
-              Page(page: ${'$'}page, perPage: ${'$'}perPage) {
-                media(type: ANIME, sort: ${'$'}sort, genre: ${'$'}genre, tag: ${'$'}tag, format: ${'$'}format, countryOfOrigin: ${'$'}country, status: ${'$'}status, seasonYear: ${'$'}year, isAdult: false) {
-                  $MEDIA_FIELDS
-                }
-              }
-            }
-        """.trimIndent()
-
-        val vars = JSONObject().apply {
-            put("page", page)
-            put("perPage", perPage)
-            put("sort", org.json.JSONArray().put(sort))
-            put("genre", genre ?: JSONObject.NULL)
-            put("tag", tag ?: JSONObject.NULL)
-            put("format", format ?: JSONObject.NULL)
-            put("country", country ?: JSONObject.NULL)
-            put("status", status ?: JSONObject.NULL)
-            put("year", year ?: JSONObject.NULL)
-        }
-
-        return try {
-            val body = JSONObject().apply { put("query", q); put("variables", vars) }.toString()
-            val res = app.post(ENDPOINT,
-                requestBody = body.toRequestBody(JSON_MEDIA),
-                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
-            val root = JSONObject(res.text)
-            BCCache.put(ck, root.toString())
-            parseList(root)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("AniList catalog failed: ${e.message}")
-            emptyList()
-        }
     }
 
     private fun parseList(root: JSONObject): List<Entry> {
@@ -205,7 +191,6 @@ object AniListApi {
         return out
     }
 
-    // ── search ──
     suspend fun searchAnime(query: String, year: Int? = null): List<Entry> {
         val ck = "anilist:s:${query.lowercase()}:${year ?: 0}"
         BCCache.get(ck, CACHE_TTL)?.let { cached ->
@@ -251,7 +236,6 @@ object AniListApi {
         }
     }
 
-    // ── getEntry ──
     suspend fun getEntry(id: Int): Entry? {
         val ck = "anilist:e:$id"
         BCCache.get(ck, CACHE_TTL)?.let { cached ->
@@ -283,7 +267,6 @@ object AniListApi {
         }
     }
 
-    // ── Part-N helpers ──
     data class PartInfo(val partNum: Int, val seasonNum: Int?, val baseTitle: String)
 
     private val RX_PART_N = Regex("""\bpart\s+(\d+)\b""", RegexOption.IGNORE_CASE)
@@ -300,7 +283,6 @@ object AniListApi {
         return PartInfo(partNum, seasonNum, baseTitle)
     }
 
-    // ── display helpers ──
     private val RX_COUR_N = Regex("""\bcour\s+(\d+)\b""", RegexOption.IGNORE_CASE)
     private val RX_ROMAN_WORD = Regex("""\b(II|III|IV|V|VI|VII|VIII|IX|X)\b""", RegexOption.IGNORE_CASE)
     private val ROMAN_MAP = mapOf(
@@ -410,7 +392,6 @@ object AniListApi {
         )
     }
 
-    // ── parse ──
     private fun parseEntry(o: JSONObject?): Entry? {
         if (o == null) return null
         val id = o.optInt("id", 0).takeIf { it > 0 } ?: return null
