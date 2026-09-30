@@ -306,6 +306,11 @@ o.optJSONObject("relations")?.optJSONArray("edges")?.let { edges ->
 
     // ── display helpers ──
     private val RX_COUR_N = Regex("""\bcour\s+(\d+)\b""", RegexOption.IGNORE_CASE)
+    private val RX_ROMAN_WORD = Regex("""\b(II|III|IV|V|VI|VII|VIII|IX|X)\b""", RegexOption.IGNORE_CASE)
+    private val ROMAN_MAP = mapOf(
+        "II" to 2, "III" to 3, "IV" to 4, "V" to 5,
+        "VI" to 6, "VII" to 7, "VIII" to 8, "IX" to 9, "X" to 10
+    )
     // Strip "Cour N" branding from display titles.
     //   "X Cour 1" → "X"
     //   "X Cour 2" → "X Part 2"
@@ -317,17 +322,42 @@ o.optJSONObject("relations")?.optJSONArray("edges")?.let { edges ->
         return replaced.replace(Regex("""\s{2,}"""), " ").trim()
     }
 
-    // Key used to group entries from the same franchise together.
-    // Strips season/part/cour markers, punctuation, casing.
-    fun baseTitleKey(title: String): String {
-        var s = title.lowercase()
-        s = RX_PART_N.replace(s, "")
-        s = RX_SEASON_N.replace(s, "")
-        s = RX_COUR_N.replace(s, "")
-        s = s.replace(Regex("""[^a-z0-9 ]"""), " ")
-        s = s.replace(Regex("""\s+"""), " ").trim()
-        return s
-    }
+// Key used to group entries from the same franchise together.
+// Strips season/part/cour markers, punctuation, casing.
+// Franchise key for grouping. Two entries with the same key belong
+// to the same franchise and get sorted together.
+//
+//   "Mushoku Tensei III: Isekai Ittara Honki Dasu Part 2"
+//   "Mushoku Tensei: Jobless Reincarnation Cour 2"
+//   "Mushoku Tensei II: Isekai Ittara Honki Dasu"
+//   → all collapse to "mushoku tensei"
+//
+// Steps: lowercase → keep only text before first :/–/— → strip
+// roman numerals → strip Season/Part/Cour markers → sanitize.
+fun baseTitleKey(title: String): String {
+    var s = title.lowercase()
+    s = s.substringBefore(':').substringBefore('–').substringBefore('—')
+    s = RX_ROMAN_WORD.replace(s, "")
+    s = RX_PART_N.replace(s, "")
+    s = RX_SEASON_N.replace(s, "")
+    s = RX_COUR_N.replace(s, "")
+    s = s.replace(Regex("""[^a-z0-9 ]"""), " ")
+    s = s.replace(Regex("""\s+"""), " ").trim()
+    return s
+}
+
+// Rewrite roman-numeral season markers to "Season N" for display.
+// Only touches numerals that appear BEFORE the first colon/dash, so
+// subtitles like "Code Geass: Lelouch of the Rebellion R2" are left
+// alone. "Mushoku Tensei III: ..." → "Mushoku Tensei Season 3: ...".
+fun convertRomanSeasons(title: String): String {
+    val colonIdx = title.indexOf(':')
+    val searchEnd = if (colonIdx > 0) colonIdx else title.length
+    val head = title.substring(0, searchEnd)
+    val m = RX_ROMAN_WORD.find(head) ?: return title
+    val num = ROMAN_MAP[m.groupValues[1].uppercase()] ?: return title
+    return head.replaceRange(m.range, "Season $num") + title.substring(searchEnd)
+}
 
     // Format ordering: TV first, then ONA, Movie, OVA, Special, Short.
     // Matches user intent: "after [seasons], movies, ova, extras and all".
@@ -341,14 +371,47 @@ o.optJSONObject("relations")?.optJSONArray("edges")?.let { edges ->
         else -> 99
     }
 
-    // Chronological sort within a franchise:
-    //   baseTitleKey → formatPriority → seasonYear → startDate
-    fun sortChronological(entries: List<Entry>): List<Entry> = entries.sortedWith(
+// Chronological sort within a franchise:
+// baseTitleKey → formatPriority → seasonYear → startDate
+// Relevance tier vs the user query:
+//   0 = exact title match
+//   1 = title starts with query
+//   2 = title contains query
+//   3 = fuzzy / unrelated (AniList's SEARCH_MATCH picks these up)
+private fun relevanceRank(e: Entry, query: String): Int {
+    val q = query.lowercase().trim()
+    if (q.isBlank()) return 3
+    val titles = listOfNotNull(e.title.english, e.title.romaji, e.title.native)
+        .map { it.lowercase().trim() }
+    return when {
+        titles.any { it == q } -> 0
+        titles.any { it.startsWith(q) } -> 1
+        titles.any { it.contains(q) } -> 2
+        else -> 3
+    }
+}
+
+// Sort order:
+//   1. relevanceRank vs query
+//   2. base-key first-occurrence index in AniList's returned list
+//      (respects SEARCH_MATCH ordering; fixes "Attack on Skytree"
+//       beating "Attack on Titan" for query "aot")
+//   3. format priority within franchise (TV → ONA → Movie → OVA → Special)
+//   4. seasonYear, then startDate (chronological within franchise)
+fun sortChronological(entries: List<Entry>, query: String): List<Entry> {
+    val baseIndex = mutableMapOf<String, Int>()
+    for ((i, e) in entries.withIndex()) {
+        val k = baseTitleKey(e.title.english ?: e.title.romaji ?: e.title.native ?: "")
+        if (k.isNotBlank() && k !in baseIndex) baseIndex[k] = i
+    }
+    return entries.sortedWith(
         compareBy(
-            { baseTitleKey(it.title.english ?: it.title.romaji ?: it.title.native ?: "") },
+            { relevanceRank(it, query) },
+            { baseIndex[baseTitleKey(it.title.english ?: it.title.romaji ?: it.title.native ?: "")] ?: 9999 },
             { formatPriority(it.format) },
             { it.seasonYear ?: 9999 },
             { it.startDate ?: "9999-99-99" }
         )
     )
+}
 }
