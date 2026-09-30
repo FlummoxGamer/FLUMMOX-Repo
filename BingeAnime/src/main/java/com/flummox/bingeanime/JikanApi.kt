@@ -2,19 +2,18 @@ package com.flummox.bingeanime
 
 import com.lagradost.cloudstream3.app
 import org.json.JSONObject
+import java.net.URLEncoder
 
 // Jikan — unofficial MyAnimeList API v4.
 // No key required. Rate limit: 3 req/s, 60 req/min (unauthenticated).
-// Used only for home-row fallback when AniList is in cooldown AND the
-// row is a genre or tag row — MAL's official ranking endpoint has no
-// genre filter, Jikan does.
+// Used for search and home-row fallback when AniList is in cooldown.
+// Exposes the full MAL database via website scraping, bypassing the
+// official MAL API's filter/nsfw/gated-parameter bugs.
 object JikanApi {
     private const val BASE = "https://api.jikan.moe/v4"
     private const val CACHE_TTL = 24 * 60 * 60 * 1000L
 
-    // Jikan genre IDs (verified 2026-09 against /genres/anime).
-    // Row names are matched exactly — anything not in this map returns
-    // null and the row stays empty when AniList is down.
+    // Jikan genre IDs (verified against /genres/anime).
     private val GENRE_IDS = mapOf(
         "Action" to 1,
         "Adventure" to 2,
@@ -28,18 +27,68 @@ object JikanApi {
         "Mystery" to 7,
         "Sports" to 30,
         "Mecha" to 18,
-        // Tags — Jikan mixes these into the same ID space
         "Isekai" to 62,
         "School" to 23,
         "Historical" to 13
     )
 
-    private fun headers(): Map<String, String> = mapOf(
-        "Accept" to "application/json"
-    )
+    private fun headers(): Map<String, String> = mapOf("Accept" to "application/json")
 
-    // Fetch top-30 popularity-ordered anime for a genre/tag.
-    // Returns an empty list if the row name isn't a recognized genre.
+    // ── search ──
+    suspend fun search(query: String, limit: Int = 20): List<AniListApi.Entry> {
+        val ck = "jikan:search:$query:$limit"
+        BCCache.get(ck, CACHE_TTL)?.let { cached ->
+            return try { parseList(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+        }
+        val url = "$BASE/anime?q=${URLEncoder.encode(query, "UTF-8")}&limit=$limit&sfw=true"
+        return try {
+            val res = app.get(url, headers = headers())
+            if (res.code == 429) {
+                BLog.e("Jikan search 429 for '$query'")
+                return emptyList()
+            }
+            val root = JSONObject(res.text)
+            BCCache.put(ck, root.toString())
+            parseList(root)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("Jikan search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    // ── top anime (home-row fallback) ──
+    // filter: airing | upcoming | bypopularity | favorite
+    // type:   tv | movie | ova | special | ona | music
+    suspend fun topAnime(filter: String? = null, type: String? = null, limit: Int = 30): List<AniListApi.Entry> {
+        val ck = "jikan:top:${filter ?: ""}:${type ?: ""}:$limit"
+        BCCache.get(ck, CACHE_TTL)?.let { cached ->
+            return try { parseList(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+        }
+        val url = buildString {
+            append("$BASE/top/anime?limit=$limit&sfw=true")
+            filter?.let { append("&filter=$it") }
+            type?.let { append("&type=$it") }
+        }
+        return try {
+            val res = app.get(url, headers = headers())
+            if (res.code == 429) {
+                BLog.e("Jikan top 429 (filter=$filter type=$type)")
+                return emptyList()
+            }
+            val root = JSONObject(res.text)
+            BCCache.put(ck, root.toString())
+            parseList(root)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("Jikan top failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    // ── genre/tag top ──
     suspend fun genreTop(rowName: String, limit: Int = 30): List<AniListApi.Entry> {
         val genreId = GENRE_IDS[rowName] ?: return emptyList()
         val ck = "jikan:genre:$genreId:$limit"
@@ -64,6 +113,7 @@ object JikanApi {
         }
     }
 
+    // ── parse ──
     private fun parseList(root: JSONObject): List<AniListApi.Entry> {
         val arr = root.optJSONArray("data") ?: return emptyList()
         val out = mutableListOf<AniListApi.Entry>()
@@ -76,17 +126,18 @@ object JikanApi {
         val id = o.optInt("mal_id", 0).takeIf { it > 0 } ?: return null
         val mainTitle = o.optString("title").takeIf { it.isNotBlank() } ?: return null
 
-        // Jikan exposes title_english and title_japanese directly at top level
         val english = o.optString("title_english").takeIf { it.isNotBlank() && it != "null" }
         val native = o.optString("title_japanese").takeIf { it.isNotBlank() && it != "null" }
 
-        val startRaw = o.optString("aired").takeIf { it.isNotBlank() }
+        // start year — from aired.from first, year field as fallback
         val startYear = try {
-            JSONObject(startRaw ?: "{}").optJSONObject("from")?.optString("from")?.take(4)?.toIntOrNull()
+            o.optJSONObject("aired")
+                ?.optJSONObject("prop")
+                ?.optJSONObject("from")
+                ?.optInt("year", 0)
+                ?.takeIf { it > 0 }
+                ?: o.optInt("year", 0).takeIf { it > 0 }
         } catch (_: Exception) { null }
-        // Fallback: some entries only expose "year"
-        val yearFallback = o.optInt("year", 0).takeIf { it > 0 }
-        val finalYear = startYear ?: yearFallback
 
         val cover = o.optJSONObject("images")?.optJSONObject("jpg")
             ?.optString("large_image_url")?.takeIf { it.isNotBlank() }
@@ -102,9 +153,6 @@ object JikanApi {
             }
         }?.takeIf { it.isNotEmpty() }
 
-        val episodes = o.optInt("episodes", 0).takeIf { it > 0 }
-        val format = mapType(o.optString("type"))
-
         return AniListApi.Entry(
             id = id,
             idMal = id,
@@ -113,9 +161,9 @@ object JikanApi {
                 english = english,
                 native = native
             ),
-            format = format,
-            episodes = episodes,
-            seasonYear = finalYear,
+            format = mapType(o.optString("type")),
+            episodes = o.optInt("episodes", 0).takeIf { it > 0 },
+            seasonYear = startYear,
             startDate = null,
             description = o.optString("synopsis").takeIf { it.isNotBlank() && it != "null" },
             coverImage = cover,
@@ -128,7 +176,6 @@ object JikanApi {
         )
     }
 
-    // Jikan type strings: TV, Movie, OVA, Special, ONA, Music, CM, PV, TV Special
     private fun mapType(raw: String?): String? = when (raw) {
         "TV" -> "TV"
         "TV Special" -> "SPECIAL"
