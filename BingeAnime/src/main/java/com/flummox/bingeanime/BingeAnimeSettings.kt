@@ -59,9 +59,9 @@ object BingeAnimeSettings {
     fun getRowOrder(): List<String> {
         val stored = getKey<String>(K_ROW_ORDER) ?: ""
         val parts = stored.split("|").map { it.trim() }.filter { it.isNotBlank() }
-        if (parts.isEmpty()) return BingeAnimeProvider.ROWS.map { it.second }
+        if (parts.isEmpty()) return ROWS.map { it.second }
         val seen = parts.toSet()
-        val extras = BingeAnimeProvider.ROWS.map { it.second }.filter { it !in seen }
+        val extras = ROWS.map { it.second }.filter { it !in seen }
         return parts + extras
     }
 
@@ -70,8 +70,8 @@ object BingeAnimeSettings {
     fun isRowEnabled(name: String): Boolean = getKey<Boolean>(K_ROW_PREFIX + name) ?: true
 
     fun resetHomeToDefaults() {
-        setKey(K_ROW_ORDER, BingeAnimeProvider.ROWS.map { it.second }.joinToString("|"))
-        for ((_, label) in BingeAnimeProvider.ROWS) setKey(K_ROW_PREFIX + label, true)
+        setKey(K_ROW_ORDER, ROWS.map { it.second }.joinToString("|"))
+        for ((_, label) in ROWS) setKey(K_ROW_PREFIX + label, true)
     }
 
     // ── helpers ──
