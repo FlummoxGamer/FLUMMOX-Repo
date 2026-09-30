@@ -105,67 +105,85 @@ object BingeAnimeSettings {
 
     // ── vector glyph view ──
     class GlyphView(context: Context, private val kind: String) : View(context) {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = ACCENT
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = TEXT
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private var pulse = 1f
+
+    init {
+        ValueAnimator.ofFloat(0.75f, 1f).apply {
+            duration = 2200
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            addUpdateListener {
+                pulse = it.animatedValue as Float
+                invalidate()
+            }
+            start()
         }
+    }
 
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val cx = width / 2f
-            val cy = height / 2f
-            val r = minOf(width, height) / 3f
-            paint.strokeWidth = r * 0.18f
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val cx = width / 2f
+        val cy = height / 2f
+        val r = minOf(width, height) / 3f
+        paint.strokeWidth = r * 0.22f
+        paint.alpha = (pulse * 255).toInt()
 
-            when (kind) {
-                "SETTINGS" -> {
-                    // gear: outer ring + 8 teeth + center dot
-                    canvas.drawCircle(cx, cy, r * 0.55f, paint)
-                    for (i in 0 until 8) {
-                        val a = i * (Math.PI / 4)
-                        val x1 = cx + cos(a).toFloat() * r * 0.62f
-                        val y1 = cy + sin(a).toFloat() * r * 0.62f
-                        val x2 = cx + cos(a).toFloat() * r * 0.95f
-                        val y2 = cy + sin(a).toFloat() * r * 0.95f
-                        canvas.drawLine(x1, y1, x2, y2, paint)
-                    }
-                    canvas.drawCircle(cx, cy, r * 0.16f, paint)
+        val fill = Paint(paint).apply { style = Paint.Style.FILL }
+
+        when (kind) {
+            "SETTINGS" -> {
+                // three horizontal sliders with offset dots
+                val ys = listOf(cy - r * 0.65f, cy, cy + r * 0.65f)
+                val xs = listOf(cx + r * 0.35f, cx - r * 0.35f, cx + r * 0.1f)
+                for (i in ys.indices) {
+                    canvas.drawLine(cx - r, ys[i], cx + r, ys[i], paint)
+                    canvas.drawCircle(xs[i], ys[i], r * 0.28f, fill)
                 }
-                "SOURCES" -> {
-                    // satellite dish: triangle + signal arcs
-                    val path = Path()
-                    path.moveTo(cx, cy - r * 0.9f)
-                    path.lineTo(cx - r * 0.75f, cy + r * 0.3f)
-                    path.lineTo(cx + r * 0.75f, cy + r * 0.3f)
-                    path.close()
-                    canvas.drawPath(path, paint)
-                    canvas.drawLine(cx, cy + r * 0.3f, cx, cy + r * 0.9f, paint)
-                    canvas.drawLine(cx - r * 0.3f, cy + r * 0.9f, cx + r * 0.3f, cy + r * 0.9f, paint)
+            }
+            "SOURCES" -> {
+                // broadcast: dot at lower-left + two arcs radiating up-right
+                val ox = cx - r * 0.55f
+                val oy = cy + r * 0.55f
+                canvas.drawCircle(ox, oy, r * 0.24f, fill)
+                for (i in 1..2) {
+                    val rad = r * 0.55f * i + r * 0.15f
+                    val rect = RectF(ox - rad, oy - rad, ox + rad, oy + rad)
+                    canvas.drawArc(rect, -90f, 90f, false, paint)
                 }
-                "LOGS" -> {
-                    // document: rounded rect + 3 text lines
-                    val rect = RectF(cx - r * 0.65f, cy - r * 0.85f, cx + r * 0.65f, cy + r * 0.85f)
-                    canvas.drawRoundRect(rect, r * 0.1f, r * 0.1f, paint)
-                    for (i in 0 until 3) {
-                        val y = cy - r * 0.4f + i * r * 0.42f
-                        canvas.drawLine(cx - r * 0.38f, y, cx + r * 0.38f, y, paint)
-                    }
-                }
-                "HOMEPAGE" -> {
-                    // house: roof + body + door
-                    val roof = Path()
-                    roof.moveTo(cx - r * 0.9f, cy - r * 0.1f)
-                    roof.lineTo(cx, cy - r * 0.9f)
-                    roof.lineTo(cx + r * 0.9f, cy - r * 0.1f)
-                    canvas.drawPath(roof, paint)
-                    canvas.drawRect(cx - r * 0.65f, cy - r * 0.1f, cx + r * 0.65f, cy + r * 0.85f, paint)
-                    canvas.drawRect(cx - r * 0.18f, cy + r * 0.25f, cx + r * 0.18f, cy + r * 0.85f, paint)
-                }
+            }
+            "LOGS" -> {
+                // terminal prompt: > and _
+                val chev = Path()
+                chev.moveTo(cx - r * 0.7f, cy - r * 0.55f)
+                chev.lineTo(cx - r * 0.1f, cy)
+                chev.lineTo(cx - r * 0.7f, cy + r * 0.55f)
+                canvas.drawPath(chev, paint)
+                canvas.drawLine(cx + r * 0.05f, cy + r * 0.55f,
+                    cx + r * 0.7f, cy + r * 0.55f, paint)
+            }
+            "HOMEPAGE" -> {
+                // torii gate — curved top beam + straight lower beam + two pillars
+                val top = Path()
+                top.moveTo(cx - r * 1.05f, cy - r * 0.7f)
+                top.quadTo(cx, cy - r * 1.0f, cx + r * 1.05f, cy - r * 0.7f)
+                canvas.drawPath(top, paint)
+                canvas.drawLine(cx - r * 0.72f, cy - r * 0.2f,
+                    cx + r * 0.72f, cy - r * 0.2f, paint)
+                canvas.drawLine(cx - r * 0.6f, cy - r * 0.7f,
+                    cx - r * 0.6f, cy + r * 0.85f, paint)
+                canvas.drawLine(cx + r * 0.6f, cy - r * 0.7f,
+                    cx + r * 0.6f, cy + r * 0.85f, paint)
             }
         }
     }
+    }
+    
 
     // ── tile factory with glyph + press animation ──
     private fun tile(ctx: Context, label: String, onClick: () -> Unit): FrameLayout {
@@ -175,12 +193,12 @@ object BingeAnimeSettings {
             clipChildren = false
         }
 
-        // glyph centered top
+        // glyph centered in tile, larger
         val glyph = GlyphView(ctx, label)
         tile.addView(glyph, FrameLayout.LayoutParams(
-            dp(ctx, 46), dp(ctx, 46),
-            Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        ).apply { topMargin = dp(ctx, 26) })
+            dp(ctx, 76), dp(ctx, 76),
+            Gravity.CENTER
+        ))
 
         // label bottom
         tile.addView(TextView(ctx).apply {
