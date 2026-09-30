@@ -82,7 +82,9 @@ class BingeAnimeProvider : MainAPI() {
         return newHomePageResponse(rowName, items, hasNext = items.size >= 30)
     }
 
-    // MAL fallback: map AniList row config to the closest MAL ranking type
+    // MAL fallback: map AniList row config to closest MAL ranking type.
+    // MAL ranking cannot filter by genre, so genre/tag rows return empty
+    // and re-populate on the next AniList refresh.
     private suspend fun malFallbackForRow(rowName: String, data: String): List<AniListApi.Entry> {
         val parts = data.split(ROW_SEP)
         val sort = parts.getOrNull(0) ?: ""
@@ -90,11 +92,8 @@ class BingeAnimeProvider : MainAPI() {
         val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
         val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
 
-        // Genre/tag rows: MAL ranking can't filter by genre, so return empty.
-        // The user still sees the row populated on the next AniList refresh.
         if (genre != null || tag != null) return emptyList()
 
-        // Format-specific rows → MAL ranking type
         return when {
             format == "TV" && sort == "SCORE_DESC" -> MalApi.ranking("tv")
             format == "MOVIE" && sort == "SCORE_DESC" -> MalApi.ranking("movie")
@@ -130,7 +129,6 @@ class BingeAnimeProvider : MainAPI() {
 
     // ── load ──
     override suspend fun load(url: String): LoadResponse? {
-        // URL can be anilist:<id> or mal:<id>
         val malMatch = Regex("""mal:(\d+)""").find(url)
         val aniMatch = Regex("""anilist:(\d+)""").find(url)
 
@@ -201,7 +199,6 @@ class BingeAnimeProvider : MainAPI() {
         }
     }
 
-    // ── loadLinks stub (scrapers land in next phase) ──
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -216,10 +213,7 @@ class BingeAnimeProvider : MainAPI() {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
         val displayName = AniListApi.convertRomanSeasons(AniListApi.stripCourBranding(raw))
         val tvType = if (format == "MOVIE") TvType.Movie else TvType.Anime
-        // Preserve source: MAL entries have idMal == id and originate from
-        // MalApi, AniList entries come from AniListApi. We can't tell which
-        // directly, so we encode both forms and pick by presence.
-        val url = "anilist:$id"
+        val url = "$source:$id"
         return newMovieSearchResponse(displayName, url, tvType) {
             this.posterUrl = coverImage
             this.year = seasonYear
