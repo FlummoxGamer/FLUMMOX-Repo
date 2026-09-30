@@ -29,7 +29,10 @@ object AniListApi {
         val status: String? = null,
         val genres: List<String>? = null,
         val country: String? = null,
-        val relations: List<Relation> = emptyList()
+        val relations: List<Relation> = emptyList(),
+        // Which metadata source this entry came from. Used by the
+        // provider to build the correct load URL. Values: "anilist" | "mal".
+        val source: String = "anilist"
     )
 
     data class Relation(
@@ -70,7 +73,73 @@ object AniListApi {
         }
     """.trimIndent()
 
-    // ── catalog rows ──
+    // ── batched catalog fetch ──
+    data class CatalogSpec(
+        val key: String,
+        val sort: String,
+        val genre: String? = null,
+        val tag: String? = null,
+        val format: String? = null,
+        val country: String? = null,
+        val status: String? = null,
+        val year: Int? = null
+    )
+
+    suspend fun fetchCatalogBatch(specs: List<CatalogSpec>, perPage: Int = 30): Map<String, List<Entry>> {
+        val batchKey = "anilist:batch:" + specs.joinToString("|") { it.key }
+        BCCache.get(batchKey, CACHE_TTL)?.let { cached ->
+            return try {
+                val data = JSONObject(cached).optJSONObject("data") ?: return emptyMap()
+                specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
+            } catch (_: Exception) { emptyMap() }
+        }
+
+        val q = buildString {
+            append("query {\n")
+            for (spec in specs) {
+                val args = buildString {
+                    append("type: ANIME, sort: [${spec.sort}]")
+                    spec.genre?.let { append(", genre: \"$it\"") }
+                    spec.tag?.let { append(", tag: \"$it\"") }
+                    spec.format?.let { append(", format: $it") }
+                    spec.country?.let { append(", countryOfOrigin: $it") }
+                    spec.status?.let { append(", status: $it") }
+                    spec.year?.let { append(", seasonYear: $it") }
+                    append(", isAdult: false")
+                }
+                append("  ${spec.key}: Page(page: 1, perPage: $perPage) { media($args) { $MEDIA_FIELDS } }\n")
+            }
+            append("}")
+        }
+
+        return try {
+            val body = JSONObject().put("query", q).toString()
+            val res = app.post(ENDPOINT,
+                requestBody = body.toRequestBody(JSON_MEDIA),
+                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+            val root = JSONObject(res.text)
+            val data = root.optJSONObject("data") ?: run {
+                BLog.e("AniList batch empty — ${root.toString().take(200)}")
+                return emptyMap()
+            }
+            BCCache.put(batchKey, root.toString())
+            specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("AniList batch failed: ${e.message}")
+            emptyMap()
+        }
+    }
+
+    private fun parsePageArray(pageObj: JSONObject?): List<Entry> {
+        val arr = pageObj?.optJSONArray("media") ?: return emptyList()
+        val out = mutableListOf<Entry>()
+        for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
+        return out
+    }
+
+    // ── single catalog (kept for direct use if ever needed) ──
     suspend fun fetchCatalog(
         sort: String = "TRENDING_DESC",
         genre: String? = null,
@@ -97,10 +166,6 @@ object AniListApi {
             }
         """.trimIndent()
 
-        // Every declared variable MUST be present in the payload.
-        // AniList silently returns an empty data object if a declared
-        // variable is missing — verified against the empty-home-rows
-        // bug where 8 of 9 vars were being omitted when null.
         val vars = JSONObject().apply {
             put("page", page)
             put("perPage", perPage)
@@ -167,7 +232,7 @@ object AniListApi {
 
         val vars = JSONObject().apply {
             put("search", query)
-            if (year != null) put("year", year) else put("year", JSONObject.NULL)
+            put("year", year ?: JSONObject.NULL)
         }
 
         return try {
@@ -186,7 +251,7 @@ object AniListApi {
         }
     }
 
-    // ── getEntry (with relations) ──
+    // ── getEntry ──
     suspend fun getEntry(id: Int): Entry? {
         val ck = "anilist:e:$id"
         BCCache.get(ck, CACHE_TTL)?.let { cached ->
@@ -345,78 +410,7 @@ object AniListApi {
         )
     }
 
-    // ── batched catalog fetch ──
-data class CatalogSpec(
-    val key: String,
-    val sort: String,
-    val genre: String? = null,
-    val tag: String? = null,
-    val format: String? = null,
-    val country: String? = null,
-    val status: String? = null,
-    val year: Int? = null
-)
-
-// Fetch every home row in ONE GraphQL request via aliases.
-// AniList rate limit is 30/min; 19 sequential requests in <10s trip
-// it and 429 every subsequent request including search. Batching
-// drops home-page traffic to 1 request — the whole batch is served
-// from a single 24h cache entry.
-suspend fun fetchCatalogBatch(specs: List<CatalogSpec>, perPage: Int = 30): Map<String, List<Entry>> {
-    val batchKey = "anilist:batch:" + specs.joinToString("|") { it.key }
-    BCCache.get(batchKey, CACHE_TTL)?.let { cached ->
-        return try {
-            val data = JSONObject(cached).optJSONObject("data") ?: return emptyMap()
-            specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
-        } catch (_: Exception) { emptyMap() }
-    }
-
-    val q = buildString {
-        append("query {\n")
-        for (spec in specs) {
-            val args = buildString {
-                append("type: ANIME, sort: [${spec.sort}]")
-                spec.genre?.let { append(", genre: \"$it\"") }
-                spec.tag?.let { append(", tag: \"$it\"") }
-                spec.format?.let { append(", format: $it") }
-                spec.country?.let { append(", countryOfOrigin: $it") }
-                spec.status?.let { append(", status: $it") }
-                spec.year?.let { append(", seasonYear: $it") }
-                append(", isAdult: false")
-            }
-            append("  ${spec.key}: Page(page: 1, perPage: $perPage) { media($args) { $MEDIA_FIELDS } }\n")
-        }
-        append("}")
-    }
-
-    return try {
-        val body = JSONObject().put("query", q).toString()
-        val res = app.post(ENDPOINT,
-            requestBody = body.toRequestBody(JSON_MEDIA),
-            headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
-        val root = JSONObject(res.text)
-        val data = root.optJSONObject("data") ?: run {
-            BLog.e("AniList batch empty — ${root.toString().take(200)}")
-            return emptyMap()
-        }
-        BCCache.put(batchKey, root.toString())
-        specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        BLog.e("AniList batch failed: ${e.message}")
-        emptyMap()
-    }
-}
-
-private fun parsePageArray(pageObj: JSONObject?): List<Entry> {
-    val arr = pageObj?.optJSONArray("media") ?: return emptyList()
-    val out = mutableListOf<Entry>()
-    for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
-    return out
-}
-
-        // ── parse ──
+    // ── parse ──
     private fun parseEntry(o: JSONObject?): Entry? {
         if (o == null) return null
         val id = o.optInt("id", 0).takeIf { it > 0 } ?: return null
@@ -490,7 +484,8 @@ private fun parsePageArray(pageObj: JSONObject?): List<Entry> {
             status = o.optString("status").takeIf { it.isNotBlank() && it != "null" },
             genres = genres,
             country = o.optString("countryOfOrigin").takeIf { it.isNotBlank() && it != "null" },
-            relations = relations
+            relations = relations,
+            source = "anilist"
         )
     }
 }
