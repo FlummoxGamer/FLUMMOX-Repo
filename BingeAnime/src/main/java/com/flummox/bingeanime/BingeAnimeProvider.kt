@@ -85,12 +85,17 @@ class BingeAnimeProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        BLog.section("search: $query")
-        val entries = try { AniListApi.searchAnime(query) } catch (e: Exception) {
-            BLog.e("search failed: ${e.message}"); emptyList()
-        }
-        BLog.d("search '$query' → ${entries.size}")
-        return entries.mapNotNull { it.toSearchResponse() }
+    BLog.section("search: $query")
+    val entries = try { AniListApi.searchAnime(query) } catch (e: Exception) {
+        BLog.e("search failed: ${e.message}"); emptyList()
+    }
+    // Sort chronologically: TV/ONA first (S1 → S1P2 → S2 ...), then
+    // Movie, OVA, Special, Short. Groups entries from the same
+    // franchise together even when AniList returns them in random
+    // SEARCH_MATCH order.
+    val sorted = AniListApi.sortChronological(entries)
+    BLog.d("search '$query' → ${sorted.size}")
+    return sorted.mapNotNull { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -159,12 +164,15 @@ class BingeAnimeProvider : MainAPI() {
     }
 
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
-        val displayName = title.english ?: title.romaji ?: title.native ?: return null
-        val tvType = if (format == "MOVIE") TvType.Movie else TvType.Anime
-        return newMovieSearchResponse(displayName, "/anilist:$id", tvType) {
-            this.posterUrl = coverImage
-            this.year = seasonYear
-        }
+    val raw = title.english ?: title.romaji ?: title.native ?: return null
+    // Drop "Cour N" branding per design — Cour 1 disappears,
+    // Cour N≥2 becomes "Part N".
+    val displayName = AniListApi.stripCourBranding(raw)
+    val tvType = if (format == "MOVIE") TvType.Movie else TvType.Anime
+    return newMovieSearchResponse(displayName, "/anilist:$id", tvType) {
+        this.posterUrl = coverImage
+        this.year = seasonYear
+    }
     }
 }
 
