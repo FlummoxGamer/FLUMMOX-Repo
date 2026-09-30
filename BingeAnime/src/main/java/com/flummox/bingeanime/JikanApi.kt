@@ -32,7 +32,10 @@ object JikanApi {
         "Historical" to 13
     )
 
-    private fun headers(): Map<String, String> = mapOf("Accept" to "application/json")
+    private fun headers(): Map<String, String> = mapOf(
+        "Accept" to "application/json",
+        "User-Agent" to "BingeAnime/1.0 (CloudStream)"
+    )
 
     // ── search ──
     suspend fun search(query: String, limit: Int = 20): List<AniListApi.Entry> {
@@ -47,15 +50,20 @@ object JikanApi {
                 BLog.e("Jikan search 429 for '$query'")
                 return emptyList()
             }
-            val root = JSONObject(res.text)
-            BCCache.put(ck, root.toString())
-            parseList(root)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("Jikan search failed: ${e.message}")
-            emptyList()
+        val root = JSONObject(res.text)
+        val dataArr = root.optJSONArray("data")
+        if (dataArr == null || dataArr.length() == 0) {
+            BLog.e("Jikan search empty — body: ${root.toString().take(400)}")
+            return emptyList()
         }
+        BCCache.put(ck, root.toString())
+        parseList(root)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("Jikan search failed: ${e.message}")
+        emptyList()
+    }
     }
 
     // ── top anime (home-row fallback) ──
