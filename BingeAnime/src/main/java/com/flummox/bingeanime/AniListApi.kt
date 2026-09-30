@@ -306,10 +306,6 @@ o.optJSONObject("relations")?.optJSONArray("edges")?.let { edges ->
 
     // ── display helpers ──
     private val RX_COUR_N = Regex("""\bcour\s+(\d+)\b""", RegexOption.IGNORE_CASE)
-    private val RX_PART_N = Regex("""\bpart\s+(\d+)\b""", RegexOption.IGNORE_CASE)
-    private val RX_SEASON_N = Regex("""\bseason\s+(\d+)\b""", RegexOption.IGNORE_CASE)
-    private val RX_ROMAN = Regex("""\b(II|III|IV|V|VI|VII|VIII|IX|X)\b""", RegexOption.IGNORE_CASE)
-
     // Strip "Cour N" branding from display titles.
     //   "X Cour 1" → "X"
     //   "X Cour 2" → "X Part 2"
