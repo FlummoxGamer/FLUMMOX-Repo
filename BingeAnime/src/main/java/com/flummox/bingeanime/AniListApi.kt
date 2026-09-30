@@ -345,7 +345,78 @@ object AniListApi {
         )
     }
 
-    // ── parse ──
+    // ── batched catalog fetch ──
+data class CatalogSpec(
+    val key: String,
+    val sort: String,
+    val genre: String? = null,
+    val tag: String? = null,
+    val format: String? = null,
+    val country: String? = null,
+    val status: String? = null,
+    val year: Int? = null
+)
+
+// Fetch every home row in ONE GraphQL request via aliases.
+// AniList rate limit is 30/min; 19 sequential requests in <10s trip
+// it and 429 every subsequent request including search. Batching
+// drops home-page traffic to 1 request — the whole batch is served
+// from a single 24h cache entry.
+suspend fun fetchCatalogBatch(specs: List<CatalogSpec>, perPage: Int = 30): Map<String, List<Entry>> {
+    val batchKey = "anilist:batch:" + specs.joinToString("|") { it.key }
+    BCCache.get(batchKey, CACHE_TTL)?.let { cached ->
+        return try {
+            val data = JSONObject(cached).optJSONObject("data") ?: return emptyMap()
+            specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
+        } catch (_: Exception) { emptyMap() }
+    }
+
+    val q = buildString {
+        append("query {\n")
+        for (spec in specs) {
+            val args = buildString {
+                append("type: ANIME, sort: [${spec.sort}]")
+                spec.genre?.let { append(", genre: \"$it\"") }
+                spec.tag?.let { append(", tag: \"$it\"") }
+                spec.format?.let { append(", format: $it") }
+                spec.country?.let { append(", countryOfOrigin: $it") }
+                spec.status?.let { append(", status: $it") }
+                spec.year?.let { append(", seasonYear: $it") }
+                append(", isAdult: false")
+            }
+            append("  ${spec.key}: Page(page: 1, perPage: $perPage) { media($args) { $MEDIA_FIELDS } }\n")
+        }
+        append("}")
+    }
+
+    return try {
+        val body = JSONObject().put("query", q).toString()
+        val res = app.post(ENDPOINT,
+            requestBody = body.toRequestBody(JSON_MEDIA),
+            headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+        val root = JSONObject(res.text)
+        val data = root.optJSONObject("data") ?: run {
+            BLog.e("AniList batch empty — ${root.toString().take(200)}")
+            return emptyMap()
+        }
+        BCCache.put(batchKey, root.toString())
+        specs.associate { it.key to parsePageArray(data.optJSONObject(it.key)) }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("AniList batch failed: ${e.message}")
+        emptyMap()
+    }
+}
+
+private fun parsePageArray(pageObj: JSONObject?): List<Entry> {
+    val arr = pageObj?.optJSONArray("media") ?: return emptyList()
+    val out = mutableListOf<Entry>()
+    for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
+    return out
+}
+
+        // ── parse ──
     private fun parseEntry(o: JSONObject?): Entry? {
         if (o == null) return null
         val id = o.optInt("id", 0).takeIf { it > 0 } ?: return null
