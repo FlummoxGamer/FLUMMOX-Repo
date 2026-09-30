@@ -7,9 +7,6 @@ object MalApi {
     private const val BASE = "https://api.myanimelist.net/v2"
     private const val CACHE_TTL = 24 * 60 * 60 * 1000L
 
-    // Shared field list for all requests. Requesting the same fields
-    // everywhere keeps the response shape predictable and lets us reuse
-    // one parser.
     private const val FIELDS = "id,title,main_picture,alternative_titles," +
         "start_date,synopsis,mean,num_episodes,media_type,status,genres,related_anime"
 
@@ -56,26 +53,6 @@ object MalApi {
             throw e
         } catch (e: Exception) {
             BLog.e("MAL ranking '$type' failed: ${e.message}")
-            emptyList()
-        }
-    }
-
-    // ── seasonal ──
-    suspend fun seasonal(year: Int, season: String, limit: Int = 30): List<AniListApi.Entry> {
-        val ck = "mal:season:$year:$season:$limit"
-        BCCache.get(ck, CACHE_TTL)?.let { cached ->
-            return try { parseList(JSONObject(cached)) } catch (_: Exception) { emptyList() }
-        }
-        val url = "$BASE/anime/season/$year/$season?limit=$limit&fields=$FIELDS&nsfw=false"
-        return try {
-            val res = app.get(url, headers = headers())
-            val root = JSONObject(res.text)
-            BCCache.put(ck, root.toString())
-            parseList(root)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("MAL seasonal failed: ${e.message}")
             emptyList()
         }
     }
@@ -164,8 +141,8 @@ object MalApi {
             }
         }
 
-        // If MAL returned no English title, promote the first synonym that
-        // looks English (contains latin letters). Otherwise null.
+        // If MAL returned no English title, promote the first latin-only
+        // synonym. Improves search display for shows with no official EN.
         val fallbackEnglish = if (english == null && synonyms != null) {
             synonyms.firstOrNull { it.matches(Regex("""^[A-Za-z0-9\s\-:!?'.,()&]+$""")) }
         } else english
@@ -188,12 +165,11 @@ object MalApi {
             status = o.optString("status").takeIf { it.isNotBlank() },
             genres = genres,
             country = null,
-            relations = relations
+            relations = relations,
+            source = "mal"
         )
     }
 
-    // MAL media_type values (verified 2025-12 from MAL forum spec):
-    // TV, OVA, Movie, Special, ONA, Music, CM, PV, TV Special
     private fun mapMediaType(raw: String?): String? = when (raw) {
         "TV", "tv" -> "TV"
         "TV Special", "tv_special" -> "SPECIAL"
@@ -207,10 +183,6 @@ object MalApi {
         else -> null
     }
 
-    // MAL relation_type values (verified 2025-12 from MAL forum spec):
-    // prequel, sequel, adaptation, side_story, spin_off, summary,
-    // alternative_version, alternative_setting, parent_story,
-    // character, other
     private fun mapRelationType(raw: String): String = when (raw.lowercase()) {
         "sequel" -> "SEQUEL"
         "prequel" -> "PREQUEL"
