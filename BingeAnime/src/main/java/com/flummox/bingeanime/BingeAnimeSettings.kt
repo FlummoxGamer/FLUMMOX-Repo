@@ -1,20 +1,27 @@
 package com.flummox.bingeanime
 
+import android.animation.ValueAnimator
 import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.CompoundButton
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
@@ -22,6 +29,8 @@ import android.widget.TextView
 import android.widget.Toast
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
+import kotlin.math.cos
+import kotlin.math.sin
 
 object BingeAnimeSettings {
 
@@ -34,6 +43,7 @@ object BingeAnimeSettings {
     private const val TEXT = 0xFFEDEDED.toInt()
     private const val SUBTEXT = 0xFF7A7A7A.toInt()
     private const val ACTIVE = 0xFF4ADE80.toInt()
+    private const val ACCENT = 0xFF38BDF8.toInt()
     private const val RED = 0xFFE57373.toInt()
     private const val LOG_TEXT = 0xFFB8B8B8.toInt()
 
@@ -93,24 +103,146 @@ object BingeAnimeSettings {
             .setInterpolator(DecelerateInterpolator()).start()
     }
 
-    private fun squareTile(ctx: Context, label: String, onClick: () -> Unit): LinearLayout =
-        LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
+    // ── vector glyph view ──
+    class GlyphView(context: Context, private val kind: String) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = ACCENT
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val cx = width / 2f
+            val cy = height / 2f
+            val r = minOf(width, height) / 3f
+            paint.strokeWidth = r * 0.18f
+
+            when (kind) {
+                "SETTINGS" -> {
+                    // gear: outer ring + 8 teeth + center dot
+                    canvas.drawCircle(cx, cy, r * 0.55f, paint)
+                    for (i in 0 until 8) {
+                        val a = i * (Math.PI / 4)
+                        val x1 = cx + cos(a).toFloat() * r * 0.62f
+                        val y1 = cy + sin(a).toFloat() * r * 0.62f
+                        val x2 = cx + cos(a).toFloat() * r * 0.95f
+                        val y2 = cy + sin(a).toFloat() * r * 0.95f
+                        canvas.drawLine(x1, y1, x2, y2, paint)
+                    }
+                    canvas.drawCircle(cx, cy, r * 0.16f, paint)
+                }
+                "SOURCES" -> {
+                    // satellite dish: triangle + signal arcs
+                    val path = Path()
+                    path.moveTo(cx, cy - r * 0.9f)
+                    path.lineTo(cx - r * 0.75f, cy + r * 0.3f)
+                    path.lineTo(cx + r * 0.75f, cy + r * 0.3f)
+                    path.close()
+                    canvas.drawPath(path, paint)
+                    canvas.drawLine(cx, cy + r * 0.3f, cx, cy + r * 0.9f, paint)
+                    canvas.drawLine(cx - r * 0.3f, cy + r * 0.9f, cx + r * 0.3f, cy + r * 0.9f, paint)
+                }
+                "LOGS" -> {
+                    // document: rounded rect + 3 text lines
+                    val rect = RectF(cx - r * 0.65f, cy - r * 0.85f, cx + r * 0.65f, cy + r * 0.85f)
+                    canvas.drawRoundRect(rect, r * 0.1f, r * 0.1f, paint)
+                    for (i in 0 until 3) {
+                        val y = cy - r * 0.4f + i * r * 0.42f
+                        canvas.drawLine(cx - r * 0.38f, y, cx + r * 0.38f, y, paint)
+                    }
+                }
+                "HOMEPAGE" -> {
+                    // house: roof + body + door
+                    val roof = Path()
+                    roof.moveTo(cx - r * 0.9f, cy - r * 0.1f)
+                    roof.lineTo(cx, cy - r * 0.9f)
+                    roof.lineTo(cx + r * 0.9f, cy - r * 0.1f)
+                    canvas.drawPath(roof, paint)
+                    canvas.drawRect(cx - r * 0.65f, cy - r * 0.1f, cx + r * 0.65f, cy + r * 0.85f, paint)
+                    canvas.drawRect(cx - r * 0.18f, cy + r * 0.25f, cx + r * 0.18f, cy + r * 0.85f, paint)
+                }
+            }
+        }
+    }
+
+    // ── tile factory with glyph + press animation ──
+    private fun tile(ctx: Context, label: String, onClick: () -> Unit): FrameLayout {
+        val tile = FrameLayout(ctx).apply {
             background = shape(SURFACE, 18, ctx, 1, BORDER_HI)
             isClickable = true
-            setPadding(dp(ctx, 16), dp(ctx, 16), dp(ctx, 16), dp(ctx, 14))
-            setOnClickListener { onClick() }
-            addView(View(ctx), LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-            ))
-            addView(TextView(ctx).apply {
-                text = label
-                setTextColor(TEXT)
-                textSize = 13f
-                letterSpacing = 0.18f
-                setTypeface(typeface, Typeface.BOLD)
-            })
+            clipChildren = false
         }
+
+        // glyph centered top
+        val glyph = GlyphView(ctx, label)
+        tile.addView(glyph, FrameLayout.LayoutParams(
+            dp(ctx, 46), dp(ctx, 46),
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        ).apply { topMargin = dp(ctx, 26) })
+
+        // label bottom
+        tile.addView(TextView(ctx).apply {
+            text = label
+            setTextColor(TEXT)
+            textSize = 13f
+            letterSpacing = 0.18f
+            setTypeface(typeface, Typeface.BOLD)
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.START
+            ).apply {
+                leftMargin = dp(ctx, 16)
+                bottomMargin = dp(ctx, 14)
+            }
+        })
+
+        // accent underline that grows on press
+        val underline = View(ctx).apply {
+            background = shape(ACCENT, 2, ctx)
+            alpha = 0f
+        }
+        tile.addView(underline, FrameLayout.LayoutParams(
+            dp(ctx, 24), dp(ctx, 2),
+            Gravity.BOTTOM or Gravity.START
+        ).apply {
+            leftMargin = dp(ctx, 16)
+            bottomMargin = dp(ctx, 10)
+        })
+
+        // press animation — scale + underline expand
+        tile.setOnTouchListener { v, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90).start()
+                    glyph.animate().scaleX(1.06f).scaleY(1.06f).setDuration(140).start()
+                    underline.animate().alpha(1f).setDuration(120).start()
+                    val lp = underline.layoutParams as FrameLayout.LayoutParams
+                    ValueAnimator.ofInt(dp(ctx, 24), dp(ctx, 60)).apply {
+                        duration = 180
+                        addUpdateListener {
+                            lp.width = it.animatedValue as Int
+                            underline.layoutParams = lp
+                        }
+                        start()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+                    glyph.animate().scaleX(1f).scaleY(1f).setDuration(180).start()
+                    underline.animate().alpha(0f).setDuration(180).start()
+                    if (e.action == MotionEvent.ACTION_UP) v.performClick()
+                    true
+                }
+                else -> false
+            }
+        }
+        tile.setOnClickListener { onClick() }
+        return tile
+    }
 
     // ── root ──
     fun show(ctx: Context) {
@@ -137,7 +269,7 @@ object BingeAnimeSettings {
         }
         root.addView(subtitle)
 
-        val rowH = dp(ctx, 140)
+        val rowH = dp(ctx, 160)
 
         val row1 = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -145,14 +277,10 @@ object BingeAnimeSettings {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(ctx, 14) }
         }
-        row1.addView(
-            squareTile(ctx, "SETTINGS") { openSettings(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) }
-        )
-        row1.addView(
-            squareTile(ctx, "SOURCES") { openSources(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f)
-        )
+        row1.addView(tile(ctx, "SETTINGS") { openSettings(ctx) },
+            LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) })
+        row1.addView(tile(ctx, "SOURCES") { openSources(ctx) },
+            LinearLayout.LayoutParams(0, rowH, 1f))
         root.addView(row1)
 
         val row2 = LinearLayout(ctx).apply {
@@ -161,14 +289,10 @@ object BingeAnimeSettings {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
-        row2.addView(
-            squareTile(ctx, "LOGS") { openLogs(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) }
-        )
-        row2.addView(
-            squareTile(ctx, "HOMEPAGE") { openHomepage(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f)
-        )
+        row2.addView(tile(ctx, "LOGS") { openLogs(ctx) },
+            LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) })
+        row2.addView(tile(ctx, "HOMEPAGE") { openHomepage(ctx) },
+            LinearLayout.LayoutParams(0, rowH, 1f))
         root.addView(row2)
 
         root.addView(View(ctx), LinearLayout.LayoutParams(
@@ -208,13 +332,11 @@ object BingeAnimeSettings {
             background = shape(BG, 0, ctx)
             setPadding(dp(ctx, 20), dp(ctx, 40), dp(ctx, 20), dp(ctx, 20))
         }
-
         val header = TextView(ctx).apply {
             text = title; setTextColor(TEXT); textSize = 26f
             setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.08f
         }
         root.addView(header)
-
         val sub = TextView(ctx).apply {
             text = "FLUMMOX REPO · BINGEANIME"
             setTextColor(SUBTEXT); textSize = 10f
@@ -229,7 +351,6 @@ object BingeAnimeSettings {
         root.addView(scroll, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
-
         body(bodyRoot, dlg)
 
         val close = Button(ctx).apply {
@@ -248,12 +369,10 @@ object BingeAnimeSettings {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         )
         dlg.window?.setBackgroundDrawable(shape(BG, 0, ctx))
-
         dlg.setOnShowListener { listOf(header, sub).forEachIndexed { i, v -> stagger(v, i) } }
         dlg.show()
     }
 
-    // ── settings tile ──
     private fun openSettings(ctx: Context) {
         subWindow(ctx, "SETTINGS") { body, _ ->
             body.addView(toggleRow(ctx, "Smart prefetch",
@@ -276,9 +395,8 @@ object BingeAnimeSettings {
         }
     }
 
-    // ── sources tile ──
     private fun openSources(ctx: Context) {
-        subWindow(ctx, "SOURCES") { body, dlg ->
+        subWindow(ctx, "SOURCES") { body, _ ->
             body.addView(toggleRow(ctx, "AniKoto",
                 "Sub / Dub / HSub streams", isSrcAniKoto()) { setKey(K_SRC_ANIKOTO, it) })
             body.addView(toggleRow(ctx, "AniZone",
@@ -288,11 +406,9 @@ object BingeAnimeSettings {
         }
     }
 
-    // ── homepage tile ──
     private fun openHomepage(ctx: Context) {
         subWindow(ctx, "HOMEPAGE") { body, _ ->
             val holder = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-
             fun render() {
                 holder.removeAllViews()
                 val order = getRowOrder()
@@ -344,25 +460,21 @@ object BingeAnimeSettings {
                 }
             }
             render()
-
             body.addView(actionRow(ctx, "Reset home",
                 "Restore default rows, order, toggles", "RESET") {
-                resetHomeToDefaults()
-                render()
+                resetHomeToDefaults(); render()
                 Toast.makeText(ctx, "Home reset", Toast.LENGTH_SHORT).show()
             })
             body.addView(holder)
         }
     }
 
-    // ── logs tile ──
     private fun openLogs(ctx: Context) {
         val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             background = shape(BG, 0, ctx)
         }
-
         val header = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -382,7 +494,6 @@ object BingeAnimeSettings {
         header.addView(countText)
         root.addView(header)
 
-        // verbose toggle
         val verboseRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -458,19 +569,14 @@ object BingeAnimeSettings {
             }
             setOnClickListener { onClick() }
         }
-
         fun refresh() {
             logView.text = BLog.allSanitized()
             countText.text = "${BLog.count()} LINES"
             logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
         }
-
         verboseSw.setOnCheckedChangeListener { _: CompoundButton, b: Boolean ->
-            BLog.setVerbose(b)
-            setKey(K_VERBOSE, b)
-            refresh()
+            BLog.setVerbose(b); setKey(K_VERBOSE, b); refresh()
         }
-
         btnRow.addView(lbtn("REFRESH", TEXT) { refresh() })
         btnRow.addView(lbtn("SAVE", TEXT) {
             try {
@@ -510,9 +616,7 @@ object BingeAnimeSettings {
             Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
         })
         btnRow.addView(lbtn("CLEAR", RED) {
-            BLog.clear()
-            logView.text = "(cleared)"
-            countText.text = "0 LINES"
+            BLog.clear(); logView.text = "(cleared)"; countText.text = "0 LINES"
         })
         root.addView(btnRow)
 
@@ -529,7 +633,6 @@ object BingeAnimeSettings {
             setOnClickListener { dlg.dismiss() }
         }
         root.addView(close)
-
         dlg.setContentView(root)
         dlg.window?.setLayout(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
@@ -542,7 +645,6 @@ object BingeAnimeSettings {
         dlg.show()
     }
 
-    // ── reusable rows ──
     private fun toggleRow(ctx: Context, label: String, desc: String?,
                           initial: Boolean, onChange: (Boolean) -> Unit): LinearLayout {
         val row = LinearLayout(ctx).apply {
@@ -617,8 +719,7 @@ object BingeAnimeSettings {
             setPadding(0, 0, 0, 0)
             setOnClickListener {
                 cur = (cur + delta).coerceIn(min, max)
-                valTxt.text = "$cur"
-                onChange(cur)
+                valTxt.text = "$cur"; onChange(cur)
             }
         }
         row.addView(mk("−", -1)); row.addView(valTxt); row.addView(mk("+", 1))
@@ -667,7 +768,7 @@ object BingeAnimeSettings {
     private fun arrowBtn(ctx: Context, sym: String, enabled: Boolean,
                          onClick: () -> Unit): TextView = TextView(ctx).apply {
         text = sym; textSize = 14f
-        setTextColor(if (enabled) ACTIVE else 0xFF3A4555.toInt())
+        setTextColor(if (enabled) ACCENT else 0xFF3A4555.toInt())
         background = shape(SURFACE_2, 8, ctx)
         gravity = Gravity.CENTER
         val s = dp(ctx, 30)
