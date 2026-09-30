@@ -12,11 +12,12 @@ object AniListApi {
     private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     private const val CACHE_TTL = 24 * 60 * 60 * 1000L
 
-    // In-flight dedup. All 19 home rows ask for the same batch at the
-    // same moment on cold start. Only the first caller fires the HTTP
-    // request; the other 18 await the same CompletableDeferred. Prevents
-    // a burst of 19 GraphQL calls in under a second (which trips the
-    // rate limiter and 429s the whole batch).
+    // Cooldown after a 429. Prevents retry storms that keep the ban
+    // alive. 5 minutes is enough for AniList's per-minute limiter to
+    // reset; if they escalate to a longer IP ban, nothing we do in
+    // code fixes it and the user has to wait out the ban.
+    @Volatile private var blockedUntil: Long = 0L
+
     private val inFlightBatch =
         ConcurrentHashMap<String, CompletableDeferred<Map<String, List<Entry>>>>()
 
@@ -81,9 +82,6 @@ object AniListApi {
         }
     """.trimIndent()
 
-    // GraphQL aliases must match [A-Za-z_][A-Za-z0-9_]*. Row labels
-    // have spaces ("Top Anime Series"), so sanitize to use as alias.
-    // Same sanitized string is used to read the response back.
     private fun safeAlias(key: String): String =
         key.replace(Regex("[^A-Za-z0-9_]"), "_")
 
@@ -99,6 +97,12 @@ object AniListApi {
     )
 
     suspend fun fetchCatalogBatch(specs: List<CatalogSpec>, perPage: Int = 30): Map<String, List<Entry>> {
+        // Cooldown guard — if we've been 429'd recently, don't bother.
+        if (System.currentTimeMillis() < blockedUntil) {
+            BLog.d("AniList batch skipped (cooling down ${(blockedUntil - System.currentTimeMillis()) / 1000}s)")
+            return emptyMap()
+        }
+
         val batchKey = "anilist:batch:" + specs.joinToString("|") { it.key }
 
         BCCache.get(batchKey, CACHE_TTL)?.let { cached ->
@@ -108,18 +112,10 @@ object AniListApi {
             } catch (_: Exception) { emptyMap() }
         }
 
-        // In-flight dedup — if another caller is already fetching this
-        // batch, wait for their result instead of firing a second request.
-        inFlightBatch[batchKey]?.let {
-            BLog.d("AniList batch join in-flight: ${specs.size} rows")
-            return it.await()
-        }
+        inFlightBatch[batchKey]?.let { return it.await() }
         val deferred = CompletableDeferred<Map<String, List<Entry>>>()
         val prior = inFlightBatch.putIfAbsent(batchKey, deferred)
-        if (prior != null) {
-            BLog.d("AniList batch join race: ${specs.size} rows")
-            return prior.await()
-        }
+        if (prior != null) return prior.await()
 
         return try {
             val q = buildString {
@@ -145,10 +141,25 @@ object AniListApi {
             val res = app.post(ENDPOINT,
                 requestBody = body.toRequestBody(JSON_MEDIA),
                 headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+
+            if (res.code == 429) {
+                blockedUntil = System.currentTimeMillis() + 5 * 60 * 1000L
+                BLog.e("AniList 429 — cooling down 5 min")
+                deferred.complete(emptyMap())
+                return emptyMap()
+            }
+
             val root = JSONObject(res.text)
             val data = root.optJSONObject("data")
             if (data == null) {
-                BLog.e("AniList batch empty — ${root.toString().take(300)}")
+                val errs = root.optJSONArray("errors")
+                val status = errs?.optJSONObject(0)?.optInt("status", 0) ?: 0
+                if (status == 429) {
+                    blockedUntil = System.currentTimeMillis() + 5 * 60 * 1000L
+                    BLog.e("AniList 429 (in body) — cooling down 5 min")
+                } else {
+                    BLog.e("AniList batch empty — ${root.toString().take(300)}")
+                }
                 deferred.complete(emptyMap())
                 emptyMap()
             } else {
@@ -182,16 +193,17 @@ object AniListApi {
 
     private fun parseList(root: JSONObject): List<Entry> {
         val pageObj = root.optJSONObject("data")?.optJSONObject("Page")
-        val arr = pageObj?.optJSONArray("media") ?: run {
-            BLog.e("AniList parse empty — response: ${root.toString().take(400)}")
-            return emptyList()
-        }
+        val arr = pageObj?.optJSONArray("media") ?: return emptyList()
         val out = mutableListOf<Entry>()
         for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
         return out
     }
 
     suspend fun searchAnime(query: String, year: Int? = null): List<Entry> {
+        if (System.currentTimeMillis() < blockedUntil) {
+            BLog.d("AniList search skipped (cooling down)")
+            return emptyList()
+        }
         val ck = "anilist:s:${query.lowercase()}:${year ?: 0}"
         BCCache.get(ck, CACHE_TTL)?.let { cached ->
             return try { parseList(JSONObject(cached)) } catch (_: Exception) { emptyList() }
@@ -225,6 +237,11 @@ object AniListApi {
             val res = app.post(ENDPOINT,
                 requestBody = body.toRequestBody(JSON_MEDIA),
                 headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+            if (res.code == 429) {
+                blockedUntil = System.currentTimeMillis() + 5 * 60 * 1000L
+                BLog.e("AniList search 429 — cooling down 5 min")
+                return emptyList()
+            }
             val root = JSONObject(res.text)
             BCCache.put(ck, root.toString())
             parseList(root)
@@ -390,6 +407,14 @@ object AniListApi {
                 { it.startDate ?: "9999-99-99" }
             )
         )
+    }
+
+    // Dedupe key for merging MAL + AniList results.
+    fun mergeKey(e: Entry): String {
+        val t = titleOf(e).lowercase()
+            .replace(Regex("""[^a-z0-9 ]"""), " ")
+            .replace(Regex("""\s+"""), " ").trim()
+        return "$t|${e.format ?: ""}"
     }
 
     private fun parseEntry(o: JSONObject?): Entry? {
