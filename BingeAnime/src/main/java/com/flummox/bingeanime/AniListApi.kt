@@ -146,7 +146,7 @@ data class Relation(
     query (${'$'}search: String, ${'$'}year: Int) {
       Page(perPage: 20) {
         media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH, seasonYear: ${'$'}year, isAdult: false) {
-          $MEDIA_FIELDS_WITH_RELATIONS
+          $MEDIA_FIELDS
         }
       }
     }
@@ -154,7 +154,7 @@ data class Relation(
     query (${'$'}search: String) {
       Page(perPage: 20) {
         media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH, isAdult: false) {
-          $MEDIA_FIELDS_WITH_RELATIONS
+          $MEDIA_FIELDS
         }
       }
     }
