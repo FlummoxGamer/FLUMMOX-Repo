@@ -3,7 +3,6 @@ package com.flummox.bingeanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
 
 private const val ROW_SEP = "|"
 
@@ -43,7 +42,7 @@ class BingeAnimeProvider : MainAPI() {
         *ROWS.map { (data, label) -> data to label }.toTypedArray()
     )
 
-    // ── home: AniList batch primary, MAL fallback ──
+    // ── home: AniList batch primary, Jikan fallback ──
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val rowName = request.name
         BLog.section("home: $rowName")
@@ -75,100 +74,68 @@ class BingeAnimeProvider : MainAPI() {
 
         var entries = batch[rowName] ?: emptyList()
         if (entries.isEmpty()) {
-            BLog.d("home row '$rowName' empty from AniList — trying MAL")
-            entries = malFallbackForRow(rowName, request.data)
+            BLog.d("home row '$rowName' empty from AniList — trying Jikan")
+            entries = homeFallbackForRow(rowName, request.data)
         }
         BLog.d("row '$rowName' → ${entries.size}")
         val items = entries.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(rowName, items, hasNext = items.size >= 30)
     }
 
+    // Jikan fallback when AniList batch empty (429, cooldown, network).
+    //   Donghua  → empty (no API except AniList exposes country filter)
+    //   Genre/tag → Jikan genre filter
+    //   Format/score rows → Jikan top anime
+    private suspend fun homeFallbackForRow(rowName: String, data: String): List<AniListApi.Entry> {
+        val parts = data.split(ROW_SEP)
+        val sort = parts.getOrNull(0) ?: ""
+        val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+        val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+        val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+        val country = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
 
-    // Fallback chain when AniList is in cooldown:
-//   1. Genre/tag rows → Jikan (unofficial MAL API with genre filter)
-//   2. Country rows (Donghua) → empty (no API can replicate
-//      AniList's countryOfOrigin filter)
-//   3. Format/score rows → MAL official ranking
-private suspend fun malFallbackForRow(rowName: String, data: String): List<AniListApi.Entry> {
-    val parts = data.split(ROW_SEP)
-    val sort = parts.getOrNull(0) ?: ""
-    val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
-    val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
-    val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
-    val country = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+        if (country != null) return emptyList()
 
-    // Donghua — no API has this filter, stay empty
-    if (country != null) return emptyList()
-
-    // Genre / tag rows → Jikan
-    if (genre != null || tag != null) {
-        val jikan = JikanApi.genreTop(rowName, limit = 30)
-        if (jikan.isNotEmpty()) {
-            BLog.d("row '$rowName' filled by Jikan (${jikan.size})")
+        if (genre != null || tag != null) {
+            val jikan = JikanApi.genreTop(rowName, limit = 30)
+            if (jikan.isNotEmpty()) BLog.d("row '$rowName' filled by Jikan (${jikan.size})")
             return jikan
         }
-        return emptyList()
+
+        return when {
+            format == "TV" && sort == "SCORE_DESC" -> JikanApi.topAnime(type = "tv")
+            format == "MOVIE" && sort == "SCORE_DESC" -> JikanApi.topAnime(type = "movie")
+            sort == "TRENDING_DESC" || sort == "POPULARITY_DESC" -> JikanApi.topAnime(filter = "bypopularity")
+            else -> JikanApi.topAnime()
+        }
     }
 
-    // Format/score rows → MAL ranking
-    return when {
-        format == "TV" && sort == "SCORE_DESC" -> MalApi.ranking("tv")
-        format == "MOVIE" && sort == "SCORE_DESC" -> MalApi.ranking("movie")
-        sort == "TRENDING_DESC" -> MalApi.ranking("bypopularity")
-        sort == "POPULARITY_DESC" -> MalApi.ranking("bypopularity")
-        else -> MalApi.ranking("all")
+    // ── search: Jikan primary, AniList fallback ──
+    // Sequential, not parallel. One request in the common case. AniList
+    // only fires when Jikan returns nothing (network error, zero hits).
+    override suspend fun search(query: String): List<SearchResponse>? {
+        BLog.section("search: $query")
+
+        val jikan = try { JikanApi.search(query) } catch (e: CancellationException) { throw e
+        } catch (e: Exception) {
+            BLog.e("Jikan search threw: ${e.message}"); emptyList()
+        }
+
+        if (jikan.isNotEmpty()) {
+            BLog.d("search '$query' → Jikan=${jikan.size}")
+            val sorted = AniListApi.sortChronological(jikan, query)
+            return sorted.mapNotNull { it.toSearchResponse() }
+        }
+
+        BLog.d("Jikan empty for '$query' — falling back to AniList")
+        val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
+        } catch (e: Exception) {
+            BLog.e("AniList search threw: ${e.message}"); emptyList()
+        }
+        val sorted = AniListApi.sortChronological(ani, query)
+        BLog.d("search '$query' → AniList=${sorted.size}")
+        return sorted.mapNotNull { it.toSearchResponse() }
     }
-}
-
-    // ── search: MAL + AniList in parallel, merged ──
-override suspend fun search(query: String): List<SearchResponse>? {
-    BLog.section("search: $query")
-
-    val baseTitle = query.substringBefore(':').trim()
-
-    // MAL — query original + base title (if different). MAL's search
-    // matches on title substring, so "Mushoku Tensei: Jobless
-    // Reincarnation" misses the S2/S3 entries titled "Mushoku Tensei
-    // II: ...". Base-title fallback catches them.
-    val malDeferred = kotlinx.coroutines.coroutineScope {
-        val a = async { try { MalApi.search(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) { emptyList() } }
-        val b = if (baseTitle.isNotBlank() && baseTitle.length >= 4 && baseTitle != query) {
-            async { try { MalApi.search(baseTitle, limit = 30) } catch (e: CancellationException) { throw e
-            } catch (e: Exception) { emptyList() } }
-        } else null
-        val merged = mutableListOf<AniListApi.Entry>()
-        val seenMalIds = mutableSetOf<Int>()
-        for (e in a.await()) if (seenMalIds.add(e.id)) merged.add(e)
-        b?.await()?.let { for (e in it) if (seenMalIds.add(e.id)) merged.add(e) }
-        merged
-    }
-
-    val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
-    } catch (e: Exception) {
-        BLog.e("AniList search threw: ${e.message}"); emptyList()
-    }
-
-    BLog.d("search '$query' → MAL=${malDeferred.size} AniList=${ani.size}")
-
-    // Merge: AniList entries win on collision (richer data), MAL
-    // entries that AniList didn't cover are kept. Dedupe by
-    // mergeKey (normalized title + format).
-    val seen = mutableSetOf<String>()
-    val merged = mutableListOf<AniListApi.Entry>()
-    for (e in ani) {
-        val k = AniListApi.mergeKey(e)
-        if (k.isNotBlank() && seen.add(k)) merged.add(e)
-    }
-    for (e in malDeferred) {
-        val k = AniListApi.mergeKey(e)
-        if (k.isNotBlank() && seen.add(k)) merged.add(e)
-    }
-
-    val sorted = AniListApi.sortChronological(merged, query)
-    BLog.d("search '$query' → merged=${sorted.size}")
-    return sorted.mapNotNull { it.toSearchResponse() }
-}
 
     // ── load ──
     override suspend fun load(url: String): LoadResponse? {
