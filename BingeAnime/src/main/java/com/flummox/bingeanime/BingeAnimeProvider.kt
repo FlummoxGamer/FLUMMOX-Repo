@@ -40,6 +40,12 @@ internal val ROWS: List<Pair<String, String>> = listOf(
 
 class BingeAnimeProvider : MainAPI() {
 
+    // CloudStream built-in: fire home rows sequentially with a 500ms gap.
+    // Prevents 19 parallel requests from tripping AniList's 30/min limit.
+    // Verified against cloudstream MainAPI.kt source + FilmpertuttiProvider.
+    override var sequentialMainPage = true
+    override var sequentialMainPageDelay: Long = 500
+
     override var mainUrl = "https://graphql.anilist.co"
     override var name = "BingeAnime"
     override val hasMainPage = true
