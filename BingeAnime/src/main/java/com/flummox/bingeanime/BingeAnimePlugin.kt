@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class BingeAnimePlugin : Plugin() {
     override fun load(context: Context) {
         BLog.init(context)
+        BLog.setVerbose(BingeAnimeSettings.isVerbose())
         BLog.d("BingeAnime boot v${BuildConfig.PLUGIN_VERSION}")
         registerMainAPI(BingeAnimeProvider())
         this.openSettings = { ctx ->
