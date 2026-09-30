@@ -409,12 +409,16 @@ object AniListApi {
         )
     }
 
-    // Dedupe key for merging MAL + AniList results.
+    // Dedupe key. MAL ID is stable across every source — AniList
+    // exposes it as `idMal`, Jikan/MAL entries are MAL IDs by
+    // definition. Title-based fallback only used for AniList entries
+    // with no MAL counterpart (rare, obscure shorts/ONAs).
     fun mergeKey(e: Entry): String {
+        if (e.idMal != null && e.idMal > 0) return "mal:${e.idMal}"
         val t = titleOf(e).lowercase()
             .replace(Regex("""[^a-z0-9 ]"""), " ")
             .replace(Regex("""\s+"""), " ").trim()
-        return "$t|${e.format ?: ""}"
+        return "title:$t|${e.format ?: ""}"
     }
 
     private fun parseEntry(o: JSONObject?): Entry? {
