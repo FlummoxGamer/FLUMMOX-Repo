@@ -5,6 +5,7 @@ import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
@@ -86,6 +87,19 @@ object BingeAnimeSettings {
 
     // ── helpers ──
     private fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
+
+// Themed switch — overrides Material purple default.
+// Thumb: white when on, gray when off. Track: dark gray / near-black.
+private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
+    thumbTintList = ColorStateList(
+        arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+        intArrayOf(TEXT, SUBTEXT)
+    )
+    trackTintList = ColorStateList(
+        arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+        intArrayOf(0xFF3A3A3A.toInt(), 0xFF1A1A1A.toInt())
+    )
+}
 
     private fun shape(color: Int, radiusDp: Int, ctx: Context,
                       strokeDp: Int = 0, strokeColor: Int = 0): GradientDrawable =
@@ -456,7 +470,7 @@ object BingeAnimeSettings {
                             leftMargin = dp(ctx, 10); rightMargin = dp(ctx, 6)
                         }
                     })
-                    val sw = Switch(ctx)
+                    val sw = themedSwitch(ctx)
                     sw.isChecked = isRowEnabled(name)
                     sw.setOnCheckedChangeListener { _: CompoundButton, v: Boolean ->
                         setKey(K_ROW_PREFIX + name, v)
@@ -536,7 +550,7 @@ object BingeAnimeSettings {
             setPadding(0, dp(ctx, 2), 0, 0)
         })
         verboseRow.addView(vCol)
-        val verboseSw = Switch(ctx).apply { isChecked = BLog.isVerbose() }
+        val verboseSw = themedSwitch(ctx).apply { isChecked = BLog.isVerbose() }
         verboseRow.addView(verboseSw)
         root.addView(verboseRow)
 
@@ -690,7 +704,7 @@ object BingeAnimeSettings {
             })
         }
         row.addView(col)
-        val sw = Switch(ctx); sw.isChecked = initial
+        val sw = themedSwitch(ctx); sw.isChecked = initial
         sw.setOnCheckedChangeListener { _: CompoundButton, v: Boolean -> onChange(v) }
         row.addView(sw)
         return row
@@ -726,7 +740,7 @@ object BingeAnimeSettings {
         row.addView(col)
         var cur = initial
         val valTxt = TextView(ctx).apply {
-            text = "$cur"; setTextColor(ACTIVE); textSize = 18f
+            text = "$cur"; setTextColor(TEXT); textSize = 18f
             setPadding(dp(ctx, 10), 0, dp(ctx, 10), 0)
             setTypeface(typeface, Typeface.BOLD)
         }
@@ -773,7 +787,7 @@ object BingeAnimeSettings {
         row.addView(col)
         row.addView(Button(ctx).apply {
             text = btnText; textSize = 12f
-            setTextColor(ACTIVE)
+            setTextColor(TEXT)
             background = shape(SURFACE_2, 16, ctx, 1, BORDER)
             isAllCaps = false; setTypeface(typeface, Typeface.BOLD)
             setPadding(dp(ctx, 14), dp(ctx, 8), dp(ctx, 14), dp(ctx, 8))
@@ -786,7 +800,7 @@ object BingeAnimeSettings {
     private fun arrowBtn(ctx: Context, sym: String, enabled: Boolean,
                          onClick: () -> Unit): TextView = TextView(ctx).apply {
         text = sym; textSize = 14f
-        setTextColor(if (enabled) ACCENT else 0xFF3A4555.toInt())
+        setTextColor(if (enabled) TEXT else 0xFF3A4555.toInt())
         background = shape(SURFACE_2, 8, ctx)
         gravity = Gravity.CENTER
         val s = dp(ctx, 30)
