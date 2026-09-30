@@ -397,75 +397,71 @@ private fun relevanceRank(e: Entry, query: String): Int {
 //       beating "Attack on Titan" for query "aot")
 //   3. format priority within franchise (TV → ONA → Movie → OVA → Special)
 //   4. seasonYear, then startDate (chronological within franchise)
-// Walk the SEQUEL chain from `rootId` using the relations embedded
-// in each entry's own payload. Stops on cycle or after 20 hops.
-// Returns entry IDs in chronological broadcast order.
-private fun walkSequelChain(rootId: Int, byId: Map<Int, Entry>): List<Int> {
-    val chain = mutableListOf<Int>()
-    val visited = mutableSetOf<Int>()
-    var current: Int? = rootId
-    var guard = 0
-    while (current != null && guard++ < 20) {
-        if (!visited.add(current)) break
-        chain.add(current)
-        val e = byId[current] ?: break
-        val seq = e.relations.firstOrNull { it.type == "SEQUEL" }?.entryId ?: break
-        current = seq
-    }
-    return chain
+private fun titleOf(e: Entry): String =
+    e.title.english ?: e.title.romaji ?: e.title.native ?: ""
+
+// Entries whose titles contain any of these are treated as
+// side content, regardless of format. Keeps spinoffs from
+// interleaving with main-series seasons.
+private val SPINOFF_MARKERS = listOf(
+    "junior high", "spin-off", "spinoff", "picture drama",
+    "recap", "compilation", "no regrets", "vigilantes",
+    "before the fall", "manner movie", "ova special"
+)
+
+private fun isSpinoff(e: Entry): Boolean {
+    val t = titleOf(e).lowercase()
+    return SPINOFF_MARKERS.any { t.contains(it) }
 }
 
-// Sort order:
+// TV → ONA → Movie → OVA → Special → Short → unknown.
+// Spinoffs forced to 100 so they sort after every format tier.
+private fun effectiveFormatPriority(e: Entry): Int {
+    if (isSpinoff(e)) return 100
+    return formatPriority(e.format)
+}
+
+// Season number from title. Season N → N. Roman II..X → 2..10.
+// "Final Season" → 99 (last). No marker → 1.
+private fun seasonOrdinal(e: Entry): Int {
+    val t = titleOf(e).lowercase()
+    Regex("""\bseason\s+(\d+)\b""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
+    val romans = listOf("ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x")
+    for ((i, r) in romans.withIndex()) {
+        if (Regex("""\b$r\b""").containsMatchIn(t)) return i + 2
+    }
+    if (t.contains("final season")) return 99
+    return 1
+}
+
+// Part number from title. "Part N" or "Cour N" → N. Else 1.
+private fun partOrdinal(e: Entry): Int {
+    val t = titleOf(e).lowercase()
+    Regex("""\bpart\s+(\d+)\b""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
+    Regex("""\bcour\s+(\d+)\b""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
+    return 1
+}
+
+// Sort:
 //   1. relevanceRank vs query
 //   2. base-key first-occurrence index (respects SEARCH_MATCH order)
-//   3. chain tier — 0 if entry is on its franchise's SEQUEL chain,
-//      1 if not (spinoff / side story / non-sequel movie)
-//   4. within tier 0: chain position; within tier 1: format → year
-//   5. year → date (fallback)
-//
-// "Mushoku Tensei III Part 2" is in the chain → grouped with S1..S3P2.
-// "Eris the Goblin Slayer" (OVA) is not on the chain → tier 1, after.
-// "Attack on Titan: Junior High" → tier 1, after all AoT main seasons.
-// "MHA: Vigilantes" → tier 1, after MHA main seasons incl. FINAL.
+//   3. format priority (TV → ONA → Movie → OVA → Special → spinoff)
+//   4. season number  (S1 < S2 < ... < Final)
+//   5. part number    (S3P1 < S3P2)
+//   6. year, then date (tie-break)
 fun sortChronological(entries: List<Entry>, query: String): List<Entry> {
-    // 1. base-key first-occurrence index
     val baseIndex = mutableMapOf<String, Int>()
     for ((i, e) in entries.withIndex()) {
-        val k = baseTitleKey(e.title.english ?: e.title.romaji ?: e.title.native ?: "")
+        val k = baseTitleKey(titleOf(e))
         if (k.isNotBlank() && k !in baseIndex) baseIndex[k] = i
     }
-
-    // 2. index by ID for chain walking
-    val byId = entries.associateBy { it.id }
-
-    // 3. per base-key group: find root, walk SEQUEL chain
-    val chainIndex = mutableMapOf<Int, Int>()
-    val chainTier = mutableMapOf<Int, Int>()
-    val groups = entries.groupBy {
-        baseTitleKey(it.title.english ?: it.title.romaji ?: it.title.native ?: "")
-    }
-    for ((_, group) in groups) {
-        val root = group.minWithOrNull(
-            compareBy<Entry>({ it.seasonYear ?: 9999 }, { it.startDate ?: "9999-99-99" })
-        ) ?: continue
-        val chain = walkSequelChain(root.id, byId)
-        for ((idx, id) in chain.withIndex()) {
-            chainIndex[id] = idx
-            chainTier[id] = 0
-        }
-    }
-
-    // 4. sort
     return entries.sortedWith(
         compareBy(
             { relevanceRank(it, query) },
-            { baseIndex[baseTitleKey(it.title.english ?: it.title.romaji ?: it.title.native ?: "")] ?: 9999 },
-            { chainTier[it.id] ?: 1 },
-            {
-                val tier = chainTier[it.id] ?: 1
-                if (tier == 0) chainIndex[it.id] ?: 9999
-                else formatPriority(it.format) * 100000 + (it.seasonYear ?: 9999)
-            },
+            { baseIndex[baseTitleKey(titleOf(it))] ?: 9999 },
+            { effectiveFormatPriority(it) },
+            { seasonOrdinal(it) },
+            { partOrdinal(it) },
             { it.seasonYear ?: 9999 },
             { it.startDate ?: "9999-99-99" }
         )
