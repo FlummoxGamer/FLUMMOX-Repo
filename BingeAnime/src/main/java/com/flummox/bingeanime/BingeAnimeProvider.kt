@@ -6,27 +6,17 @@ import kotlinx.coroutines.CancellationException
 
 private const val ROW_SEP = "|"
 
-class BingeAnimeProvider : MainAPI() {
-
-    override var mainUrl = "https://graphql.anilist.co"
-    override var name = "BingeAnime"
-    override val hasMainPage = true
-    override var lang = "en"
-    override val hasQuickSearch = true
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
-
 // ── home rows ──
 // data format: "sort|genre|tag|format|country|status|year"
-// "year" = 0 → no filter, 1 → current year (dynamic), N → N years back
+// "year" = 0 → no filter, 1 → current year, N → N years back
 //
 // Rows overlap was happening because POPULARITY_DESC + genre returns
 // the same mainstream top-30 for every genre (FMA:B is both Action
 // and Adventure, etc). Fixed by filtering genre rows to CURRENT
 // YEAR — recent-popular Action is genuinely distinct from
-// recent-popular Romance. Genre rows therefore re-order every
-// January when the current year ticks over, keeping them fresh.
-private val ROWS: List<Pair<String, String>> = listOf(
+// recent-popular Romance. Genre rows re-order every January when
+// the current year ticks over.
+internal val ROWS: List<Pair<String, String>> = listOf(
     // Dynamic — global, no year filter
     "TRENDING_DESC||||||0"                    to "Trending",
     "SCORE_DESC|||TV|||0"                     to "Top Anime Series",
@@ -50,7 +40,16 @@ private val ROWS: List<Pair<String, String>> = listOf(
     "POPULARITY_DESC||Historical|||1"         to "Historical"
 )
 
-    
+class BingeAnimeProvider : MainAPI() {
+
+    override var mainUrl = "https://graphql.anilist.co"
+    override var name = "BingeAnime"
+    override val hasMainPage = true
+    override var lang = "en"
+    override val hasQuickSearch = true
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
+
 
     override val mainPage get() = mainPageOf(
         *ROWS.map { (data, label) -> data to label }.toTypedArray()
