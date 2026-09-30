@@ -143,23 +143,22 @@ data class Relation(
         }
 
         val q = if (year != null) """
-            query (${'$'}search: String, ${'$'}year: Int) {
-              Page(perPage: 20) {
-                media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH, seasonYear: ${'$'}year, isAdult: false) {
-                  $MEDIA_FIELDS
-                }
-              }
-            }
-        """.trimIndent() else """
-            query (${'$'}search: String) {
-              Page(perPage: 20) {
-                media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH, isAdult: false) {
-                  $MEDIA_FIELDS
-                }
-              }
-            }
-        """.trimIndent()
-
+    query (${'$'}search: String, ${'$'}year: Int) {
+      Page(perPage: 20) {
+        media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH, seasonYear: ${'$'}year, isAdult: false) {
+          $MEDIA_FIELDS_WITH_RELATIONS
+        }
+      }
+    }
+""".trimIndent() else """
+    query (${'$'}search: String) {
+      Page(perPage: 20) {
+        media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH, isAdult: false) {
+          $MEDIA_FIELDS_WITH_RELATIONS
+        }
+      }
+    }
+""".trimIndent()
         val vars = JSONObject().apply {
             put("search", query)
             if (year != null) put("year", year)
@@ -398,17 +397,75 @@ private fun relevanceRank(e: Entry, query: String): Int {
 //       beating "Attack on Titan" for query "aot")
 //   3. format priority within franchise (TV → ONA → Movie → OVA → Special)
 //   4. seasonYear, then startDate (chronological within franchise)
+// Walk the SEQUEL chain from `rootId` using the relations embedded
+// in each entry's own payload. Stops on cycle or after 20 hops.
+// Returns entry IDs in chronological broadcast order.
+private fun walkSequelChain(rootId: Int, byId: Map<Int, Entry>): List<Int> {
+    val chain = mutableListOf<Int>()
+    val visited = mutableSetOf<Int>()
+    var current: Int? = rootId
+    var guard = 0
+    while (current != null && guard++ < 20) {
+        if (!visited.add(current)) break
+        chain.add(current)
+        val e = byId[current] ?: break
+        val seq = e.relations.firstOrNull { it.type == "SEQUEL" }?.entryId ?: break
+        current = seq
+    }
+    return chain
+}
+
+// Sort order:
+//   1. relevanceRank vs query
+//   2. base-key first-occurrence index (respects SEARCH_MATCH order)
+//   3. chain tier — 0 if entry is on its franchise's SEQUEL chain,
+//      1 if not (spinoff / side story / non-sequel movie)
+//   4. within tier 0: chain position; within tier 1: format → year
+//   5. year → date (fallback)
+//
+// "Mushoku Tensei III Part 2" is in the chain → grouped with S1..S3P2.
+// "Eris the Goblin Slayer" (OVA) is not on the chain → tier 1, after.
+// "Attack on Titan: Junior High" → tier 1, after all AoT main seasons.
+// "MHA: Vigilantes" → tier 1, after MHA main seasons incl. FINAL.
 fun sortChronological(entries: List<Entry>, query: String): List<Entry> {
+    // 1. base-key first-occurrence index
     val baseIndex = mutableMapOf<String, Int>()
     for ((i, e) in entries.withIndex()) {
         val k = baseTitleKey(e.title.english ?: e.title.romaji ?: e.title.native ?: "")
         if (k.isNotBlank() && k !in baseIndex) baseIndex[k] = i
     }
+
+    // 2. index by ID for chain walking
+    val byId = entries.associateBy { it.id }
+
+    // 3. per base-key group: find root, walk SEQUEL chain
+    val chainIndex = mutableMapOf<Int, Int>()
+    val chainTier = mutableMapOf<Int, Int>()
+    val groups = entries.groupBy {
+        baseTitleKey(it.title.english ?: it.title.romaji ?: it.title.native ?: "")
+    }
+    for ((_, group) in groups) {
+        val root = group.minWithOrNull(
+            compareBy<Entry>({ it.seasonYear ?: 9999 }, { it.startDate ?: "9999-99-99" })
+        ) ?: continue
+        val chain = walkSequelChain(root.id, byId)
+        for ((idx, id) in chain.withIndex()) {
+            chainIndex[id] = idx
+            chainTier[id] = 0
+        }
+    }
+
+    // 4. sort
     return entries.sortedWith(
         compareBy(
             { relevanceRank(it, query) },
             { baseIndex[baseTitleKey(it.title.english ?: it.title.romaji ?: it.title.native ?: "")] ?: 9999 },
-            { formatPriority(it.format) },
+            { chainTier[it.id] ?: 1 },
+            {
+                val tier = chainTier[it.id] ?: 1
+                if (tier == 0) chainIndex[it.id] ?: 9999
+                else formatPriority(it.format) * 100000 + (it.seasonYear ?: 9999)
+            },
             { it.seasonYear ?: 9999 },
             { it.startDate ?: "9999-99-99" }
         )
