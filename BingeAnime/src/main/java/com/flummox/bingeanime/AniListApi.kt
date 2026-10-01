@@ -401,18 +401,33 @@ object AniListApi {
     }
 
     fun sortChronological(entries: List<Entry>, query: String): List<Entry> {
-        return entries.sortedWith(
-            compareBy(
-                { relevanceRank(it, query) },
-                { effectiveFormatPriority(it) },
-                { seasonOrdinal(it) },
-                { partOrdinal(it) },
-                { it.seasonYear ?: 9999 },
-                { it.startDate ?: "9999-99-99" }
-            )
+    return entries.sortedWith(
+        compareBy(
+            { relevanceRank(it, query) },
+            { effectiveFormatPriority(it) },
+            { seasonOrdinal(it) },
+            { partOrdinal(it) },
+            { it.seasonYear ?: 9999 },
+            { it.startDate ?: "9999-99-99" }
         )
-    }
+    )
+}
 
+// Same as sortChronological but drops tier-3 (fuzzy/unrelated)
+// results when any tier 0-2 exists. AnimeSchedule's search is looser
+// than AniList's and returns noise like "Tsuihou Sareta Cheat..."
+// for query "attack on titan" — the fuzzy match shares one word.
+// If everything is tier 3, keep them (better than empty).
+fun filterAndSortChronological(entries: List<Entry>, query: String): List<Entry> {
+    val withRank = entries.map { it to relevanceRank(it, query) }
+    val hasStrong = withRank.any { it.second <= 2 }
+    val filtered = if (hasStrong) {
+        withRank.filter { it.second <= 2 }.map { it.first }
+    } else {
+        entries
+    }
+    return sortChronological(filtered, query)
+}
     // Dedupe key. MAL ID is stable across every source — AniList
     // exposes it as `idMal`, Jikan/MAL entries are MAL IDs by
     // definition. Title-based fallback only used for AniList entries
