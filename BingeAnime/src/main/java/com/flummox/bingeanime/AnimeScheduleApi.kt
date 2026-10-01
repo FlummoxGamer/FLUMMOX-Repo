@@ -90,7 +90,17 @@ object AnimeScheduleApi {
     private fun parseEntry(o: JSONObject?): AniListApi.Entry? {
     if (o == null) return null
     val route = o.optString("route").takeIf { it.isNotBlank() } ?: return null
-    val title = o.optString("title").takeIf { it.isNotBlank() } ?: return null
+    val titleFallback = o.optString("title").takeIf { it.isNotBlank() } ?: return null
+
+    // names carries locale variants. English drives relevance
+    // matching in sortChronological — without it, "attack on titan"
+    // never tier-0 matches "Shingeki no Kyojin" and everything
+    // sorts by year/date randomly.
+    val names = o.optJSONObject("names")
+    val english = names?.optString("en")?.takeIf { it.isNotBlank() && it != "null" }
+    val romajiFromNames = names?.optString("romaji")
+        ?.takeIf { it.isNotBlank() && it != "null" }
+    val primary = romajiFromNames ?: titleFallback
 
     val imgRoute = o.optString("imageVersionRoute").takeIf { it.isNotBlank() }
     val cover = imgRoute?.let { "$IMG_BASE$it" }
@@ -116,17 +126,21 @@ object AnimeScheduleApi {
     val episodes = listOfNotNull(subOverride, genericOverride, dubOverride).maxOrNull()
         ?: o.optInt("episodes", 0).takeIf { it > 0 }
 
-    val mediaTypes = o.optJSONArray("mediaTypes")
-    val typeName = mediaTypes?.optJSONObject(0)?.optString("name")?.takeIf { it.isNotBlank() }
-    val format = when (typeName?.lowercase()) {
-        "tv" -> "TV"
-        "movie" -> "MOVIE"
-        "ova" -> "OVA"
-        "ona" -> "ONA"
-        "special" -> "SPECIAL"
-        "music" -> "MUSIC"
-        "tv short" -> "TV_SHORT"
-        else -> null
+    // Defensive format mapping. AnimeSchedule sends variants like
+    // "TV Series", "TV Short" — match by substring.
+    val rawType = o.optJSONArray("mediaTypes")?.optJSONObject(0)?.optString("name")
+    val format = if (rawType == null) null else {
+        val l = rawType.lowercase()
+        when {
+            l.contains("tv short") -> "TV_SHORT"
+            l.contains("tv") -> "TV"
+            l.contains("movie") -> "MOVIE"
+            l.contains("ova") -> "OVA"
+            l.contains("ona") -> "ONA"
+            l.contains("special") -> "SPECIAL"
+            l.contains("music") -> "MUSIC"
+            else -> null
+        }
     }
 
     val statusRaw = o.optString("status").takeIf { it.isNotBlank() }
@@ -153,7 +167,7 @@ object AnimeScheduleApi {
     return AniListApi.Entry(
         id = route.hashCode(),
         idMal = null,
-        title = AniListApi.Title(romaji = title, english = null, native = null),
+        title = AniListApi.Title(romaji = primary, english = english, native = null),
         format = format,
         episodes = episodes,
         seasonYear = year,
