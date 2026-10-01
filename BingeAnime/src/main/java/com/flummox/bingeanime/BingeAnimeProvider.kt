@@ -65,7 +65,11 @@ class BingeAnimeProvider : MainAPI() {
 
         BLog.d("row '$rowName' → ${entries.size}")
         val items = entries.mapNotNull { it.toSearchResponse() }
-        return newHomePageResponse(rowName, items, hasNext = items.size >= 30)
+        // hasNext must be false — CloudStream calls getMainPage(page=2,3,...)
+        // when it's true, and we return the same 30 items each time, which
+        // produces the infinite-scroll dupe behavior seen in testing.
+        // Home rows are one-shot per refresh; pagination is not implemented.
+        return newHomePageResponse(rowName, items, hasNext = false)
     }
 
     // ── search: AniList only ──
