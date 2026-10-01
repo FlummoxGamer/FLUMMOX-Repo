@@ -116,7 +116,7 @@ class BingeAnimeProvider : MainAPI() {
         BLog.d("AniList empty — falling back to AnimeSchedule")
         val a = try { AnimeScheduleApi.search(query) } catch (e: CancellationException) { throw e
         } catch (e: Exception) { BLog.e("AnimeSchedule search threw: ${e.message}"); emptyList() }
-        AniListApi.filterAndSortChronological(a, query)
+        val sorted = AniListApi.filterAndSortChronological(a, query)
         BLog.d("search '$query' → AnimeSchedule=${sorted.size}")
         sorted.mapNotNull { it.toSearchResponse() }
     }
