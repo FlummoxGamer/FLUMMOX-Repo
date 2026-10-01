@@ -390,7 +390,13 @@ object AniListApi {
             if (Regex("""\b$r\b""").containsMatchIn(t)) return i + 2
         }
         if (t.contains("final season")) return 99
-        return 1
+        // Bare trailing number: "Shingeki no Kyojin 2" → season 2.
+        // Capped at 20 so episode counts in titles ("Detective Conan
+        // 1000") don't get mistaken for seasons.
+        Regex("""\s(\d{1,2})\s*$""").find(t)?.groupValues?.get(1)?.toIntOrNull()?.let {
+            if (it in 2..20) return it
+    }
+    return 1
     }
 
     private fun partOrdinal(e: Entry): Int {
