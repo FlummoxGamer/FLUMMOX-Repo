@@ -26,7 +26,26 @@ object AniMapperApi {
         "User-Agent" to "BingeAnime/1.0"
     )
 
-    suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
+    suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
+    val ck = "animapper:trending:$limit"
+    BCCache.get(ck, ROW_TTL)?.let { cached ->
+        return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+    }
+    val url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC&page=1&limit=$limit"
+    return try {
+        val res = app.get(url, headers = headers())
+        if (res.code !in 200..299) return emptyList()
+        val root = JSONObject(res.text)
+        BCCache.put(ck, root.toString())
+        parseResponse(root)
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e
+    } catch (e: Exception) {
+        BLog.e("animapper trending failed: ${e.message}")
+        emptyList()
+    }
+}
+
+suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
         val ck = "animapper:donghua:$limit"
         BCCache.get(ck, ROW_TTL)?.let { cached ->
             BLog.v("animapper donghua cache hit")
