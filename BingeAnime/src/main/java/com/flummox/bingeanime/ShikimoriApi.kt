@@ -77,25 +77,37 @@ object ShikimoriApi {
     //   "id:62"        -> use directly (Isekai exception)
     //   other          -> pass through (kind=, order= for dynamic rows)
     private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = linkedMapOf(
-        "Trending"          to Triple("order", "popularity", "popularity"),
-        "Top Anime Series"  to Triple("kind", "tv", "ranked"),
-        "Top Anime Movies"  to Triple("kind", "movie", "ranked"),
-        "Action"            to Triple("id", "name:Action", "ranked"),
-        "Adventure"         to Triple("id", "name:Adventure", "ranked"),
-        "Isekai"            to Triple("id", "id:62", "ranked"),
-        "Comedy"            to Triple("id", "name:Comedy", "ranked"),
-        "Drama"             to Triple("id", "name:Drama", "ranked"),
-        "Fantasy"           to Triple("id", "name:Fantasy", "ranked"),
-        "Romance"           to Triple("id", "name:Romance", "ranked"),
-        "Sci-Fi"            to Triple("id", "name:Sci-Fi", "ranked"),
-        "Slice of Life"     to Triple("id", "name:Slice of Life", "ranked"),
-        "Supernatural"      to Triple("id", "name:Supernatural", "ranked"),
-        "Mystery"           to Triple("id", "name:Mystery", "ranked"),
-        "Sports"            to Triple("id", "name:Sports", "ranked"),
-        "Mecha"             to Triple("id", "name:Mecha", "ranked"),
-        "School"            to Triple("id", "name:School", "ranked"),
-        "Historical"        to Triple("id", "name:Historical", "ranked")
-    )
+    // Dynamic rows — global ordering, no genre filter
+    "Trending"          to Triple("order", "popularity", "popularity"),
+    "Top Anime Series"  to Triple("kind", "tv", "ranked"),
+    "Top Anime Movies"  to Triple("kind", "movie", "ranked"),
+    // Demographics — audience-targeted, sit above genre rows
+    "Shounen"           to Triple("id", "name:Shounen", "ranked"),
+    "Shoujo"            to Triple("id", "name:Shoujo", "ranked"),
+    "Seinen"            to Triple("id", "name:Seinen", "ranked"),
+    "Josei"             to Triple("id", "name:Josei", "ranked"),
+    "Kids"              to Triple("id", "name:Kids", "ranked"),
+    "Ecchi"             to Triple("id", "name:Ecchi", "ranked"),
+    // Genre / theme rows
+    "Action"            to Triple("id", "name:Action", "ranked"),
+    "Adventure"         to Triple("id", "name:Adventure", "ranked"),
+    "Isekai"            to Triple("id", "id:62", "ranked"),
+    "Comedy"            to Triple("id", "name:Comedy", "ranked"),
+    "Drama"             to Triple("id", "name:Drama", "ranked"),
+    "Fantasy"           to Triple("id", "name:Fantasy", "ranked"),
+    "Romance"           to Triple("id", "name:Romance", "ranked"),
+    "Sci-Fi"            to Triple("id", "name:Sci-Fi", "ranked"),
+    "Slice of Life"     to Triple("id", "name:Slice of Life", "ranked"),
+    "Supernatural"      to Triple("id", "name:Supernatural", "ranked"),
+    "Mystery"           to Triple("id", "name:Mystery", "ranked"),
+    "Sports"            to Triple("id", "name:Sports", "ranked"),
+    "Mecha"             to Triple("id", "name:Mecha", "ranked"),
+    "School"            to Triple("id", "name:School", "ranked"),
+    "Historical"        to Triple("id", "name:Historical", "ranked"),
+    "Horror"            to Triple("id", "name:Horror", "ranked"),
+    "Psychological"     to Triple("id", "name:Psychological", "ranked"),
+    "Thriller"          to Triple("id", "name:Thriller", "ranked")
+)
 
     // Single-fetch genre map. First caller owns; others await same deferred.
     private suspend fun ensureGenreMap() {
