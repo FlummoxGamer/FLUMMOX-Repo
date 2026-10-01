@@ -8,13 +8,12 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class BingeAnimePlugin : Plugin() {
     override fun load(context: Context) {
         BLog.init(context)
-       // One-time wipe of stale genre cache (had wrong key format).
-       // Safe to remove after confirming the new key format loads.
-       // Wipe on every boot during this testing phase. Once genre map
-       // loads correctly, remove this block — it's a dev-only reset
-       // to pick up the new key format.
+       // One-time reset of stale row prefs + genre cache from earlier
+       // builds. Safe to remove next version — everything defaults
+       // correctly now.
        context.getSharedPreferences("bingeanime_shikimori", android.content.Context.MODE_PRIVATE)
-         .edit().remove("genre_map").remove("genre_map_ts").apply()
+           .edit().remove("genre_map").remove("genre_map_ts").apply()
+       java.io.File(context.filesDir, "shikimori_rows").deleteRecursively()
        ShikimoriApi.init(context)
         BLog.setVerbose(BingeAnimeSettings.isVerbose())
         BLog.d("BingeAnime boot v${BuildConfig.PLUGIN_VERSION}")
