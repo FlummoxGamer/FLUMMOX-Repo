@@ -1,53 +1,52 @@
 package com.flummox.bingeanime
 
 import com.lagradost.cloudstream3.app
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 // Shikimori — Russian MAL mirror with a documented, stable JSON API.
 // Rate limit: 5 req/s, 90 req/min per IP (no daily cap).
-// Requires a custom User-Agent — browser UAs are banned on sight.
+// Custom User-Agent required — browser UAs are banned on sight.
 object ShikimoriApi {
     private const val BASE = "https://shikimori.one/api"
     private const val IMG_BASE = "https://shikimori.one"
     private const val UA = "BingeAnime/1.0"
-
-    // 6h cache. Rows shift daily; refresh 4x/day is plenty.
     private const val ROW_TTL = 6 * 60 * 60 * 1000L
+    private const val PREFETCH_TTL = 6 * 60 * 60 * 1000L
 
-    // Prefetch concurrency. Shikimori's burst limit is 5/sec.
-    // 5 permits with ~500ms per request keeps us under it.
-    private val prefetchSemaphore = Semaphore(5)
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var lastPrefetchMs = 0L
     @Volatile private var prefetchRunning = false
-    private const val PREFETCH_TTL = 6 * 60 * 60 * 1000L
+
+    // In-flight dedup — home page and prefetch both call fetchForRow.
+    // Without this, both fire their own HTTP request for the same row.
+    private val inFlightRows =
+        ConcurrentHashMap<String, CompletableDeferred<List<AniListApi.Entry>>>()
 
     private fun headers(): Map<String, String> = mapOf(
         "Accept" to "application/json",
         "User-Agent" to UA
     )
 
-    // Row name → Shikimori query params. Donghua handled by AniMapperApi.
-    // Genre IDs are MAL-standard: Action=1, Adventure=2, Comedy=4,
-    // Drama=8, Fantasy=10, Historical=13, Mecha=18, Music=19,
-    // Romance=22, Sci-Fi=24, Sports=30, Slice of Life=36,
-    // Supernatural=37, Mystery=7, School=23, Isekai=62.
-    private val ROW_PARAMS: Map<String, Map<String, String>> = mapOf(
+    // Row name → Shikimori query params.
+    // MAL splits: `genre` for genres, `theme` for themes.
+    //   Isekai, School, Historical are THEMES in MAL.
+    //   Action, Adventure, Comedy, Drama, Fantasy, Romance, Sci-Fi,
+    //   Slice of Life, Supernatural, Mystery, Sports, Mecha are GENRES.
+    private val ROW_PARAMS: LinkedHashMap<String, Map<String, String>> = linkedMapOf(
         "Trending"          to mapOf("order" to "popularity"),
         "Top Anime Series"  to mapOf("kind" to "tv", "order" to "ranked"),
         "Top Anime Movies"  to mapOf("kind" to "movie", "order" to "ranked"),
         "Action"            to mapOf("genre" to "1", "order" to "popularity"),
         "Adventure"         to mapOf("genre" to "2", "order" to "popularity"),
-        "Isekai"            to mapOf("genre" to "62", "order" to "popularity"),
+        "Isekai"            to mapOf("theme" to "62", "order" to "popularity"),
         "Comedy"            to mapOf("genre" to "4", "order" to "popularity"),
         "Drama"             to mapOf("genre" to "8", "order" to "popularity"),
         "Fantasy"           to mapOf("genre" to "10", "order" to "popularity"),
@@ -58,8 +57,8 @@ object ShikimoriApi {
         "Mystery"           to mapOf("genre" to "7", "order" to "popularity"),
         "Sports"            to mapOf("genre" to "30", "order" to "popularity"),
         "Mecha"             to mapOf("genre" to "18", "order" to "popularity"),
-        "School"            to mapOf("genre" to "23", "order" to "popularity"),
-        "Historical"        to mapOf("genre" to "13", "order" to "popularity")
+        "School"            to mapOf("theme" to "23", "order" to "popularity"),
+        "Historical"        to mapOf("theme" to "13", "order" to "popularity")
     )
 
     // ── public entry ──
@@ -76,8 +75,31 @@ object ShikimoriApi {
                 emptyList()
             }
         }
-        BLog.v("shikimori '$rowName' cache miss — fetching")
-        return fetchAndCache(ck, rowName, params, limit)
+
+        // In-flight dedup — if prefetch or another caller is fetching
+        // the same row, wait for their result instead of firing a
+        // second request.
+        inFlightRows[ck]?.let {
+            BLog.v("shikimori '$rowName' joining in-flight")
+            return it.await()
+        }
+        val deferred = CompletableDeferred<List<AniListApi.Entry>>()
+        val prior = inFlightRows.putIfAbsent(ck, deferred)
+        if (prior != null) {
+            BLog.v("shikimori '$rowName' joining race")
+            return prior.await()
+        }
+
+        return try {
+            val result = fetchAndCache(ck, rowName, params, limit)
+            deferred.complete(result)
+            result
+        } catch (e: Throwable) {
+            deferred.completeExceptionally(e)
+            throw e
+        } finally {
+            inFlightRows.remove(ck)
+        }
     }
 
     private suspend fun fetchAndCache(
@@ -137,9 +159,9 @@ object ShikimoriApi {
     }
 
     // ── prefetch warm-up ──
-    // Fires on plugin load and on first home render. Fetches every row
-    // once, spaced under Shikimori's burst limit, so subsequent home
-    // renders read from BCCache with zero latency.
+    // Sequential in ROWS order with 150ms gap. Top rows land first
+    // (visible on first render), lower rows fill in within ~5 seconds.
+    // 1 request per ~350ms = ~3/sec peak, well under 5/sec limit.
     fun warmPrefetch() {
         val now = System.currentTimeMillis()
         if (now - lastPrefetchMs < PREFETCH_TTL) {
@@ -152,25 +174,27 @@ object ShikimoriApi {
         }
         prefetchRunning = true
         prefetchScope.launch {
-            try {
-                val start = System.currentTimeMillis()
-                BLog.d("shikimori prefetch start (${ROW_PARAMS.size} rows, concurrency=5)")
-                ROW_PARAMS.keys.map { rowName ->
-                    async {
-                        prefetchSemaphore.withPermit {
-                            fetchForRow(rowName, 30)
-                        }
-                    }
-                }.awaitAll()
-                lastPrefetchMs = System.currentTimeMillis()
-                BLog.d("shikimori prefetch done in ${System.currentTimeMillis() - start}ms")
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                BLog.v("shikimori prefetch cancelled")
-            } catch (e: Exception) {
-                BLog.e("shikimori prefetch failed: ${e.message}")
-            } finally {
-                prefetchRunning = false
+            val start = System.currentTimeMillis()
+            BLog.d("shikimori prefetch start (${ROW_PARAMS.size} rows, sequential, 150ms gap)")
+            var ok = 0
+            var fail = 0
+            for (rowName in ROW_PARAMS.keys) {
+                try {
+                    val result = fetchForRow(rowName, 30)
+                    if (result.isNotEmpty()) ok++ else fail++
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    BLog.v("shikimori prefetch cancelled")
+                    prefetchRunning = false
+                    return@launch
+                } catch (e: Exception) {
+                    BLog.e("prefetch '$rowName' failed: ${e.message}")
+                    fail++
+                }
+                delay(150)
             }
+            lastPrefetchMs = System.currentTimeMillis()
+            BLog.d("shikimori prefetch done in ${System.currentTimeMillis() - start}ms ($ok ok, $fail failed)")
+            prefetchRunning = false
         }
     }
 
@@ -215,7 +239,6 @@ object ShikimoriApi {
 
         val episodes = o.optInt("episodes", 0).takeIf { it > 0 }
 
-        // Shikimori "status": released / ongoing / anons
         val statusRaw = o.optString("status").takeIf { it.isNotBlank() }
         val status = when (statusRaw) {
             "released" -> "FINISHED"
@@ -224,8 +247,6 @@ object ShikimoriApi {
             else -> statusRaw
         }
 
-        // Detail endpoint returns genres array with id/name/kind/russian.
-        // List endpoint doesn't. So we may get empty genres on list rows.
         val genres = o.optJSONArray("genres")?.let { arr ->
             (0 until arr.length()).mapNotNull { i ->
                 arr.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }
