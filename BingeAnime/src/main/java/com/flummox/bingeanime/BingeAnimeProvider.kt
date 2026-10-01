@@ -6,11 +6,20 @@ import kotlinx.coroutines.CancellationException
 
 private const val ROW_SEP = "|"
 
+// The data-column is unused by the current provider (each row's actual
+// query lives in ShikimoriApi.ROW_QUERY). The label is what matters —
+// it must match a ROW_QUERY key exactly, otherwise the row is skipped.
 internal val ROWS: List<Pair<String, String>> = listOf(
     "TRENDING_DESC||||||0"              to "Trending",
     "SCORE_DESC|||TV|||0"               to "Top Anime Series",
     "SCORE_DESC|||MOVIE|||0"            to "Top Anime Movies",
     "POPULARITY_DESC||||CN||0"          to "Donghua",
+    "POPULARITY_DESC|||||1"             to "Shounen",
+    "POPULARITY_DESC|||||1"             to "Shoujo",
+    "POPULARITY_DESC|||||1"             to "Seinen",
+    "POPULARITY_DESC|||||1"             to "Josei",
+    "POPULARITY_DESC|||||1"             to "Kids",
+    "POPULARITY_DESC|||||1"             to "Ecchi",
     "POPULARITY_DESC|Action|||||1"      to "Action",
     "POPULARITY_DESC|Adventure|||||1"   to "Adventure",
     "POPULARITY_DESC||Isekai||||1"      to "Isekai",
@@ -25,7 +34,10 @@ internal val ROWS: List<Pair<String, String>> = listOf(
     "POPULARITY_DESC|Sports|||||1"      to "Sports",
     "POPULARITY_DESC|Mecha|||||1"       to "Mecha",
     "POPULARITY_DESC||School||||1"      to "School",
-    "POPULARITY_DESC||Historical||||1"  to "Historical"
+    "POPULARITY_DESC||Historical||||1"  to "Historical",
+    "POPULARITY_DESC|Horror|||||1"      to "Horror",
+    "POPULARITY_DESC|Psychological|||||1" to "Psychological",
+    "POPULARITY_DESC|Thriller|||||1"    to "Thriller"
 )
 
 class BingeAnimeProvider : MainAPI() {
