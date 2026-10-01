@@ -131,6 +131,15 @@ suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
             ?: images?.optString("coverLg")?.takeIf { it.isNotBlank() && it != "null" }
             ?: images?.optString("coverMd")?.takeIf { it.isNotBlank() && it != "null" }
 
+        // AniMapper may expose a landscape banner on the metadata
+        // endpoint. Check several possible field names; fall back to
+        // coverXl if none present.
+        val banner = o.optString("bannerImage").takeIf { it.isNotBlank() && it != "null" }
+            ?: o.optString("bannerUrl").takeIf { it.isNotBlank() && it != "null" }
+            ?: o.optString("banner").takeIf { it.isNotBlank() && it != "null" }
+            ?: images?.optString("bannerXl")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: images?.optString("banner")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: cover
         val format = o.optString("format").takeIf { it.isNotBlank() && it != "null" }
             ?: o.optString("type").takeIf { it.isNotBlank() && it != "null" }
 
@@ -168,6 +177,7 @@ suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
             startDate = null,
             description = description,
             coverImage = cover,
+            bannerUrl = banner,
             averageScore = avgScore,
             status = status,
             genres = genres,
