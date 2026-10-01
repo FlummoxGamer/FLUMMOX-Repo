@@ -14,5 +14,8 @@ class BingeAnimePlugin : Plugin() {
         this.openSettings = { ctx ->
             BingeAnimeSettings.show(ctx)
         }
+        // Kick off home-row prefetch in background. Cache will be warm
+        // by the time the user navigates to home.
+        ShikimoriApi.warmPrefetch()
     }
 }
