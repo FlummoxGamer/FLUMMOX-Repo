@@ -2,6 +2,7 @@ package com.flummox.bingeanime
 
 import android.content.Context
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.utils.NiceResponse
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -79,7 +80,7 @@ object ShikimoriApi {
 // Previous version released the lock before app.get() fired,
 // letting 5+ requests go out within the same second and trip
 // Shikimori's burst limiter.
-private suspend fun throttledGet(url: String): okhttp3.Response? {
+private suspend fun throttledGet(url: String): NiceResponse? {
     return rateMutex.withLock {
         val now = System.currentTimeMillis()
         val gap = now - lastRequestMs
