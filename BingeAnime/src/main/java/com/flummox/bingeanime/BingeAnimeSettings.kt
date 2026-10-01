@@ -449,10 +449,17 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
                 setKey(K_CONCURRENCY, it)
             })
             body.addView(actionRow(ctx, "Clear cache",
-                "Wipes AniList + scraper caches", "CLEAR") {
+                "Wipes in-memory + disk caches", "CLEAR") {
                 BCCache.clear()
+                // Wipe persisted Shikimori rows so next home load
+                // refetches from scratch. Otherwise the on-disk files
+                // would reload into memory on next boot and the clear
+                // would appear to do nothing.
+                try {
+                    java.io.File(ctx.filesDir, "shikimori_rows").deleteRecursively()
+                } catch (_: Exception) {}
                 Toast.makeText(ctx, "Cache cleared", Toast.LENGTH_SHORT).show()
-            })
+           })
         }
     }
 
