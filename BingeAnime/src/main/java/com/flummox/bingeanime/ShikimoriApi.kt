@@ -241,31 +241,37 @@ object ShikimoriApi {
     }
 
     fun warmPrefetch() {
-        val now = System.currentTimeMillis()
-        if (now - lastPrefetchMs < ROW_TTL) return
-        if (prefetchRunning) return
-        prefetchRunning = true
-        prefetchScope.launch {
-            try {
-                ensureGenreMap()
-                val priority = listOf(
-                    "Trending", "Top Anime Series", "Top Anime Movies",
-                    "Action", "Adventure", "Isekai"
-                )
-                val rest = ROW_QUERY.keys.filter { it !in priority }
-                for (row in priority) fetchForRow(row, 30)
-                for (row in rest) {
-                    fetchForRow(row, 30)
-                    delay(300)
-                }
-                lastPrefetchMs = System.currentTimeMillis()
-                BLog.d("shikimori prefetch done")
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                BLog.v("prefetch cancelled")
-            } finally {
-                prefetchRunning = false
+    val now = System.currentTimeMillis()
+    if (now - lastPrefetchMs < ROW_TTL) return
+    if (prefetchRunning) return
+    prefetchRunning = true
+    prefetchScope.launch {
+        try {
+            ensureGenreMap()
+            // Only fetch rows the user has enabled. Disabled rows
+            // cost 0 requests at cold start. Priority rows fetch
+            // first so the visible top of home is warm fastest.
+            val enabledRows = ROW_QUERY.keys.filter {
+                BingeAnimeSettings.isRowEnabled(it)
             }
+            val priority = listOf(
+                "Trending", "Top Anime Series", "Top Anime Movies"
+            ).filter { it in enabledRows }
+            val rest = enabledRows.filter { it !in priority }
+            BLog.d("shikimori prefetch: ${enabledRows.size} enabled rows")
+            for (row in priority) fetchForRow(row, 30)
+            for (row in rest) {
+                fetchForRow(row, 30)
+                delay(300)
+            }
+            lastPrefetchMs = System.currentTimeMillis()
+            BLog.d("shikimori prefetch done")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            BLog.v("prefetch cancelled")
+        } finally {
+            prefetchRunning = false
         }
+    }
     }
 
     private fun parseList(arr: JSONArray): List<AniListApi.Entry> {
