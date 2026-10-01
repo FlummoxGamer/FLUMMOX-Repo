@@ -11,9 +11,6 @@ class BingeAnimePlugin : Plugin() {
        // One-time reset of stale row prefs + genre cache from earlier
        // builds. Safe to remove next version — everything defaults
        // correctly now.
-       context.getSharedPreferences("bingeanime_shikimori", android.content.Context.MODE_PRIVATE)
-           .edit().remove("genre_map").remove("genre_map_ts").apply()
-       java.io.File(context.filesDir, "shikimori_rows").deleteRecursively()
        ShikimoriApi.init(context)
         BLog.setVerbose(BingeAnimeSettings.isVerbose())
         BLog.d("BingeAnime boot v${BuildConfig.PLUGIN_VERSION}")
