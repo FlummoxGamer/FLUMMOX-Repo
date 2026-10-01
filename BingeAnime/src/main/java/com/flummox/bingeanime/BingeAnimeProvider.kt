@@ -30,7 +30,7 @@ internal val ROWS: List<Pair<String, String>> = listOf(
 
 class BingeAnimeProvider : MainAPI() {
 
-    override var mainUrl = "https://graphql.anilist.co"
+    override var mainUrl = "https://shikimori.one"
     override var name = "BingeAnime"
     override val hasMainPage = true
     override var lang = "en"
@@ -42,92 +42,35 @@ class BingeAnimeProvider : MainAPI() {
         *ROWS.map { (data, label) -> data to label }.toTypedArray()
     )
 
-    // ── home: AniList batch primary, Jikan fallback ──
+    // ── home: Shikimori for 18 rows, AniMapper for Donghua ──
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val rowName = request.name
         BLog.section("home: $rowName")
 
-        val specs = ROWS.map { (data, label) ->
-            val parts = data.split(ROW_SEP)
-            val sort = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: "TRENDING_DESC"
-            val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
-            val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
-            val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
-            val country = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
-            val status = parts.getOrNull(5)?.takeIf { it.isNotBlank() }
-            val yearMarker = parts.getOrNull(6)?.toIntOrNull() ?: 0
-            val year = if (yearMarker <= 0) null
-                else java.util.Calendar.getInstance().get(java.util.Calendar.YEAR) - (yearMarker - 1)
-            AniListApi.CatalogSpec(
-                key = label, sort = sort, genre = genre, tag = tag,
-                format = format, country = country, status = status, year = year
-            )
-        }
+        // Fire background prefetch — no-op if already warm or running.
+        ShikimoriApi.warmPrefetch()
 
-        val batch = try {
-            AniListApi.fetchCatalogBatch(specs)
-        } catch (e: CancellationException) { throw e
+        val entries: List<AniListApi.Entry> = try {
+            if (rowName == "Donghua") {
+                AniMapperApi.donghua(30)
+            } else {
+                ShikimoriApi.fetchForRow(rowName, 30)
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            BLog.e("home batch failed: ${e.message}")
-            emptyMap()
+            BLog.e("row '$rowName' failed: ${e.message}")
+            emptyList()
         }
 
-        var entries = batch[rowName] ?: emptyList()
-        if (entries.isEmpty()) {
-            BLog.d("home row '$rowName' empty from AniList — trying Jikan")
-            entries = homeFallbackForRow(rowName, request.data)
-        }
         BLog.d("row '$rowName' → ${entries.size}")
         val items = entries.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(rowName, items, hasNext = items.size >= 30)
     }
 
-    // Jikan fallback when AniList batch empty (429, cooldown, network).
-    //   Donghua  → empty (no API except AniList exposes country filter)
-    //   Genre/tag → Jikan genre filter
-    //   Format/score rows → Jikan top anime
-    private suspend fun homeFallbackForRow(rowName: String, data: String): List<AniListApi.Entry> {
-        val parts = data.split(ROW_SEP)
-        val sort = parts.getOrNull(0) ?: ""
-        val genre = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
-        val tag = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
-        val format = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
-        val country = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
-
-        if (country != null) return emptyList()
-
-        if (genre != null || tag != null) {
-            val jikan = JikanApi.genreTop(rowName, limit = 30)
-            if (jikan.isNotEmpty()) BLog.d("row '$rowName' filled by Jikan (${jikan.size})")
-            return jikan
-        }
-
-        return when {
-            format == "TV" && sort == "SCORE_DESC" -> JikanApi.topAnime(type = "tv")
-            format == "MOVIE" && sort == "SCORE_DESC" -> JikanApi.topAnime(type = "movie")
-            sort == "TRENDING_DESC" || sort == "POPULARITY_DESC" -> JikanApi.topAnime(filter = "bypopularity")
-            else -> JikanApi.topAnime()
-        }
-    }
-
-    // ── search: Jikan primary, AniList fallback ──
-    // Sequential, not parallel. One request in the common case. AniList
-    // only fires when Jikan returns nothing (network error, zero hits).
+    // ── search: AniList only ──
     override suspend fun search(query: String): List<SearchResponse>? {
         BLog.section("search: $query")
-
-        val jikan = try { JikanApi.search(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) {
-            BLog.e("Jikan search threw: ${e.message}"); emptyList()
-        }
-
-        if (jikan.isNotEmpty()) {
-            BLog.d("search '$query' → Jikan=${jikan.size}")
-            val sorted = AniListApi.sortChronological(jikan, query)
-            return sorted.mapNotNull { it.toSearchResponse() }
-        }
-
-        BLog.d("Jikan empty for '$query' — falling back to AniList")
         val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
         } catch (e: Exception) {
             BLog.e("AniList search threw: ${e.message}"); emptyList()
@@ -139,19 +82,31 @@ class BingeAnimeProvider : MainAPI() {
 
     // ── load ──
     override suspend fun load(url: String): LoadResponse? {
-        val malMatch = Regex("""mal:(\d+)""").find(url)
+        val shikiMatch = Regex("""shikimori:(\d+)""").find(url)
+        val animapperMatch = Regex("""animapper:(\d+)""").find(url)
         val aniMatch = Regex("""anilist:(\d+)""").find(url)
+        val malMatch = Regex("""mal:(\d+)""").find(url)
 
         val entry = when {
-            malMatch != null -> {
-                val id = malMatch.groupValues[1].toIntOrNull() ?: return null
-                BLog.section("load Jikan/MAL: $id")
-                JikanApi.detail(id)
+            shikiMatch != null -> {
+                val id = shikiMatch.groupValues[1].toIntOrNull() ?: return null
+                BLog.section("load shikimori: $id")
+                ShikimoriApi.detail(id)
+            }
+            animapperMatch != null -> {
+                val id = animapperMatch.groupValues[1].toIntOrNull() ?: return null
+                BLog.section("load animapper: $id")
+                AniMapperApi.detail(id)
             }
             aniMatch != null -> {
                 val id = aniMatch.groupValues[1].toIntOrNull() ?: return null
                 BLog.section("load AniList: $id")
                 AniListApi.getEntry(id)
+            }
+            malMatch != null -> {
+                val id = malMatch.groupValues[1].toIntOrNull() ?: return null
+                BLog.section("load MAL: $id")
+                JikanApi.detail(id)
             }
             else -> return null
         } ?: return null
@@ -164,9 +119,9 @@ class BingeAnimeProvider : MainAPI() {
         val score10 = entry.averageScore?.let { it / 10.0 }
 
         val statusTag = when (entry.status) {
-            "RELEASING", "currently_airing" -> "Ongoing"
-            "FINISHED", "finished_airing" -> "Completed"
-            "NOT_YET_RELEASED", "not_yet_aired" -> "Upcoming"
+            "RELEASING", "currently_airing", "ongoing" -> "Ongoing"
+            "FINISHED", "finished_airing", "released" -> "Completed"
+            "NOT_YET_RELEASED", "not_yet_aired", "anons" -> "Upcoming"
             "CANCELLED" -> "Cancelled"
             "HIATUS" -> "On Hiatus"
             else -> ""
