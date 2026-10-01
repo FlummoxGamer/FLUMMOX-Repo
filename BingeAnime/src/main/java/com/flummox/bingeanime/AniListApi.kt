@@ -36,6 +36,7 @@ object AniListApi {
         val startDate: String?,
         val description: String? = null,
         val coverImage: String? = null,
+        val bannerUrl: String? = null,
         val averageScore: Int? = null,
         val status: String? = null,
         val genres: List<String>? = null,
