@@ -36,13 +36,16 @@ object AniListApi {
         val startDate: String?,
         val description: String? = null,
         val coverImage: String? = null,
-        val bannerUrl: String? = null,
         val averageScore: Int? = null,
         val status: String? = null,
         val genres: List<String>? = null,
         val country: String? = null,
         val relations: List<Relation> = emptyList(),
-        val source: String = "anilist"
+        val source: String = "anilist",
+        // String route slug used by sources whose IDs aren't integers
+        // (AnimeSchedule uses "one-piece" style routes). Null for all
+        // numeric sources (AniList, MAL, Shikimori, AniMapper).
+        val sourceId: String? = null
     )
 
     data class Relation(
