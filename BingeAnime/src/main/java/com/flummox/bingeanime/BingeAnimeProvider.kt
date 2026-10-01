@@ -22,7 +22,6 @@ internal val ROWS: List<Pair<String, String>> = listOf(
     "POPULARITY_DESC|||||1"             to "Ecchi",
     "POPULARITY_DESC|Action|||||1"      to "Action",
     "POPULARITY_DESC|Adventure|||||1"   to "Adventure",
-    "POPULARITY_DESC||Isekai||||1"      to "Isekai",
     "POPULARITY_DESC|Comedy|||||1"      to "Comedy",
     "POPULARITY_DESC|Drama|||||1"       to "Drama",
     "POPULARITY_DESC|Fantasy|||||1"     to "Fantasy",
