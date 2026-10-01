@@ -57,20 +57,22 @@ object AniListApi {
     )
 
     private val MEDIA_FIELDS = """
-        id
-        idMal
-        title { romaji english native }
-        format
-        episodes
-        seasonYear
-        startDate { year month day }
-        description
-        coverImage { extraLarge large }
-        averageScore
-        status
-        genres
-        countryOfOrigin
-    """.trimIndent()
+       id
+       idMal
+       title { romaji english native }
+       format
+       episodes
+       nextAiringEpisode { episode }
+       seasonYear
+       startDate { year month day }
+       description
+       coverImage { extraLarge large }
+       bannerImage
+       averageScore
+       status
+       genres
+       countryOfOrigin
+   """.trimIndent()
 
     private val MEDIA_FIELDS_WITH_RELATIONS = """
         $MEDIA_FIELDS
@@ -482,16 +484,26 @@ object AniListApi {
             (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf { it.isNotBlank() } }
         }?.takeIf { it.isNotEmpty() }
 
+        // Ongoing series (One Piece, Conan) have episodes=null in
+        // AniList. nextAiringEpisode.episode is the NEXT airing number,
+        // so current count is that minus 1.
+        val nextAir = o.optJSONObject("nextAiringEpisode")?.optInt("episode", 0)?.takeIf { it > 0 }
+        val episodeCount = o.optInt("episodes", 0).takeIf { it > 0 }
+            ?: nextAir?.minus(1)?.takeIf { it > 0 }
+
+        val banner = o.optString("bannerImage").takeIf { it.isNotBlank() && it != "null" }
+
         return Entry(
             id = id,
             idMal = o.optInt("idMal", 0).takeIf { it > 0 },
             title = title,
             format = o.optString("format").takeIf { it.isNotBlank() && it != "null" },
-            episodes = o.optInt("episodes", 0).takeIf { it > 0 },
+            episodes = episodeCount,
             seasonYear = o.optInt("seasonYear", 0).takeIf { it > 0 },
             startDate = startDate,
             description = o.optString("description").takeIf { it.isNotBlank() && it != "null" },
             coverImage = cover,
+            bannerUrl = banner,
             averageScore = o.optInt("averageScore", 0).takeIf { it > 0 },
             status = o.optString("status").takeIf { it.isNotBlank() && it != "null" },
             genres = genres,
