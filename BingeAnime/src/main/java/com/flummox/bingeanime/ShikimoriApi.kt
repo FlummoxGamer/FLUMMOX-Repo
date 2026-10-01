@@ -36,6 +36,54 @@ object ShikimoriApi {
         ConcurrentHashMap<String, CompletableDeferred<List<AniListApi.Entry>>>()
 
     private var genreMap: Map<String, Int>? = null
+
+// ── cross-row dedup ──
+// Titles appearing in 3+ genre rows are kept only in the top 2 by
+// ROW_QUERY order. Dynamic rows (Trending, Top Series, Top Movies)
+// are never counted — they're global popularity lists, not genre
+// views. Donghua uses AniMapper, outside this scope.
+@Volatile private var exclusions: Map<String, Set<String>> = emptyMap()
+
+private val DYNAMIC_ROWS = setOf(
+    "Trending", "Top Anime Series", "Top Anime Movies"
+)
+
+private fun dedupeKey(title: String): String =
+    title.lowercase().replace(Regex("[^a-z0-9]"), "").take(48)
+
+fun isExcluded(rowName: String, title: String): Boolean {
+    val set = exclusions[rowName] ?: return false
+    return dedupeKey(title) in set
+}
+
+fun rebuildExclusions() {
+    val rowOrder = ROW_QUERY.keys.toList()
+    val titleRows = mutableMapOf<String, MutableList<String>>()
+    for (rowName in rowOrder) {
+        if (rowName in DYNAMIC_ROWS) continue
+        val cached = BCCache.get("shikimori:row:$rowName:30", ROW_TTL) ?: continue
+        try {
+            val arr = JSONArray(cached)
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+                val key = dedupeKey(name)
+                if (key.isBlank()) continue
+                titleRows.getOrPut(key) { mutableListOf() }.add(rowName)
+            }
+        } catch (_: Exception) {}
+    }
+    val excluded = mutableMapOf<String, MutableSet<String>>()
+    for ((key, rows) in titleRows) {
+        if (rows.size < 3) continue
+        val sortedRows = rows.sortedBy { rowOrder.indexOf(it) }
+        for (r in sortedRows.drop(2)) {
+            excluded.getOrPut(r) { mutableSetOf() }.add(key)
+        }
+    }
+    exclusions = excluded
+    BLog.d("shikimori dedup: ${excluded.size} rows have exclusions")
+}
     private lateinit var cacheDir: java.io.File
     // Only ONE genre-map fetch fires even when 18 rows race.
     @Volatile private var genreMapDeferred: CompletableDeferred<Map<String, Int>?>? = null
