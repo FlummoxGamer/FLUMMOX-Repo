@@ -2,7 +2,7 @@ package com.flummox.bingeanime
 
 import android.content.Context
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.NiceResponse
+import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
