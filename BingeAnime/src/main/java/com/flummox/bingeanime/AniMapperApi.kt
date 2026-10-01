@@ -6,17 +6,13 @@ import org.json.JSONObject
 
 // AniMapper — aggregated anime metadata + streaming API. Free, no key.
 // Rate limit: 60 req/min per IP.
-// Response shape (verified from live data):
-//   {
-//     "id": 185727,
-//     "mediaType": "ANIME",
-//     "titles": {
-//       "ja-ro": "...", "en": "Spy x Sect", "main": "...",
-//       "user-preferred": "...", "alt-anilist-0": "..."
-//     },
-//     "images": { "coverXl": "...", "coverLg": "...", "coverMd": "..." }
-//   }
-// IDs are AniList IDs.
+//
+// Two response shapes:
+//   Search:  {results: [...]} or {data: [...]}
+//   Detail:  {success: true, result: {id, titles, images, totalUnits, ...}}
+//
+// IDs are AniList IDs. Detail responses often include images.bannerUrl
+// (landscape artwork) — the only landscape source in our stack.
 object AniMapperApi {
     private const val BASE = "https://api.animapper.net/api/v1"
     private const val ROW_TTL = 6 * 60 * 60 * 1000L
@@ -27,49 +23,41 @@ object AniMapperApi {
     )
 
     suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
-    val ck = "animapper:trending:$limit"
-    BCCache.get(ck, ROW_TTL)?.let { cached ->
-        return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+        val ck = "animapper:trending:$limit"
+        BCCache.get(ck, ROW_TTL)?.let { cached ->
+            return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+        }
+        // Recency filter: only current-year and last year, popular.
+        // Prevents all-time classics from dominating "Trending".
+        val year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        val url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC" +
+            "&startYear=${year - 1}&page=1&limit=$limit"
+        return try {
+            val res = app.get(url, headers = headers())
+            if (res.code !in 200..299) return emptyList()
+            val root = JSONObject(res.text)
+            BCCache.put(ck, root.toString())
+            parseResponse(root)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) {
+            BLog.e("animapper trending failed: ${e.message}")
+            emptyList()
+        }
     }
-    val url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC&page=1&limit=$limit"
-    return try {
-        val res = app.get(url, headers = headers())
-        if (res.code !in 200..299) return emptyList()
-        val root = JSONObject(res.text)
-        BCCache.put(ck, root.toString())
-        parseResponse(root)
-    } catch (e: kotlinx.coroutines.CancellationException) { throw e
-    } catch (e: Exception) {
-        BLog.e("animapper trending failed: ${e.message}")
-        emptyList()
-    }
-}
 
-suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
+    suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
         val ck = "animapper:donghua:$limit"
         BCCache.get(ck, ROW_TTL)?.let { cached ->
-            BLog.v("animapper donghua cache hit")
             return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
         }
         val url = "$BASE/search?countryOfOrigin=CN&sortBy=POPULARITY&sortOrder=DESC&page=1&limit=$limit"
         return try {
             val res = app.get(url, headers = headers())
-            BLog.v("animapper donghua HTTP ${res.code} len=${res.text.length}")
-            if (res.code == 429) {
-                BLog.e("animapper donghua 429")
-                return emptyList()
-            }
-            if (res.code !in 200..299) {
-                BLog.e("animapper donghua HTTP ${res.code}: ${res.text.take(300)}")
-                return emptyList()
-            }
+            if (res.code !in 200..299) return emptyList()
             val root = JSONObject(res.text)
             BCCache.put(ck, root.toString())
-            val parsed = parseResponse(root)
-            BLog.v("animapper donghua parsed ${parsed.size} entries")
-            parsed
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
+            parseResponse(root)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: Exception) {
             BLog.e("animapper donghua failed: ${e.message}")
             emptyList()
@@ -77,31 +65,24 @@ suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
     }
 
     suspend fun detail(id: Int): AniListApi.Entry? {
-    val ck = "animapper:detail:$id"
-    BCCache.get(ck, ROW_TTL)?.let { cached ->
-        return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
-    }
-    return try {
-        val res = app.get("$BASE/metadata?id=$id", headers = headers())
-        BLog.v("animapper detail $id HTTP ${res.code} len=${res.text.length}")
-        if (res.code !in 200..299) return null
-        val root = JSONObject(res.text)
-        val obj = root.optJSONObject("data") ?: root
-        // DIAGNOSTIC — dump full body when response is suspiciously
-        // small. Real detail responses are ~1.2KB-6KB depending on
-        // fields; anything under 2KB is likely an error stub or a
-        // different response shape. Remove after parser is fixed.
-        if (res.text.length < 2000) {
-            BLog.e("animapper detail $id FULL BODY: ${res.text}")
+        val ck = "animapper:detail:$id"
+        BCCache.get(ck, ROW_TTL)?.let { cached ->
+            return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
         }
-        BCCache.put(ck, obj.toString())
-        parseEntry(obj)
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        BLog.e("animapper detail $id failed: ${e.message}")
-        null
-    }
+        return try {
+            val res = app.get("$BASE/metadata?id=$id", headers = headers())
+            if (res.code !in 200..299) return null
+            val root = JSONObject(res.text)
+            // Detail wraps the object in {success, result}. Unwrap.
+            val obj = root.optJSONObject("result") ?: root.optJSONObject("data") ?: root
+            BCCache.put(ck, obj.toString())
+            parseEntry(obj)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("animapper detail $id failed: ${e.message}")
+            null
+        }
     }
 
     private fun parseResponse(root: JSONObject): List<AniListApi.Entry> {
@@ -109,21 +90,20 @@ suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
             ?: root.optJSONArray("data")
             ?: root.optJSONObject("data")?.optJSONArray("results")
             ?: root.optJSONObject("data")?.optJSONArray("media")
-        if (arr == null) {
-            BLog.e("animapper parse — no results array")
-            return emptyList()
-        }
+        if (arr == null) return emptyList()
         val out = mutableListOf<AniListApi.Entry>()
-        for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
+        for (i in 0 until arr.length()) {
+            // search entries use {id, titles, images} directly (no wrapper)
+            val o = arr.optJSONObject(i)?.optJSONObject("result") ?: arr.optJSONObject(i)
+            parseEntry(o)?.let { out.add(it) }
+        }
         return out
     }
 
     private fun parseEntry(o: JSONObject?): AniListApi.Entry? {
         if (o == null) return null
-
         val id = o.optInt("id", 0).takeIf { it > 0 } ?: return null
 
-        // titles object — prefer en, fall back to main / user-preferred / ja-ro.
         val titles = o.optJSONObject("titles")
         val romaji = titles?.optString("ja-ro")?.takeIf { it.isNotBlank() && it != "null" }
             ?: titles?.optString("main")?.takeIf { it.isNotBlank() && it != "null" }
@@ -132,36 +112,31 @@ suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
         val english = titles?.optString("en")?.takeIf { it.isNotBlank() && it != "null" }
         val native = titles?.optString("ja")?.takeIf { it.isNotBlank() && it != "null" }
 
-        // images object — coverXl > coverLg > coverMd
         val images = o.optJSONObject("images")
         val cover = images?.optString("coverXl")?.takeIf { it.isNotBlank() && it != "null" }
             ?: images?.optString("coverLg")?.takeIf { it.isNotBlank() && it != "null" }
             ?: images?.optString("coverMd")?.takeIf { it.isNotBlank() && it != "null" }
+        val banner = images?.optString("bannerUrl")?.takeIf { it.isNotBlank() && it != "null" }
 
-        // AniMapper may expose a landscape banner on the metadata
-        // endpoint. Check several possible field names; fall back to
-        // coverXl if none present.
-        val banner = o.optString("bannerImage").takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("bannerUrl").takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("banner").takeIf { it.isNotBlank() && it != "null" }
-            ?: images?.optString("bannerXl")?.takeIf { it.isNotBlank() && it != "null" }
-            ?: images?.optString("banner")?.takeIf { it.isNotBlank() && it != "null" }
-            ?: cover
         val format = o.optString("format").takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("type").takeIf { it.isNotBlank() && it != "null" }
-
-        val episodes = o.optInt("episodes", 0).takeIf { it > 0 }
-            ?: o.optInt("numEpisodes", 0).takeIf { it > 0 }
-
-        val year = o.optInt("seasonYear", 0).takeIf { it > 0 }
-            ?: o.optString("startDate").take(4).toIntOrNull()
-
-        val avgScore = o.optInt("averageScore", 0).takeIf { it > 0 }
-            ?: o.optDouble("score", 0.0).takeIf { it > 0 }?.let { (it * 10).toInt() }
-
         val status = o.optString("status").takeIf { it.isNotBlank() && it != "null" }
-        val description = o.optString("description").takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("synopsis").takeIf { it.isNotBlank() && it != "null" }
+
+        // Episode count from totalUnits (detail). Fall back to episodes
+        // (search). Movies have totalUnits = 1.
+        val totalUnits = o.optInt("totalUnits", 0).takeIf { it > 0 }
+        val episodes = totalUnits
+            ?: o.optInt("episodes", 0).takeIf { it > 0 }
+
+        val startDate = o.optString("startDate").takeIf { it.isNotBlank() && it != "null" }
+        val year = startDate?.take(4)?.toIntOrNull()
+
+        val score = o.optDouble("score", 0.0).takeIf { it > 0 }
+            ?: o.optInt("averageScore", 0).takeIf { it > 0 }?.let { it / 10.0 }
+        val averageScore = score?.let { (it * 10).toInt() }
+
+        val description = o.optJSONObject("descriptions")
+            ?.optString("en")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: o.optString("description").takeIf { it.isNotBlank() && it != "null" }
 
         val genres = o.optJSONArray("genres")?.let { arr ->
             (0 until arr.length()).mapNotNull { i ->
@@ -181,14 +156,14 @@ suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
             format = format,
             episodes = episodes,
             seasonYear = year,
-            startDate = null,
+            startDate = startDate,
             description = description,
             coverImage = cover,
             bannerUrl = banner,
-            averageScore = avgScore,
+            averageScore = averageScore,
             status = status,
             genres = genres,
-            country = null,
+            country = o.optString("countryOfOrigin").takeIf { it.isNotBlank() && it != "null" },
             relations = emptyList(),
             source = "animapper"
         )
