@@ -54,23 +54,34 @@ object AnimeScheduleApi {
     }
 
     suspend fun detail(route: String): AniListApi.Entry? {
-        val ck = "asched:detail:$route"
-        BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
-        }
-        return try {
-            val res = app.get("$BASE/anime/$route", headers = headers())
-            BLog.v("animeschedule detail $route HTTP ${res.code} len=${res.text.length}")
-            if (res.code !in 200..299) return null
-            val obj = JSONObject(res.text)
-            BCCache.put(ck, obj.toString())
-            parseEntry(obj)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("animeschedule detail $route failed: ${e.message}")
-            null
-        }
+    val ck = "asched:detail:$route"
+    BCCache.get(ck, ROW_TTL)?.let { cached ->
+        return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
+    }
+    return try {
+        val res = app.get("$BASE/anime/$route", headers = headers())
+        BLog.v("animeschedule detail $route HTTP ${res.code} len=${res.text.length}")
+        if (res.code !in 200..299) return null
+        val root = JSONObject(res.text)
+        // DIAGNOSTIC — dump top-level field names + episode-related
+        // fields so we can see the real episode count shape. One
+        // title (one-piece) is enough. Remove after parser fix.
+        val keys = root.keys().asSequence().joinToString(",")
+        BLog.v("animeschedule detail $route keys=$keys")
+        BLog.v("animeschedule detail $route episodes=${root.opt("episodes")} " +
+            "episodeCount=${root.opt("episodeCount")} " +
+            "episodesCount=${root.opt("episodesCount")} " +
+            "totalEpisodes=${root.opt("totalEpisodes")} " +
+            "airedEpisodes=${root.opt("airedEpisodes")} " +
+            "numEpisodes=${root.opt("numEpisodes")}")
+        BCCache.put(ck, root.toString())
+        parseEntry(root)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("animeschedule detail $route failed: ${e.message}")
+        null
+    }
     }
 
     private fun parseList(root: JSONObject, limit: Int): List<AniListApi.Entry> {
