@@ -77,26 +77,38 @@ class BingeAnimeProvider : MainAPI() {
     // ── search: AniList only ──
     override suspend fun search(query: String): List<SearchResponse>? {
     BLog.section("search: $query")
+    val useAsched = BingeAnimeSettings.getSearchSource() == "animeschedule"
+    BLog.d("search source: ${if (useAsched) "AnimeSchedule" else "AniList"} (primary)")
 
-    val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
-    } catch (e: Exception) {
-        BLog.e("AniList search threw: ${e.message}"); emptyList()
-    }
-
-    if (ani.isNotEmpty()) {
-        val sorted = AniListApi.sortChronological(ani, query)
+    return if (useAsched) {
+        val a = try { AnimeScheduleApi.search(query) } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { BLog.e("AnimeSchedule search threw: ${e.message}"); emptyList() }
+        if (a.isNotEmpty()) {
+            val sorted = AniListApi.sortChronological(a, query)
+            BLog.d("search '$query' → AnimeSchedule=${sorted.size}")
+            return sorted.mapNotNull { it.toSearchResponse() }
+        }
+        BLog.d("AnimeSchedule empty — falling back to AniList")
+        val b = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { BLog.e("AniList search threw: ${e.message}"); emptyList() }
+        val sorted = AniListApi.sortChronological(b, query)
         BLog.d("search '$query' → AniList=${sorted.size}")
-        return sorted.mapNotNull { it.toSearchResponse() }
+        sorted.mapNotNull { it.toSearchResponse() }
+    } else {
+        val b = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { BLog.e("AniList search threw: ${e.message}"); emptyList() }
+        if (b.isNotEmpty()) {
+            val sorted = AniListApi.sortChronological(b, query)
+            BLog.d("search '$query' → AniList=${sorted.size}")
+            return sorted.mapNotNull { it.toSearchResponse() }
+        }
+        BLog.d("AniList empty — falling back to AnimeSchedule")
+        val a = try { AnimeScheduleApi.search(query) } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { BLog.e("AnimeSchedule search threw: ${e.message}"); emptyList() }
+        val sorted = AniListApi.sortChronological(a, query)
+        BLog.d("search '$query' → AnimeSchedule=${sorted.size}")
+        sorted.mapNotNull { it.toSearchResponse() }
     }
-
-    BLog.d("AniList empty for '$query' — trying Jikan")
-    val jikan = try { JikanApi.search(query) } catch (e: CancellationException) { throw e
-    } catch (e: Exception) {
-        BLog.e("Jikan search threw: ${e.message}"); emptyList()
-    }
-    val sorted = AniListApi.sortChronological(jikan, query)
-    BLog.d("search '$query' → Jikan=${sorted.size}")
-    return sorted.mapNotNull { it.toSearchResponse() }
     }
 
     // ── load ──
@@ -105,8 +117,14 @@ class BingeAnimeProvider : MainAPI() {
         val animapperMatch = Regex("""animapper:(\d+)""").find(url)
         val aniMatch = Regex("""anilist:(\d+)""").find(url)
         val malMatch = Regex("""mal:(\d+)""").find(url)
-
+        val aschedMatch = Regex("""animeschedule:(.+)""").find(url)
+ 
         val entry = when {
+            aschedMatch != null -> {
+                val route = aschedMatch.groupValues[1]
+                BLog.section("load animeschedule: $route")
+                AnimeScheduleApi.detail(route)
+            }
             shikiMatch != null -> {
                 val id = shikiMatch.groupValues[1].toIntOrNull() ?: return null
                 BLog.section("load shikimori: $id")
@@ -199,7 +217,9 @@ class BingeAnimeProvider : MainAPI() {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
         val displayName = AniListApi.convertRomanSeasons(AniListApi.stripCourBranding(raw))
         val tvType = if (format == "MOVIE") TvType.Movie else TvType.Anime
-        val url = "$source:$id"
+        // AnimeSchedule (and any future non-numeric source) carries its
+        // route slug in sourceId. Numeric sources use the int id.
+        val url = if (sourceId != null) "$source:$sourceId" else "$source:$id"
         return newMovieSearchResponse(displayName, url, tvType) {
             this.posterUrl = coverImage
             this.year = seasonYear
