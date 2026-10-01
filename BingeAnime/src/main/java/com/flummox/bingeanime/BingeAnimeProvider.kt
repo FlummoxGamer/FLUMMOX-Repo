@@ -51,10 +51,13 @@ class BingeAnimeProvider : MainAPI() {
         ShikimoriApi.warmPrefetch()
 
         val entries: List<AniListApi.Entry> = try {
-            if (rowName == "Donghua") {
-                AniMapperApi.donghua(30)
-            } else {
-                ShikimoriApi.fetchForRow(rowName, 30)
+            when (rowName) {
+                "Donghua" -> AniMapperApi.donghua(30)
+                "Trending" -> AniMapperApi.trending(30).ifEmpty {
+                    BLog.d("Trending AniMapper empty — falling back to Shikimori")
+                    ShikimoriApi.fetchForRow(rowName, 30)
+                }
+                else -> ShikimoriApi.fetchForRow(rowName, 30)
             }
         } catch (e: CancellationException) {
             throw e
@@ -62,7 +65,6 @@ class BingeAnimeProvider : MainAPI() {
             BLog.e("row '$rowName' failed: ${e.message}")
             emptyList()
         }
-
         BLog.d("row '$rowName' → ${entries.size}")
         val items = entries.mapNotNull { it.toSearchResponse() }
         // hasNext must be false — CloudStream calls getMainPage(page=2,3,...)
