@@ -1,6 +1,7 @@
 package com.flummox.bingeanime
 
 import android.content.Context
+import com.lagradost.cloudstreamer.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -21,7 +22,6 @@ object ShikimoriApi {
     private const val ROW_TTL = 6 * 60 * 60 * 1000L
     private const val GENRE_TTL = 7L * 24 * 60 * 60 * 1000
 
-    // Global rate limiter — minimum 220ms between any two HTTP requests.
     private val rateMutex = Mutex()
     private var lastRequestMs = 0L
     private const val MIN_GAP_MS = 220L
@@ -33,10 +33,9 @@ object ShikimoriApi {
     private val inFlightRows =
         ConcurrentHashMap<String, CompletableDeferred<List<AniListApi.Entry>>>()
 
-    // Genre map: rowName -> Shikimori genre ID.
-    // Fetched from /api/genres on first run, cached to SharedPreferences
-    // for 30 days. Fallback values are the verified IDs from the live API.
     private var genreMap: Map<String, Int>? = null
+    // Only ONE genre-map fetch fires even when 18 rows race.
+    @Volatile private var genreMapDeferred: CompletableDeferred<Map<String, Int>?>? = null
     private lateinit var prefs: android.content.SharedPreferences
 
     fun init(context: Context) {
@@ -49,39 +48,10 @@ object ShikimoriApi {
                 val map = mutableMapOf<String, Int>()
                 obj.keys().forEach { k -> map[k] = obj.getInt(k) }
                 genreMap = map
-                BLog.v("shikimori genre map loaded from prefs (${map.size} entries)")
+                BLog.v("shikimori genre map loaded (${map.size})")
             } catch (_: Exception) {}
         }
     }
-
-    // Row name → query params. Genre/theme IDs are NOT hardcoded.
-// They're resolved at runtime from /api/genres, cached 7 days in
-// SharedPreferences. If a name isn't found, the row is skipped.
-// This prevents the "wrong genre in wrong row" bug we hit when
-// IDs were guessed (Death Note in Isekai, School==Historical).
-private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = linkedMapOf(
-    "Trending"          to Triple("order", "popularity", "popularity"),
-    "Top Anime Series"  to Triple("kind", "tv", "ranked"),
-    "Top Anime Movies"  to Triple("kind", "movie", "ranked"),
-    // Remaining rows are genre-name lookups resolved at runtime.
-    // The value field is the row's display name — matched against
-    // /api/genres response.
-    "Action"            to Triple("genre_name", "Action", "ranked"),
-    "Adventure"         to Triple("genre_name", "Adventure", "ranked"),
-    "Isekai"            to Triple("theme_name", "Isekai", "ranked"),
-    "Comedy"            to Triple("genre_name", "Comedy", "ranked"),
-    "Drama"             to Triple("genre_name", "Drama", "ranked"),
-    "Fantasy"           to Triple("genre_name", "Fantasy", "ranked"),
-    "Romance"           to Triple("genre_name", "Romance", "ranked"),
-    "Sci-Fi"            to Triple("genre_name", "Sci-Fi", "ranked"),
-    "Slice of Life"     to Triple("genre_name", "Slice of Life", "ranked"),
-    "Supernatural"      to Triple("genre_name", "Supernatural", "ranked"),
-    "Mystery"           to Triple("genre_name", "Mystery", "ranked"),
-    "Sports"            to Triple("genre_name", "Sports", "ranked"),
-    "Mecha"             to Triple("genre_name", "Mecha", "ranked"),
-    "School"            to Triple("theme_name", "School", "ranked"),
-    "Historical"        to Triple("theme_name", "Historical", "ranked")
-)
 
     private fun headers(): Map<String, String> = mapOf(
         "Accept" to "application/json",
@@ -97,94 +67,141 @@ private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = l
         }
     }
 
-    // key: "genre:Action" or "theme:Isekai" -> Shikimori id
-private suspend fun ensureGenreMap() {
-    if (genreMap != null) return
-    try {
-        throttle()
-        val res = app.get("$BASE/genres", headers = headers())
-        if (res.code !in 200..299) {
-            BLog.e("shikimori genre fetch HTTP ${res.code}")
+    // Row name -> (param-key, param-value, sort-order)
+    //
+    // All genre rows send `genre=<id>` — Shikimori accepts the same param
+    // for genres and themes, but only if the id is correct. Isekai is a
+    // MAL theme id 62 that isn't exposed in /api/genres, so it's hardcoded.
+    //
+    // Value semantics:
+    //   "name:Action"  -> resolve by name against /api/genres
+    //   "id:62"        -> use directly (Isekai exception)
+    //   other          -> pass through (kind=, order= for dynamic rows)
+    private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = linkedMapOf(
+        "Trending"          to Triple("order", "popularity", "popularity"),
+        "Top Anime Series"  to Triple("kind", "tv", "ranked"),
+        "Top Anime Movies"  to Triple("kind", "movie", "ranked"),
+        "Action"            to Triple("id", "name:Action", "ranked"),
+        "Adventure"         to Triple("id", "name:Adventure", "ranked"),
+        "Isekai"            to Triple("id", "id:62", "ranked"),
+        "Comedy"            to Triple("id", "name:Comedy", "ranked"),
+        "Drama"             to Triple("id", "name:Drama", "ranked"),
+        "Fantasy"           to Triple("id", "name:Fantasy", "ranked"),
+        "Romance"           to Triple("id", "name:Romance", "ranked"),
+        "Sci-Fi"            to Triple("id", "name:Sci-Fi", "ranked"),
+        "Slice of Life"     to Triple("id", "name:Slice of Life", "ranked"),
+        "Supernatural"      to Triple("id", "name:Supernatural", "ranked"),
+        "Mystery"           to Triple("id", "name:Mystery", "ranked"),
+        "Sports"            to Triple("id", "name:Sports", "ranked"),
+        "Mecha"             to Triple("id", "name:Mecha", "ranked"),
+        "School"            to Triple("id", "name:School", "ranked"),
+        "Historical"        to Triple("id", "name:Historical", "ranked")
+    )
+
+    // Single-fetch genre map. First caller owns; others await same deferred.
+    private suspend fun ensureGenreMap() {
+        genreMap?.let { return }
+        val existing = genreMapDeferred
+        if (existing != null) { existing.await(); return }
+        val deferred = CompletableDeferred<Map<String, Int>?>()
+        if (!compareAndSetDeferred(deferred)) {
+            genreMapDeferred?.await()
             return
         }
-        val arr = JSONArray(res.text)
-        val map = mutableMapOf<String, Int>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            if (!o.optString("entry_type").equals("Anime", ignoreCase = true)) continue
-            val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
-            val id = o.optInt("id", 0)
-            if (id > 0) map[name] = id
+        try {
+            throttle()
+            val res = app.get("$BASE/genres", headers = headers())
+            if (res.code !in 200..299) {
+                BLog.e("shikimori genre fetch HTTP ${res.code}")
+                deferred.complete(null)
+                return
+            }
+            val arr = JSONArray(res.text)
+            val map = mutableMapOf<String, Int>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (!o.optString("entry_type").equals("Anime", ignoreCase = true)) continue
+                val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+                val id = o.optInt("id", 0)
+                if (id > 0) map[name] = id
+            }
+            genreMap = map
+            val obj = JSONObject()
+            map.forEach { (k, v) -> obj.put(k, v) }
+            prefs.edit()
+                .putString("genre_map", obj.toString())
+                .putLong("genre_map_ts", System.currentTimeMillis())
+                .apply()
+            BLog.d("shikimori genre map fetched (${map.size})")
+            deferred.complete(map)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            deferred.complete(null)
+            throw e
+        } catch (e: Exception) {
+            BLog.e("shikimori genre map fetch failed: ${e.message}")
+            deferred.complete(null)
         }
-        genreMap = map
-        val obj = JSONObject()
-        map.forEach { (k, v) -> obj.put(k, v) }
-        prefs.edit()
-            .putString("genre_map", obj.toString())
-            .putLong("genre_map_ts", System.currentTimeMillis())
-            .apply()
-        BLog.d("shikimori genre map fetched (${map.size} entries)")
-    } catch (e: Exception) {
-        BLog.e("shikimori genre map fetch failed: ${e.message}")
     }
-}
 
-// Resolve a row's (kind=genre|theme, name) to its Shikimori ID.
-private suspend fun resolveRowId(name: String): Int? {
-    ensureGenreMap()
-    val map = genreMap ?: return null
-    val id = map[name]
-    if (id == null) {
-        BLog.d("shikimori: no id for '$name' (map has ${map.size} entries)")
-        BLog.d("shikimori map keys: ${map.keys.joinToString("|")}")
+    @Synchronized
+    private fun compareAndSetDeferred(d: CompletableDeferred<Map<String, Int>?>): Boolean {
+        if (genreMapDeferred != null) return false
+        genreMapDeferred = d
+        return true
     }
-    return id
-}
+
+    private suspend fun resolveRowId(name: String): Int? {
+        ensureGenreMap()
+        val map = genreMap ?: return null
+        return map[name]
+    }
 
     suspend fun fetchForRow(rowName: String, limit: Int = 30): List<AniListApi.Entry> {
-    val cfg = ROW_QUERY[rowName] ?: return emptyList()
-    val ck = "shikimori:row:$rowName:$limit"
-    BCCache.get(ck, ROW_TTL)?.let { cached ->
-        return try { parseList(JSONArray(cached)) } catch (_: Exception) { emptyList() }
+        val cfg = ROW_QUERY[rowName] ?: return emptyList()
+        val ck = "shikimori:row:$rowName:$limit"
+        BCCache.get(ck, ROW_TTL)?.let { cached ->
+            return try { parseList(JSONArray(cached)) } catch (_: Exception) { emptyList() }
+        }
+
+        inFlightRows[ck]?.let { return it.await() }
+        val deferred = CompletableDeferred<List<AniListApi.Entry>>()
+        val prior = inFlightRows.putIfAbsent(ck, deferred)
+        if (prior != null) return prior.await()
+
+        return try {
+            val resolved: Triple<String, String, String>? = when {
+                cfg.second.startsWith("name:") -> {
+                    val name = cfg.second.removePrefix("name:")
+                    resolveRowId(name)?.let { Triple("genre", it.toString(), cfg.third) }
+                }
+                cfg.second.startsWith("id:") -> {
+                    Triple("genre", cfg.second.removePrefix("id:"), cfg.third)
+                }
+                else -> cfg
+            }
+            if (resolved == null) {
+                BLog.d("shikimori '$rowName' unresolved — skipping")
+                deferred.complete(emptyList())
+                return emptyList()
+            }
+            val result = fetchAndCache(ck, rowName, resolved, limit)
+            deferred.complete(result)
+            result
+        } catch (e: Throwable) {
+            deferred.completeExceptionally(e)
+            throw e
+        } finally {
+            inFlightRows.remove(ck)
+        }
     }
 
-    inFlightRows[ck]?.let { return it.await() }
-    val deferred = CompletableDeferred<List<AniListApi.Entry>>()
-    val prior = inFlightRows.putIfAbsent(ck, deferred)
-    if (prior != null) return prior.await()
-
-    return try {
-        // Resolve genre/theme name → id, if this row needs one.
-        val resolvedCfg: Triple<String, String, String>? = when (cfg.first) {
-            "genre_name" -> resolveRowId(cfg.second)?.let {
-                Triple("genre", it.toString(), cfg.third)
-            }
-            "theme_name" -> resolveRowId(cfg.second)?.let {
-                Triple("theme", it.toString(), cfg.third)
-            }
-            else -> cfg
-        }
-        if (resolvedCfg == null) {
-            BLog.d("shikimori '$rowName' unresolved — skipping")
-            deferred.complete(emptyList())
-            return emptyList()
-        }
-        val result = fetchAndCache(ck, rowName, resolvedCfg, limit)
-        deferred.complete(result)
-        result
-    } catch (e: Throwable) {
-        deferred.completeExceptionally(e)
-        throw e
-    } finally {
-        inFlightRows.remove(ck)
-    }
-    }
     private suspend fun fetchAndCache(
         ck: String, rowName: String,
         query: Triple<String, String, String>, limit: Int
     ): List<AniListApi.Entry> {
         throttle()
         val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=${query.third}"
+        BLog.v("shikimori '$rowName' → $url")
         return try {
             val res = app.get(url, headers = headers())
             if (res.code == 429) { BLog.e("shikimori '$rowName' 429"); return emptyList() }
@@ -212,7 +229,6 @@ private suspend fun resolveRowId(name: String): Int? {
         } catch (e: Exception) { BLog.e("shikimori detail $shikiId failed: ${e.message}"); null }
     }
 
-    // Priority prefetch: top 6 immediate, remaining 12 with 300ms gap.
     fun warmPrefetch() {
         val now = System.currentTimeMillis()
         if (now - lastPrefetchMs < ROW_TTL) return
@@ -256,9 +272,6 @@ private suspend fun resolveRowId(name: String): Int? {
         val imgPath = imgObj?.optString("original")?.takeIf { it.isNotBlank() }
             ?: imgObj?.optString("preview")?.takeIf { it.isNotBlank() }
         val cover = imgPath?.let { if (it.startsWith("http")) it else "$IMG_BASE$it" }
-        // Shikimori only has portrait posters. Use the same URL for
-        // banner — no better source available.
-        val banner = cover
         val kind = o.optString("kind").takeIf { it.isNotBlank() }
         val format = when (kind) {
             "tv" -> "TV"; "movie" -> "MOVIE"; "ova" -> "OVA"; "ona" -> "ONA"
@@ -283,7 +296,6 @@ private suspend fun resolveRowId(name: String): Int? {
             title = AniListApi.Title(romaji = name, english = null, native = russian),
             format = format, episodes = episodes, seasonYear = year,
             startDate = airedOn, description = null, coverImage = cover,
-            bannerUrl = banner,
             averageScore = averageScore, status = status, genres = genres,
             country = null, relations = emptyList(), source = "shikimori"
         )
