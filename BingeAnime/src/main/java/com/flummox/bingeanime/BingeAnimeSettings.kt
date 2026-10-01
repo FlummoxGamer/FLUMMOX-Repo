@@ -90,7 +90,7 @@ object BingeAnimeSettings {
 private val DEFAULT_ON_ROWS = setOf(
     "Trending", "Top Anime Series", "Top Anime Movies", "Donghua",
     "Shounen", "Seinen", "Shoujo", "Josei", "Kids",
-    "Adventure", "Isekai", "Comedy", "Fantasy", "Romance",
+    "Adventure", "Comedy", "Fantasy", "Romance",
     "Slice of Life", "Sports",
     "Ecchi", "School", "Thriller"
 )
