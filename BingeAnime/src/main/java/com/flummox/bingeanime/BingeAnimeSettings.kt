@@ -56,6 +56,7 @@ object BingeAnimeSettings {
     const val K_SRC_ANIKOTO = "bingeanime_src_anikoto"
     const val K_SRC_ANIZONE = "bingeanime_src_anizone"
     const val K_SRC_OTAKUTSU = "bingeanime_src_otakutsu"
+    const val K_SEARCH_SOURCE = "bingeanime_search_source"
     const val K_ROW_ORDER = "bingeanime_row_order"
     const val K_ROW_PREFIX = "bingeanime_row_"
 
@@ -67,7 +68,11 @@ object BingeAnimeSettings {
     fun isSrcAniZone(): Boolean = getKey<Boolean>(K_SRC_ANIZONE) ?: true
     fun isSrcOtakutsu(): Boolean = getKey<Boolean>(K_SRC_OTAKUTSU) ?: true
 
-    fun getRowOrder(): List<String> {
+    // "anilist" (default, recommended) or "animeschedule"
+    fun getSearchSource(): String =
+        getKey<String>(K_SEARCH_SOURCE) ?: "anilist"
+    fun setSearchSource(src: String) = setKey(K_SEARCH_SOURCE, src)
+        fun getRowOrder(): List<String> {
         val stored = getKey<String>(K_ROW_ORDER) ?: ""
         val parts = stored.split("|").map { it.trim() }.filter { it.isNotBlank() }
         if (parts.isEmpty()) return ROWS.map { it.second }
@@ -407,6 +412,17 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
 
     private fun openSettings(ctx: Context) {
         subWindow(ctx, "SETTINGS") { body, _ ->
+            // Search source — switch between AniList (default/recommended)
+            // and AnimeSchedule. The toggle flips primary/fallback order.
+            val isAschedule = getSearchSource() == "animeschedule"
+            body.addView(toggleRow(
+                ctx,
+                "Use AnimeSchedule for search",
+                "OFF — AniList (recommended) · ON — AnimeSchedule",
+                isAschedule
+            ) {
+                setSearchSource(if (it) "animeschedule" else "anilist")
+            })
             body.addView(toggleRow(ctx, "Smart prefetch",
                 "Pre-cache next episode in background", isPrefetchEnabled()) {
                 setKey(K_PREFETCH, it)
