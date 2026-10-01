@@ -56,26 +56,32 @@ object ShikimoriApi {
 
     // Row name → Shikimori query param name and value.
     // Handles theme vs genre distinction.
-    private val ROW_QUERY: LinkedHashMap<String, Pair<String, String>> = linkedMapOf(
-        "Trending"          to ("order" to "popularity"),
-        "Top Anime Series"  to ("kind" to "tv"),
-        "Top Anime Movies"  to ("kind" to "movie"),
-        "Action"            to ("genre" to "1"),
-        "Adventure"         to ("genre" to "2"),
-        "Isekai"            to ("genre" to "130"),
-        "Comedy"            to ("genre" to "4"),
-        "Drama"             to ("genre" to "8"),
-        "Fantasy"           to ("genre" to "10"),
-        "Romance"           to ("genre" to "22"),
-        "Sci-Fi"            to ("genre" to "24"),
-        "Slice of Life"     to ("genre" to "36"),
-        "Supernatural"      to ("genre" to "37"),
-        "Mystery"           to ("genre" to "7"),
-        "Sports"            to ("genre" to "30"),
-        "Mecha"             to ("genre" to "18"),
-        "School"            to ("genre" to "23"),
-        "Historical"        to ("genre" to "13")
-    )
+    // Row name → (param-key, param-value, sort-order)
+//   MAL/S hikimori splits categories: `genre` for genres, `theme`
+//   for themes. Isekai, School, Historical are themes.
+//   Sort: `popularity` for Trending (hot right now), `ranked` for
+//   Top Series/Movies and all genre rows (top-scored, distinct
+//   from popular — fixes the Trending=TopSeries=Action overlap).
+private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = linkedMapOf(
+    "Trending"          to Triple("order", "popularity", "popularity"),
+    "Top Anime Series"  to Triple("kind", "tv", "ranked"),
+    "Top Anime Movies"  to Triple("kind", "movie", "ranked"),
+    "Action"            to Triple("genre", "1", "ranked"),
+    "Adventure"         to Triple("genre", "2", "ranked"),
+    "Isekai"            to Triple("theme", "62", "ranked"),
+    "Comedy"            to Triple("genre", "4", "ranked"),
+    "Drama"             to Triple("genre", "8", "ranked"),
+    "Fantasy"           to Triple("genre", "10", "ranked"),
+    "Romance"           to Triple("genre", "22", "ranked"),
+    "Sci-Fi"            to Triple("genre", "24", "ranked"),
+    "Slice of Life"     to Triple("genre", "36", "ranked"),
+    "Supernatural"      to Triple("genre", "37", "ranked"),
+    "Mystery"           to Triple("genre", "7", "ranked"),
+    "Sports"            to Triple("genre", "30", "ranked"),
+    "Mecha"             to Triple("genre", "18", "ranked"),
+    "School"            to Triple("theme", "23", "ranked"),
+    "Historical"        to Triple("theme", "13", "ranked")
+)
 
     private fun headers(): Map<String, String> = mapOf(
         "Accept" to "application/json",
@@ -147,10 +153,10 @@ object ShikimoriApi {
 
     private suspend fun fetchAndCache(
         ck: String, rowName: String,
-        query: Pair<String, String>, limit: Int
+        query: Triple<String, String, String>, limit: Int
     ): List<AniListApi.Entry> {
         throttle()
-        val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=popularity"
+        val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=${query.third}"
         return try {
             val res = app.get(url, headers = headers())
             if (res.code == 429) { BLog.e("shikimori '$rowName' 429"); return emptyList() }
