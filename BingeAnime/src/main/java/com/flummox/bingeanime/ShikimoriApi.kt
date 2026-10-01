@@ -23,7 +23,7 @@ object ShikimoriApi {
 
     private val rateMutex = Mutex()
     private var lastRequestMs = 0L
-    private const val MIN_GAP_MS = 220L
+    private const val MIN_GAP_MS = 300L
 
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var lastPrefetchMs = 0L
@@ -91,7 +91,6 @@ object ShikimoriApi {
     // Genre / theme rows
     "Action"            to Triple("id", "name:Action", "ranked"),
     "Adventure"         to Triple("id", "name:Adventure", "ranked"),
-    "Isekai"            to Triple("id", "id:62", "ranked"),
     "Comedy"            to Triple("id", "name:Comedy", "ranked"),
     "Drama"             to Triple("id", "name:Drama", "ranked"),
     "Fantasy"           to Triple("id", "name:Fantasy", "ranked"),
