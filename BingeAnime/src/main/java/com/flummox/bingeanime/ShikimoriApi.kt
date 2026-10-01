@@ -112,11 +112,9 @@ private suspend fun ensureGenreMap() {
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             if (!o.optString("entry_type").equals("Anime", ignoreCase = true)) continue
-            val kind = o.optString("kind").lowercase()
-            if (kind != "genre" && kind != "theme") continue
             val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
             val id = o.optInt("id", 0)
-            if (id > 0) map["$kind:$name"] = id
+            if (id > 0) map[name] = id
         }
         genreMap = map
         val obj = JSONObject()
@@ -132,12 +130,14 @@ private suspend fun ensureGenreMap() {
 }
 
 // Resolve a row's (kind=genre|theme, name) to its Shikimori ID.
-private suspend fun resolveRowId(name: String, kind: String): Int? {
+private suspend fun resolveRowId(name: String): Int? {
     ensureGenreMap()
     val map = genreMap ?: return null
-    val key = "$kind:$name"
-    val id = map[key]
-    if (id == null) BLog.d("shikimori: no id for $key (map has ${map.size} entries)")
+    val id = map[name]
+    if (id == null) {
+        BLog.d("shikimori: no id for '$name' (map has ${map.size} entries)")
+        BLog.d("shikimori map keys: ${map.keys.joinToString("|")}")
+    }
     return id
 }
 
@@ -156,10 +156,10 @@ private suspend fun resolveRowId(name: String, kind: String): Int? {
     return try {
         // Resolve genre/theme name → id, if this row needs one.
         val resolvedCfg: Triple<String, String, String>? = when (cfg.first) {
-            "genre_name" -> resolveRowId(cfg.second, "genre")?.let {
+            "genre_name" -> resolveRowId(cfg.second)?.let {
                 Triple("genre", it.toString(), cfg.third)
             }
-            "theme_name" -> resolveRowId(cfg.second, "theme")?.let {
+            "theme_name" -> resolveRowId(cfg.second)?.let {
                 Triple("theme", it.toString(), cfg.third)
             }
             else -> cfg
