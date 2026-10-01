@@ -15,6 +15,8 @@ android {
         buildConfigField("boolean", "IS_DEV_BUILD", "$isDev")
         val malId = (System.getenv("MAL_CLIENT_ID") ?: "").trim()
         buildConfigField("String", "MAL_CLIENT_ID", "\"$malId\"")
+        val aschedKey = (System.getenv("ANIMESCHEDULE_API_KEY") ?: "").trim()
+        buildConfigField("String", "ANIMESCHEDULE_API_KEY", "\"$aschedKey\"")
     }
     buildFeatures {
         buildConfig = true
