@@ -77,24 +77,31 @@ suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
     }
 
     suspend fun detail(id: Int): AniListApi.Entry? {
-        val ck = "animapper:detail:$id"
-        BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
+    val ck = "animapper:detail:$id"
+    BCCache.get(ck, ROW_TTL)?.let { cached ->
+        return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
+    }
+    return try {
+        val res = app.get("$BASE/metadata?id=$id", headers = headers())
+        BLog.v("animapper detail $id HTTP ${res.code} len=${res.text.length}")
+        if (res.code !in 200..299) return null
+        val root = JSONObject(res.text)
+        val obj = root.optJSONObject("data") ?: root
+        // DIAGNOSTIC — dump full body when response is suspiciously
+        // small. Real detail responses are ~1.2KB-6KB depending on
+        // fields; anything under 2KB is likely an error stub or a
+        // different response shape. Remove after parser is fixed.
+        if (res.text.length < 2000) {
+            BLog.e("animapper detail $id FULL BODY: ${res.text}")
         }
-        return try {
-            val res = app.get("$BASE/metadata?id=$id", headers = headers())
-            BLog.v("animapper detail $id HTTP ${res.code} len=${res.text.length}")
-            if (res.code !in 200..299) return null
-            val root = JSONObject(res.text)
-            val obj = root.optJSONObject("data") ?: root
-            BCCache.put(ck, obj.toString())
-            parseEntry(obj)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("animapper detail $id failed: ${e.message}")
-            null
-        }
+        BCCache.put(ck, obj.toString())
+        parseEntry(obj)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("animapper detail $id failed: ${e.message}")
+        null
+    }
     }
 
     private fun parseResponse(root: JSONObject): List<AniListApi.Entry> {
