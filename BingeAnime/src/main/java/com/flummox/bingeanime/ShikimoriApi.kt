@@ -1,7 +1,6 @@
 package com.flummox.bingeanime
 
 import android.content.Context
-import com.lagradost.cloudstreamer.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
