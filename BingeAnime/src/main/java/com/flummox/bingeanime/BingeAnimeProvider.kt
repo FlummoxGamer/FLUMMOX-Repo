@@ -76,13 +76,22 @@ class BingeAnimeProvider : MainAPI() {
             BLog.e("row '$rowName' failed: ${e.message}")
             emptyList()
         }
-        BLog.d("row '$rowName' → ${entries.size}")
-        val items = entries.mapNotNull { it.toSearchResponse() }
-        // hasNext must be false — CloudStream calls getMainPage(page=2,3,...)
-        // when it's true, and we return the same 30 items each time, which
-        // produces the infinite-scroll dupe behavior seen in testing.
-        // Home rows are one-shot per refresh; pagination is not implemented.
-        return newHomePageResponse(rowName, items, hasNext = false)
+        // Rebuild dedup tables from currently cached rows. Cheap — reads
+        // ~26 in-memory lists. Idempotent, safe per-row.
+        ShikimoriApi.rebuildExclusions()
+
+       // Drop titles already appearing in 2 higher-priority genre rows.
+       // Dynamic rows (Trending/Top Series/Top Movies) are exempted via
+       // DYNAMIC_ROWS inside rebuildExclusions.
+       val filtered = entries.filter { entry ->
+           val t = entry.title.romaji ?: entry.title.english ?: entry.title.native ?: ""
+           if (t.isBlank()) true else !ShikimoriApi.isExcluded(rowName, t)
+       }
+       val dropped = entries.size - filtered.size
+       BLog.d("row '$rowName' → ${filtered.size}${if (dropped > 0) " (dedup -$dropped)" else ""}")
+
+       val items = filtered.mapNotNull { it.toSearchResponse() }
+       return newHomePageResponse(rowName, items, hasNext = false)
     }
 
     // ── search: AniList only ──
