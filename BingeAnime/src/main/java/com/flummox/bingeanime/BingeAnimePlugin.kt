@@ -10,9 +10,12 @@ class BingeAnimePlugin : Plugin() {
         BLog.init(context)
        // One-time wipe of stale genre cache (had wrong key format).
        // Safe to remove after confirming the new key format loads.
+       // Wipe on every boot during this testing phase. Once genre map
+       // loads correctly, remove this block — it's a dev-only reset
+       // to pick up the new key format.
        context.getSharedPreferences("bingeanime_shikimori", android.content.Context.MODE_PRIVATE)
-           .edit().remove("genre_map").remove("genre_map_ts").apply()
-        ShikimoriApi.init(context)
+         .edit().remove("genre_map").remove("genre_map_ts").apply()
+       ShikimoriApi.init(context)
         BLog.setVerbose(BingeAnimeSettings.isVerbose())
         BLog.d("BingeAnime boot v${BuildConfig.PLUGIN_VERSION}")
         registerMainAPI(BingeAnimeProvider())
