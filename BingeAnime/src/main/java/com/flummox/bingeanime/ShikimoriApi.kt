@@ -19,7 +19,9 @@ object ShikimoriApi {
     private const val BASE = "https://shikimori.one/api"
     private const val IMG_BASE = "https://shikimori.one"
     private const val UA = "BingeAnime/1.0"
-    private const val ROW_TTL = 6 * 60 * 60 * 1000L
+    // 1h TTL — refreshes home rows hourly without spamming Shikimori.
+    // Cold start still only fires 26 requests once per hour per device.
+    private const val ROW_TTL = 60 * 60 * 1000L
     private const val GENRE_TTL = 7L * 24 * 60 * 60 * 1000
 
     private val rateMutex = Mutex()
