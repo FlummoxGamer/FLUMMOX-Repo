@@ -6,9 +6,17 @@ import org.json.JSONObject
 
 // AniMapper — aggregated anime metadata + streaming API. Free, no key.
 // Rate limit: 60 req/min per IP.
-// AniMapper uses AniList as its metadata backend, so the entry shape
-// closely mirrors AniList's. Used here only for the Donghua row, which
-// no other API can filter.
+// Response shape (verified from live data):
+//   {
+//     "id": 185727,
+//     "mediaType": "ANIME",
+//     "titles": {
+//       "ja-ro": "...", "en": "Spy x Sect", "main": "...",
+//       "user-preferred": "...", "alt-anilist-0": "..."
+//     },
+//     "images": { "coverXl": "...", "coverLg": "...", "coverMd": "..." }
+//   }
+// IDs are AniList IDs.
 object AniMapperApi {
     private const val BASE = "https://api.animapper.net/api/v1"
     private const val ROW_TTL = 6 * 60 * 60 * 1000L
@@ -59,7 +67,6 @@ object AniMapperApi {
             BLog.v("animapper detail $id HTTP ${res.code} len=${res.text.length}")
             if (res.code !in 200..299) return null
             val root = JSONObject(res.text)
-            // response may be {data: {...}} or {...}
             val obj = root.optJSONObject("data") ?: root
             BCCache.put(ck, obj.toString())
             parseEntry(obj)
@@ -71,15 +78,13 @@ object AniMapperApi {
         }
     }
 
-    // AniMapper wraps results in different shapes depending on endpoint.
-    // We try several known patterns.
     private fun parseResponse(root: JSONObject): List<AniListApi.Entry> {
         val arr: JSONArray? = root.optJSONArray("results")
             ?: root.optJSONArray("data")
             ?: root.optJSONObject("data")?.optJSONArray("results")
             ?: root.optJSONObject("data")?.optJSONArray("media")
         if (arr == null) {
-            BLog.e("animapper parse — no results array. body: ${root.toString().take(400)}")
+            BLog.e("animapper parse — no results array")
             return emptyList()
         }
         val out = mutableListOf<AniListApi.Entry>()
@@ -89,23 +94,23 @@ object AniMapperApi {
 
     private fun parseEntry(o: JSONObject?): AniListApi.Entry? {
         if (o == null) return null
-        // Verbose: dump first entry so we can see the actual shape
-        BLog.v("animapper raw entry: ${o.toString().take(400)}")
 
-        // ID: could be "id", "anilistId", "anilist_id"
-        val id = listOf("id", "anilistId", "anilist_id")
-            .firstNotNullOfOrNull { key ->
-                o.optInt(key, 0).takeIf { it > 0 }
-            } ?: return null
+        val id = o.optInt("id", 0).takeIf { it > 0 } ?: return null
 
-        // Title: could be {title:{romaji,english,native}} or {title:"..."} or top-level
-        val titleObj = o.optJSONObject("title")
-        val romaji = titleObj?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("title").takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("name").takeIf { it.isNotBlank() && it != "null" }
+        // titles object — prefer en, fall back to main / user-preferred / ja-ro.
+        val titles = o.optJSONObject("titles")
+        val romaji = titles?.optString("ja-ro")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: titles?.optString("main")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: titles?.optString("user-preferred")?.takeIf { it.isNotBlank() && it != "null" }
             ?: return null
-        val english = titleObj?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
-        val native = titleObj?.optString("native")?.takeIf { it.isNotBlank() && it != "null" }
+        val english = titles?.optString("en")?.takeIf { it.isNotBlank() && it != "null" }
+        val native = titles?.optString("ja")?.takeIf { it.isNotBlank() && it != "null" }
+
+        // images object — coverXl > coverLg > coverMd
+        val images = o.optJSONObject("images")
+        val cover = images?.optString("coverXl")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: images?.optString("coverLg")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: images?.optString("coverMd")?.takeIf { it.isNotBlank() && it != "null" }
 
         val format = o.optString("format").takeIf { it.isNotBlank() && it != "null" }
             ?: o.optString("type").takeIf { it.isNotBlank() && it != "null" }
@@ -115,13 +120,6 @@ object AniMapperApi {
 
         val year = o.optInt("seasonYear", 0).takeIf { it > 0 }
             ?: o.optString("startDate").take(4).toIntOrNull()
-
-        val cover = o.optJSONObject("coverImage")
-            ?.optString("extraLarge")?.takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optJSONObject("coverImage")
-                ?.optString("large")?.takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("image").takeIf { it.isNotBlank() && it != "null" }
-            ?: o.optString("cover").takeIf { it.isNotBlank() && it != "null" }
 
         val avgScore = o.optInt("averageScore", 0).takeIf { it > 0 }
             ?: o.optDouble("score", 0.0).takeIf { it > 0 }?.let { (it * 10).toInt() }
