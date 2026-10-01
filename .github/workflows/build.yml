@@ -75,21 +75,23 @@ jobs:
       - name: Build plugins
         working-directory: src
         env:
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
-          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
-          NEW_VERSION: ${{ steps.ver.outputs.version }}
-          IS_DEV_BUILD: ${{ github.ref_name == 'dev' }}
+         TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+         TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
+         MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+         ANIMESCHEDULE_API_KEY: ${{ secrets.ANIMESCHEDULE_API_KEY }}
+         NEW_VERSION: ${{ steps.ver.outputs.version }}
+         IS_DEV_BUILD: ${{ github.ref_name == 'dev' }}
         run: gradle make --no-daemon --no-configuration-cache --no-build-cache
 
       - name: Generate plugins.json
         working-directory: src
         env:
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
-          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
-          NEW_VERSION: ${{ steps.ver.outputs.version }}
-          IS_DEV_BUILD: ${{ github.ref_name == 'dev' }}
+         TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+         TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
+         MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+         ANIMESCHEDULE_API_KEY: ${{ secrets.ANIMESCHEDULE_API_KEY }}
+         NEW_VERSION: ${{ steps.ver.outputs.version }}
+         IS_DEV_BUILD: ${{ github.ref_name == 'dev' }}
         run: gradle makePluginsJson --no-daemon --no-configuration-cache --no-build-cache
     
       - name: Copy artifacts to builds
