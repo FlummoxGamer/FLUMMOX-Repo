@@ -33,12 +33,29 @@ object ShikimoriApi {
         ConcurrentHashMap<String, CompletableDeferred<List<AniListApi.Entry>>>()
 
     private var genreMap: Map<String, Int>? = null
+    private lateinit var cacheDir: java.io.File
     // Only ONE genre-map fetch fires even when 18 rows race.
     @Volatile private var genreMapDeferred: CompletableDeferred<Map<String, Int>?>? = null
     private lateinit var prefs: android.content.SharedPreferences
 
     fun init(context: Context) {
-        prefs = context.getSharedPreferences("bingeanime_shikimori", Context.MODE_PRIVATE)
+    prefs = context.getSharedPreferences("bingeanime_shikimori", Context.MODE_PRIVATE)
+    cacheDir = java.io.File(context.filesDir, "shikimori_rows").apply { mkdirs() }
+    // Load disk-cached rows into memory. Only accept entries newer
+    // than ROW_TTL; stale files are deleted.
+    val now = System.currentTimeMillis()
+    for (f in cacheDir.listFiles() ?: emptyArray()) {
+        if (now - f.lastModified() > ROW_TTL) {
+            f.delete()
+            continue
+        }
+        try {
+            val content = f.readText()
+            val rowName = f.nameWithoutExtension
+            BCCache.put("shikimori:row:$rowName:30", content)
+        } catch (_: Exception) {}
+    }
+    BLog.v("shikimori disk cache loaded (${cacheDir.listFiles()?.size ?: 0} files)")
         val cached = prefs.getString("genre_map", null)
         val ts = prefs.getLong("genre_map_ts", 0L)
         if (cached != null && System.currentTimeMillis() - ts < GENRE_TTL) {
@@ -57,14 +74,27 @@ object ShikimoriApi {
         "User-Agent" to UA
     )
 
-    private suspend fun throttle() {
-        rateMutex.withLock {
-            val now = System.currentTimeMillis()
-            val gap = now - lastRequestMs
-            if (gap < MIN_GAP_MS) delay(MIN_GAP_MS - gap)
-            lastRequestMs = System.currentTimeMillis()
+    // Holds the lock through the entire HTTP request. Guarantees
+// strictly serial execution with MIN_GAP_MS between requests.
+// Previous version released the lock before app.get() fired,
+// letting 5+ requests go out within the same second and trip
+// Shikimori's burst limiter.
+private suspend fun throttledGet(url: String): okhttp3.Response? {
+    return rateMutex.withLock {
+        val now = System.currentTimeMillis()
+        val gap = now - lastRequestMs
+        if (gap < MIN_GAP_MS) delay(MIN_GAP_MS - gap)
+        lastRequestMs = System.currentTimeMillis()
+        try {
+            app.get(url, headers = headers())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("shikimori HTTP failed: ${e.message}")
+            null
         }
     }
+}
 
     // Row name -> (param-key, param-value, sort-order)
     //
@@ -119,8 +149,10 @@ object ShikimoriApi {
             return
         }
         try {
-            throttle()
-            val res = app.get("$BASE/genres", headers = headers())
+            val res = throttledGet("$BASE/genres") ?: run {
+                deferred.complete(null)
+                return
+            }
             if (res.code !in 200..299) {
                 BLog.e("shikimori genre fetch HTTP ${res.code}")
                 deferred.complete(null)
@@ -206,31 +238,32 @@ object ShikimoriApi {
     }
 
     private suspend fun fetchAndCache(
-        ck: String, rowName: String,
-        query: Triple<String, String, String>, limit: Int
-    ): List<AniListApi.Entry> {
-        throttle()
-        val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=${query.third}"
-        BLog.v("shikimori '$rowName' → $url")
-        return try {
-            val res = app.get(url, headers = headers())
-            if (res.code == 429) { BLog.e("shikimori '$rowName' 429"); return emptyList() }
-            if (res.code !in 200..299) { BLog.e("shikimori '$rowName' HTTP ${res.code}"); return emptyList() }
-            val arr = JSONArray(res.text)
-            BCCache.put(ck, arr.toString())
-            parseList(arr)
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e
-        } catch (e: Exception) { BLog.e("shikimori '$rowName' failed: ${e.message}"); emptyList() }
+    ck: String, rowName: String,
+    query: Triple<String, String, String>, limit: Int
+): List<AniListApi.Entry> {
+    val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=${query.third}"
+    val res = throttledGet(url) ?: return emptyList()
+    BLog.v("shikimori '$rowName' → HTTP ${res.code} len=${res.text.length}")
+    if (res.code == 429) { BLog.e("shikimori '$rowName' 429"); return emptyList() }
+    if (res.code !in 200..299) { BLog.e("shikimori '$rowName' HTTP ${res.code}"); return emptyList() }
+    val arr = try { JSONArray(res.text) } catch (e: Exception) {
+        BLog.e("shikimori '$rowName' JSON parse: ${e.message}"); return emptyList()
     }
-
+    // Persist to disk so home rows survive process kill.
+    try {
+        val f = java.io.File(cacheDir, "$rowName.json")
+        f.writeText(arr.toString())
+    } catch (_: Exception) {}
+    BCCache.put(ck, arr.toString())
+    return parseList(arr)
+    }
     suspend fun detail(shikiId: Int): AniListApi.Entry? {
         val ck = "shikimori:detail:$shikiId"
         BCCache.get(ck, ROW_TTL)?.let { cached ->
             return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
         }
-        throttle()
+        val res = throttledGet("$BASE/animes/$shikiId") ?: return null
         return try {
-            val res = app.get("$BASE/animes/$shikiId", headers = headers())
             if (res.code !in 200..299) return null
             val obj = JSONObject(res.text)
             BCCache.put(ck, obj.toString())
