@@ -83,12 +83,25 @@ object BingeAnimeSettings {
 
     fun setRowOrder(order: List<String>) { setKey(K_ROW_ORDER, order.joinToString("|")) }
 
-    fun isRowEnabled(name: String): Boolean = getKey<Boolean>(K_ROW_PREFIX + name) ?: true
+    // Rows ON by default on fresh install. Everything else is available
+// via Settings → Homepage but starts OFF. This keeps cold-start
+// Shikimori traffic at 20 requests (vs 28 if all were on) and
+// surfaces the mainstream rows first.
+private val DEFAULT_ON_ROWS = setOf(
+    "Trending", "Top Anime Series", "Top Anime Movies", "Donghua",
+    "Shounen", "Seinen", "Shoujo", "Josei", "Kids",
+    "Adventure", "Isekai", "Comedy", "Fantasy", "Romance",
+    "Slice of Life", "Sports",
+    "Ecchi", "School", "Thriller"
+)
 
-    fun resetHomeToDefaults() {
-        setKey(K_ROW_ORDER, ROWS.map { it.second }.joinToString("|"))
-        for ((_, label) in ROWS) setKey(K_ROW_PREFIX + label, true)
-    }
+fun isRowEnabled(name: String): Boolean =
+    getKey<Boolean>(K_ROW_PREFIX + name) ?: (name in DEFAULT_ON_ROWS)
+
+fun resetHomeToDefaults() {
+    setKey(K_ROW_ORDER, ROWS.map { it.second }.joinToString("|"))
+    for ((_, label) in ROWS) setKey(K_ROW_PREFIX + label, label in DEFAULT_ON_ROWS)
+}
 
     // ── helpers ──
     private fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
