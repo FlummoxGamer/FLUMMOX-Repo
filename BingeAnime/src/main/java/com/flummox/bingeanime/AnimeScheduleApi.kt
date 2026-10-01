@@ -103,10 +103,17 @@ object AnimeScheduleApi {
     //   Sub 1100+ / Dub 1000+)
     //   episodeOverride — generic fallback
     // For ongoing series, any of these gives the real current count.
-    val subOverride = o.optInt("subEpisodeOverride", 0).takeIf { it > 0 }
-    val dubOverride = o.optInt("dubEpisodeOverride", 0).takeIf { it > 0 }
-    val genericOverride = o.optInt("episodeOverride", 0).takeIf { it > 0 }
-    val episodes = subOverride ?: genericOverride
+    // Each field is an object: {overrideDate, overrideEpisode, episodesAired}.
+    // Real count is nested under overrideEpisode.
+    val subOverride = o.optJSONObject("subEpisodeOverride")
+        ?.optInt("overrideEpisode", 0)?.takeIf { it > 0 }
+    val dubOverride = o.optJSONObject("dubEpisodeOverride")
+        ?.optInt("overrideEpisode", 0)?.takeIf { it > 0 }
+    val genericOverride = o.optJSONObject("episodeOverride")
+        ?.optInt("overrideEpisode", 0)?.takeIf { it > 0 }
+    // Prefer the highest available count. One Piece: sub=0 (unset),
+    // generic=1180, dub=1156. generic wins → 1180.
+    val episodes = listOfNotNull(subOverride, genericOverride, dubOverride).maxOrNull()
         ?: o.optInt("episodes", 0).takeIf { it > 0 }
 
     val mediaTypes = o.optJSONArray("mediaTypes")
