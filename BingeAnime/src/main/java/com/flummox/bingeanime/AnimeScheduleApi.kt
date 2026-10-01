@@ -63,6 +63,11 @@ object AnimeScheduleApi {
         BLog.v("animeschedule detail $route HTTP ${res.code} len=${res.text.length}")
         if (res.code !in 200..299) return null
         val root = JSONObject(res.text)
+        BLog.v("animeschedule detail $route subOverride=${root.opt("subEpisodeOverride")} " +
+            "dubOverride=${root.opt("dubEpisodeOverride")} " +
+            "genericOverride=${root.opt("episodeOverride")} " +
+            "episodes=${root.opt("episodes")} " +
+            "premier=${root.opt("premier")}")
         BCCache.put(ck, root.toString())
         parseEntry(root)
     } catch (e: kotlinx.coroutines.CancellationException) {
