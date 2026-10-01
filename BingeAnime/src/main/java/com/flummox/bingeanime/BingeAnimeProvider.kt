@@ -143,6 +143,7 @@ class BingeAnimeProvider : MainAPI() {
             val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", url)
             return newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
                 this.posterUrl = entry.coverImage
+                this.backgroundPosterUrl = entry.bannerUrl
                 this.plot = plotWithStatus
                 this.year = yearInt
                 this.tags = entry.genres
@@ -159,15 +160,16 @@ class BingeAnimeProvider : MainAPI() {
                 this.episode = epNum
                 this.posterUrl = entry.coverImage
             }
-        }
+         }
 
-        return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
-            this.posterUrl = entry.coverImage
-            this.plot = plotWithStatus
-            this.year = yearInt
-            this.tags = entry.genres
-            if (score10 != null) this.score = Score.from10(score10)
-        }
+         return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
+             this.posterUrl = entry.coverImage
+             this.backgroundPosterUrl = entry.bannerUrl
+             this.plot = plotWithStatus
+             this.year = yearInt
+             this.tags = entry.genres
+             if (score10 != null) this.score = Score.from10(score10)
+         }
     }
 
     override suspend fun loadLinks(
