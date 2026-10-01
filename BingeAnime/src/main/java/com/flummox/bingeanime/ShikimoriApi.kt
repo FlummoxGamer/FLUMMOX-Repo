@@ -228,6 +228,9 @@ private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = l
         val imgPath = imgObj?.optString("original")?.takeIf { it.isNotBlank() }
             ?: imgObj?.optString("preview")?.takeIf { it.isNotBlank() }
         val cover = imgPath?.let { if (it.startsWith("http")) it else "$IMG_BASE$it" }
+        // Shikimori only has portrait posters. Use the same URL for
+        // banner — no better source available.
+        val banner = cover
         val kind = o.optString("kind").takeIf { it.isNotBlank() }
         val format = when (kind) {
             "tv" -> "TV"; "movie" -> "MOVIE"; "ova" -> "OVA"; "ona" -> "ONA"
@@ -252,6 +255,7 @@ private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = l
             title = AniListApi.Title(romaji = name, english = null, native = russian),
             format = format, episodes = episodes, seasonYear = year,
             startDate = airedOn, description = null, coverImage = cover,
+            bannerUrl = banner,
             averageScore = averageScore, status = status, genres = genres,
             country = null, relations = emptyList(), source = "shikimori"
         )
