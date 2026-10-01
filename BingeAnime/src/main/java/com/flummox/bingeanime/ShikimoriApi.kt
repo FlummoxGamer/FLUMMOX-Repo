@@ -54,33 +54,33 @@ object ShikimoriApi {
         }
     }
 
-    // Row name → Shikimori query param name and value.
-    // Handles theme vs genre distinction.
-    // Row name → (param-key, param-value, sort-order)
-//   MAL/S hikimori splits categories: `genre` for genres, `theme`
-//   for themes. Isekai, School, Historical are themes.
-//   Sort: `popularity` for Trending (hot right now), `ranked` for
-//   Top Series/Movies and all genre rows (top-scored, distinct
-//   from popular — fixes the Trending=TopSeries=Action overlap).
+    // Row name → query params. Genre/theme IDs are NOT hardcoded.
+// They're resolved at runtime from /api/genres, cached 7 days in
+// SharedPreferences. If a name isn't found, the row is skipped.
+// This prevents the "wrong genre in wrong row" bug we hit when
+// IDs were guessed (Death Note in Isekai, School==Historical).
 private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = linkedMapOf(
     "Trending"          to Triple("order", "popularity", "popularity"),
     "Top Anime Series"  to Triple("kind", "tv", "ranked"),
     "Top Anime Movies"  to Triple("kind", "movie", "ranked"),
-    "Action"            to Triple("genre", "1", "ranked"),
-    "Adventure"         to Triple("genre", "2", "ranked"),
-    "Isekai"            to Triple("theme", "62", "ranked"),
-    "Comedy"            to Triple("genre", "4", "ranked"),
-    "Drama"             to Triple("genre", "8", "ranked"),
-    "Fantasy"           to Triple("genre", "10", "ranked"),
-    "Romance"           to Triple("genre", "22", "ranked"),
-    "Sci-Fi"            to Triple("genre", "24", "ranked"),
-    "Slice of Life"     to Triple("genre", "36", "ranked"),
-    "Supernatural"      to Triple("genre", "37", "ranked"),
-    "Mystery"           to Triple("genre", "7", "ranked"),
-    "Sports"            to Triple("genre", "30", "ranked"),
-    "Mecha"             to Triple("genre", "18", "ranked"),
-    "School"            to Triple("theme", "23", "ranked"),
-    "Historical"        to Triple("theme", "13", "ranked")
+    // Remaining rows are genre-name lookups resolved at runtime.
+    // The value field is the row's display name — matched against
+    // /api/genres response.
+    "Action"            to Triple("genre_name", "Action", "ranked"),
+    "Adventure"         to Triple("genre_name", "Adventure", "ranked"),
+    "Isekai"            to Triple("theme_name", "Isekai", "ranked"),
+    "Comedy"            to Triple("genre_name", "Comedy", "ranked"),
+    "Drama"             to Triple("genre_name", "Drama", "ranked"),
+    "Fantasy"           to Triple("genre_name", "Fantasy", "ranked"),
+    "Romance"           to Triple("genre_name", "Romance", "ranked"),
+    "Sci-Fi"            to Triple("genre_name", "Sci-Fi", "ranked"),
+    "Slice of Life"     to Triple("genre_name", "Slice of Life", "ranked"),
+    "Supernatural"      to Triple("genre_name", "Supernatural", "ranked"),
+    "Mystery"           to Triple("genre_name", "Mystery", "ranked"),
+    "Sports"            to Triple("genre_name", "Sports", "ranked"),
+    "Mecha"             to Triple("genre_name", "Mecha", "ranked"),
+    "School"            to Triple("theme_name", "School", "ranked"),
+    "Historical"        to Triple("theme_name", "Historical", "ranked")
 )
 
     private fun headers(): Map<String, String> = mapOf(
@@ -97,60 +97,88 @@ private val ROW_QUERY: LinkedHashMap<String, Triple<String, String, String>> = l
         }
     }
 
-    // ── genre map fetch ──
-    private suspend fun ensureGenreMap() {
-        if (genreMap != null) return
-        try {
-            throttle()
-            val res = app.get("$BASE/genres", headers = headers())
-            if (res.code !in 200..299) return
-            val arr = JSONArray(res.text)
-            val map = mutableMapOf<String, Int>()
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                if (o.optString("entry_type") != "Anime") continue
-                if (o.optString("kind") != "genre") continue
-                val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
-                val id = o.optInt("id", 0)
-                if (id > 0) map[name] = id
-            }
-            genreMap = map
-            val obj = JSONObject()
-            map.forEach { (k, v) -> obj.put(k, v) }
-            prefs.edit()
-                .putString("genre_map", obj.toString())
-                .putLong("genre_map_ts", System.currentTimeMillis())
-                .apply()
-            BLog.d("shikimori genre map fetched (${map.size} entries)")
-        } catch (e: Exception) {
-            BLog.e("shikimori genre map fetch failed: ${e.message}")
+    // key: "genre:Action" or "theme:Isekai" -> Shikimori id
+private suspend fun ensureGenreMap() {
+    if (genreMap != null) return
+    try {
+        throttle()
+        val res = app.get("$BASE/genres", headers = headers())
+        if (res.code !in 200..299) {
+            BLog.e("shikimori genre fetch HTTP ${res.code}")
+            return
         }
+        val arr = JSONArray(res.text)
+        val map = mutableMapOf<String, Int>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (!o.optString("entry_type").equals("Anime", ignoreCase = true)) continue
+            val kind = o.optString("kind").lowercase()
+            if (kind != "genre" && kind != "theme") continue
+            val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+            val id = o.optInt("id", 0)
+            if (id > 0) map["$kind:$name"] = id
+        }
+        genreMap = map
+        val obj = JSONObject()
+        map.forEach { (k, v) -> obj.put(k, v) }
+        prefs.edit()
+            .putString("genre_map", obj.toString())
+            .putLong("genre_map_ts", System.currentTimeMillis())
+            .apply()
+        BLog.d("shikimori genre map fetched (${map.size} entries)")
+    } catch (e: Exception) {
+        BLog.e("shikimori genre map fetch failed: ${e.message}")
     }
+}
+
+// Resolve a row's (kind=genre|theme, name) to its Shikimori ID.
+private suspend fun resolveRowId(name: String, kind: String): Int? {
+    ensureGenreMap()
+    val map = genreMap ?: return null
+    val key = "$kind:$name"
+    val id = map[key]
+    if (id == null) BLog.d("shikimori: no id for $key (map has ${map.size} entries)")
+    return id
+}
 
     suspend fun fetchForRow(rowName: String, limit: Int = 30): List<AniListApi.Entry> {
-        val query = ROW_QUERY[rowName] ?: return emptyList()
-        val ck = "shikimori:row:$rowName:$limit"
-        BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseList(JSONArray(cached)) } catch (_: Exception) { emptyList() }
-        }
-
-        inFlightRows[ck]?.let { return it.await() }
-        val deferred = CompletableDeferred<List<AniListApi.Entry>>()
-        val prior = inFlightRows.putIfAbsent(ck, deferred)
-        if (prior != null) return prior.await()
-
-        return try {
-            val result = fetchAndCache(ck, rowName, query, limit)
-            deferred.complete(result)
-            result
-        } catch (e: Throwable) {
-            deferred.completeExceptionally(e)
-            throw e
-        } finally {
-            inFlightRows.remove(ck)
-        }
+    val cfg = ROW_QUERY[rowName] ?: return emptyList()
+    val ck = "shikimori:row:$rowName:$limit"
+    BCCache.get(ck, ROW_TTL)?.let { cached ->
+        return try { parseList(JSONArray(cached)) } catch (_: Exception) { emptyList() }
     }
 
+    inFlightRows[ck]?.let { return it.await() }
+    val deferred = CompletableDeferred<List<AniListApi.Entry>>()
+    val prior = inFlightRows.putIfAbsent(ck, deferred)
+    if (prior != null) return prior.await()
+
+    return try {
+        // Resolve genre/theme name → id, if this row needs one.
+        val resolvedCfg: Triple<String, String, String>? = when (cfg.first) {
+            "genre_name" -> resolveRowId(cfg.second, "genre")?.let {
+                Triple("genre", it.toString(), cfg.third)
+            }
+            "theme_name" -> resolveRowId(cfg.second, "theme")?.let {
+                Triple("theme", it.toString(), cfg.third)
+            }
+            else -> cfg
+        }
+        if (resolvedCfg == null) {
+            BLog.d("shikimori '$rowName' unresolved — skipping")
+            deferred.complete(emptyList())
+            return emptyList()
+        }
+        val result = fetchAndCache(ck, rowName, resolvedCfg, limit)
+        deferred.complete(result)
+        result
+    } catch (e: Throwable) {
+        deferred.completeExceptionally(e)
+        throw e
+    } finally {
+        inFlightRows.remove(ck)
+    }
+    }
     private suspend fun fetchAndCache(
         ck: String, rowName: String,
         query: Triple<String, String, String>, limit: Int
