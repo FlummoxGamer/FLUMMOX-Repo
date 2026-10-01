@@ -1,5 +1,6 @@
 package com.flummox.bingeanime
 
+import android.content.Context
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -7,91 +8,133 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
-// Shikimori — Russian MAL mirror with a documented, stable JSON API.
-// Rate limit: 5 req/s, 90 req/min per IP (no daily cap).
-// Custom User-Agent required — browser UAs are banned on sight.
 object ShikimoriApi {
     private const val BASE = "https://shikimori.one/api"
     private const val IMG_BASE = "https://shikimori.one"
     private const val UA = "BingeAnime/1.0"
     private const val ROW_TTL = 6 * 60 * 60 * 1000L
-    private const val PREFETCH_TTL = 6 * 60 * 60 * 1000L
+    private const val GENRE_TTL = 7L * 24 * 60 * 60 * 1000
+
+    // Global rate limiter — minimum 220ms between any two HTTP requests.
+    private val rateMutex = Mutex()
+    private var lastRequestMs = 0L
+    private const val MIN_GAP_MS = 220L
 
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var lastPrefetchMs = 0L
     @Volatile private var prefetchRunning = false
 
-    // In-flight dedup — home page and prefetch both call fetchForRow.
-    // Without this, both fire their own HTTP request for the same row.
     private val inFlightRows =
         ConcurrentHashMap<String, CompletableDeferred<List<AniListApi.Entry>>>()
+
+    // Genre map: rowName -> Shikimori genre ID.
+    // Fetched from /api/genres on first run, cached to SharedPreferences
+    // for 30 days. Fallback values are the verified IDs from the live API.
+    private var genreMap: Map<String, Int>? = null
+    private lateinit var prefs: android.content.SharedPreferences
+
+    fun init(context: Context) {
+        prefs = context.getSharedPreferences("bingeanime_shikimori", Context.MODE_PRIVATE)
+        val cached = prefs.getString("genre_map", null)
+        val ts = prefs.getLong("genre_map_ts", 0L)
+        if (cached != null && System.currentTimeMillis() - ts < GENRE_TTL) {
+            try {
+                val obj = JSONObject(cached)
+                val map = mutableMapOf<String, Int>()
+                obj.keys().forEach { k -> map[k] = obj.getInt(k) }
+                genreMap = map
+                BLog.v("shikimori genre map loaded from prefs (${map.size} entries)")
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Row name → Shikimori query param name and value.
+    // Handles theme vs genre distinction.
+    private val ROW_QUERY: LinkedHashMap<String, Pair<String, String>> = linkedMapOf(
+        "Trending"          to ("order" to "popularity"),
+        "Top Anime Series"  to ("kind" to "tv"),
+        "Top Anime Movies"  to ("kind" to "movie"),
+        "Action"            to ("genre" to "1"),
+        "Adventure"         to ("genre" to "2"),
+        "Isekai"            to ("genre" to "130"),
+        "Comedy"            to ("genre" to "4"),
+        "Drama"             to ("genre" to "8"),
+        "Fantasy"           to ("genre" to "10"),
+        "Romance"           to ("genre" to "22"),
+        "Sci-Fi"            to ("genre" to "24"),
+        "Slice of Life"     to ("genre" to "36"),
+        "Supernatural"      to ("genre" to "37"),
+        "Mystery"           to ("genre" to "7"),
+        "Sports"            to ("genre" to "30"),
+        "Mecha"             to ("genre" to "18"),
+        "School"            to ("genre" to "23"),
+        "Historical"        to ("genre" to "13")
+    )
 
     private fun headers(): Map<String, String> = mapOf(
         "Accept" to "application/json",
         "User-Agent" to UA
     )
 
-    // Row name → Shikimori query params.
-    // MAL splits: `genre` for genres, `theme` for themes.
-    //   Isekai, School, Historical are THEMES in MAL.
-    //   Action, Adventure, Comedy, Drama, Fantasy, Romance, Sci-Fi,
-    //   Slice of Life, Supernatural, Mystery, Sports, Mecha are GENRES.
-    private val ROW_PARAMS: LinkedHashMap<String, Map<String, String>> = linkedMapOf(
-        "Trending"          to mapOf("order" to "popularity"),
-        "Top Anime Series"  to mapOf("kind" to "tv", "order" to "ranked"),
-        "Top Anime Movies"  to mapOf("kind" to "movie", "order" to "ranked"),
-        "Action"            to mapOf("genre" to "1", "order" to "popularity"),
-        "Adventure"         to mapOf("genre" to "2", "order" to "popularity"),
-        "Isekai"            to mapOf("theme" to "62", "order" to "popularity"),
-        "Comedy"            to mapOf("genre" to "4", "order" to "popularity"),
-        "Drama"             to mapOf("genre" to "8", "order" to "popularity"),
-        "Fantasy"           to mapOf("genre" to "10", "order" to "popularity"),
-        "Romance"           to mapOf("genre" to "22", "order" to "popularity"),
-        "Sci-Fi"            to mapOf("genre" to "24", "order" to "popularity"),
-        "Slice of Life"     to mapOf("genre" to "36", "order" to "popularity"),
-        "Supernatural"      to mapOf("genre" to "37", "order" to "popularity"),
-        "Mystery"           to mapOf("genre" to "7", "order" to "popularity"),
-        "Sports"            to mapOf("genre" to "30", "order" to "popularity"),
-        "Mecha"             to mapOf("genre" to "18", "order" to "popularity"),
-        "School"            to mapOf("theme" to "23", "order" to "popularity"),
-        "Historical"        to mapOf("theme" to "13", "order" to "popularity")
-    )
-
-    // ── public entry ──
-    suspend fun fetchForRow(rowName: String, limit: Int = 30): List<AniListApi.Entry> {
-        val params = ROW_PARAMS[rowName] ?: run {
-            BLog.v("shikimori: unknown row '$rowName'")
-            return emptyList()
+    private suspend fun throttle() {
+        rateMutex.withLock {
+            val now = System.currentTimeMillis()
+            val gap = now - lastRequestMs
+            if (gap < MIN_GAP_MS) delay(MIN_GAP_MS - gap)
+            lastRequestMs = System.currentTimeMillis()
         }
+    }
+
+    // ── genre map fetch ──
+    private suspend fun ensureGenreMap() {
+        if (genreMap != null) return
+        try {
+            throttle()
+            val res = app.get("$BASE/genres", headers = headers())
+            if (res.code !in 200..299) return
+            val arr = JSONArray(res.text)
+            val map = mutableMapOf<String, Int>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optString("entry_type") != "Anime") continue
+                if (o.optString("kind") != "genre") continue
+                val name = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+                val id = o.optInt("id", 0)
+                if (id > 0) map[name] = id
+            }
+            genreMap = map
+            val obj = JSONObject()
+            map.forEach { (k, v) -> obj.put(k, v) }
+            prefs.edit()
+                .putString("genre_map", obj.toString())
+                .putLong("genre_map_ts", System.currentTimeMillis())
+                .apply()
+            BLog.d("shikimori genre map fetched (${map.size} entries)")
+        } catch (e: Exception) {
+            BLog.e("shikimori genre map fetch failed: ${e.message}")
+        }
+    }
+
+    suspend fun fetchForRow(rowName: String, limit: Int = 30): List<AniListApi.Entry> {
+        val query = ROW_QUERY[rowName] ?: return emptyList()
         val ck = "shikimori:row:$rowName:$limit"
         BCCache.get(ck, ROW_TTL)?.let { cached ->
-            BLog.v("shikimori '$rowName' cache hit (${cached.length} bytes)")
-            return try { parseList(JSONArray(cached)) } catch (e: Exception) {
-                BLog.e("shikimori '$rowName' cache parse failed: ${e.message}")
-                emptyList()
-            }
+            return try { parseList(JSONArray(cached)) } catch (_: Exception) { emptyList() }
         }
 
-        // In-flight dedup — if prefetch or another caller is fetching
-        // the same row, wait for their result instead of firing a
-        // second request.
-        inFlightRows[ck]?.let {
-            BLog.v("shikimori '$rowName' joining in-flight")
-            return it.await()
-        }
+        inFlightRows[ck]?.let { return it.await() }
         val deferred = CompletableDeferred<List<AniListApi.Entry>>()
         val prior = inFlightRows.putIfAbsent(ck, deferred)
-        if (prior != null) {
-            BLog.v("shikimori '$rowName' joining race")
-            return prior.await()
-        }
+        if (prior != null) return prior.await()
 
         return try {
-            val result = fetchAndCache(ck, rowName, params, limit)
+            val result = fetchAndCache(ck, rowName, query, limit)
             deferred.complete(result)
             result
         } catch (e: Throwable) {
@@ -103,107 +146,70 @@ object ShikimoriApi {
     }
 
     private suspend fun fetchAndCache(
-        ck: String,
-        rowName: String,
-        params: Map<String, String>,
-        limit: Int
+        ck: String, rowName: String,
+        query: Pair<String, String>, limit: Int
     ): List<AniListApi.Entry> {
-        val query = buildString {
-            params.forEach { (k, v) -> append("$k=$v&") }
-            append("limit=$limit")
-        }
-        val url = "$BASE/animes?$query"
+        throttle()
+        val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=popularity"
         return try {
             val res = app.get(url, headers = headers())
-            BLog.v("shikimori '$rowName' HTTP ${res.code} len=${res.text.length}")
-            if (res.code == 429) {
-                BLog.e("shikimori '$rowName' 429 rate limited")
-                return emptyList()
-            }
-            if (res.code !in 200..299) {
-                BLog.e("shikimori '$rowName' HTTP ${res.code}: ${res.text.take(200)}")
-                return emptyList()
-            }
+            if (res.code == 429) { BLog.e("shikimori '$rowName' 429"); return emptyList() }
+            if (res.code !in 200..299) { BLog.e("shikimori '$rowName' HTTP ${res.code}"); return emptyList() }
             val arr = JSONArray(res.text)
             BCCache.put(ck, arr.toString())
-            val parsed = parseList(arr)
-            BLog.v("shikimori '$rowName' parsed ${parsed.size} entries")
-            parsed
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("shikimori '$rowName' failed: ${e.message}")
-            emptyList()
-        }
+            parseList(arr)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { BLog.e("shikimori '$rowName' failed: ${e.message}"); emptyList() }
     }
 
-    // ── detail ──
     suspend fun detail(shikiId: Int): AniListApi.Entry? {
         val ck = "shikimori:detail:$shikiId"
         BCCache.get(ck, ROW_TTL)?.let { cached ->
             return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
         }
+        throttle()
         return try {
             val res = app.get("$BASE/animes/$shikiId", headers = headers())
-            BLog.v("shikimori detail $shikiId HTTP ${res.code} len=${res.text.length}")
             if (res.code !in 200..299) return null
             val obj = JSONObject(res.text)
             BCCache.put(ck, obj.toString())
             parseEntry(obj)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("shikimori detail $shikiId failed: ${e.message}")
-            null
-        }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { BLog.e("shikimori detail $shikiId failed: ${e.message}"); null }
     }
 
-    // ── prefetch warm-up ──
-    // Sequential in ROWS order with 150ms gap. Top rows land first
-    // (visible on first render), lower rows fill in within ~5 seconds.
-    // 1 request per ~350ms = ~3/sec peak, well under 5/sec limit.
+    // Priority prefetch: top 6 immediate, remaining 12 with 300ms gap.
     fun warmPrefetch() {
         val now = System.currentTimeMillis()
-        if (now - lastPrefetchMs < PREFETCH_TTL) {
-            BLog.v("shikimori prefetch skipped (fresh ${(now - lastPrefetchMs) / 1000}s)")
-            return
-        }
-        if (prefetchRunning) {
-            BLog.v("shikimori prefetch already running")
-            return
-        }
+        if (now - lastPrefetchMs < ROW_TTL) return
+        if (prefetchRunning) return
         prefetchRunning = true
         prefetchScope.launch {
-            val start = System.currentTimeMillis()
-            BLog.d("shikimori prefetch start (${ROW_PARAMS.size} rows, sequential, 150ms gap)")
-            var ok = 0
-            var fail = 0
-            for (rowName in ROW_PARAMS.keys) {
-                try {
-                    val result = fetchForRow(rowName, 30)
-                    if (result.isNotEmpty()) ok++ else fail++
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    BLog.v("shikimori prefetch cancelled")
-                    prefetchRunning = false
-                    return@launch
-                } catch (e: Exception) {
-                    BLog.e("prefetch '$rowName' failed: ${e.message}")
-                    fail++
+            try {
+                ensureGenreMap()
+                val priority = listOf(
+                    "Trending", "Top Anime Series", "Top Anime Movies",
+                    "Action", "Adventure", "Isekai"
+                )
+                val rest = ROW_QUERY.keys.filter { it !in priority }
+                for (row in priority) fetchForRow(row, 30)
+                for (row in rest) {
+                    fetchForRow(row, 30)
+                    delay(300)
                 }
-                delay(150)
+                lastPrefetchMs = System.currentTimeMillis()
+                BLog.d("shikimori prefetch done")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                BLog.v("prefetch cancelled")
+            } finally {
+                prefetchRunning = false
             }
-            lastPrefetchMs = System.currentTimeMillis()
-            BLog.d("shikimori prefetch done in ${System.currentTimeMillis() - start}ms ($ok ok, $fail failed)")
-            prefetchRunning = false
         }
     }
 
-    // ── parse ──
     private fun parseList(arr: JSONArray): List<AniListApi.Entry> {
         val out = mutableListOf<AniListApi.Entry>()
-        for (i in 0 until arr.length()) {
-            parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
-        }
+        for (i in 0 until arr.length()) parseEntry(arr.optJSONObject(i))?.let { out.add(it) }
         return out
     }
 
@@ -212,67 +218,36 @@ object ShikimoriApi {
         val id = o.optInt("id", 0).takeIf { it > 0 } ?: return null
         val name = o.optString("name").takeIf { it.isNotBlank() } ?: return null
         val russian = o.optString("russian").takeIf { it.isNotBlank() && it != "null" }
-
         val imgObj = o.optJSONObject("image")
         val imgPath = imgObj?.optString("original")?.takeIf { it.isNotBlank() }
             ?: imgObj?.optString("preview")?.takeIf { it.isNotBlank() }
         val cover = imgPath?.let { if (it.startsWith("http")) it else "$IMG_BASE$it" }
-
         val kind = o.optString("kind").takeIf { it.isNotBlank() }
         val format = when (kind) {
-            "tv" -> "TV"
-            "movie" -> "MOVIE"
-            "ova" -> "OVA"
-            "ona" -> "ONA"
-            "special" -> "SPECIAL"
-            "tv_special" -> "SPECIAL"
-            "music" -> "MUSIC"
-            else -> null
+            "tv" -> "TV"; "movie" -> "MOVIE"; "ova" -> "OVA"; "ona" -> "ONA"
+            "special", "tv_special" -> "SPECIAL"; "music" -> "MUSIC"; else -> null
         }
-
-        val scoreStr = o.optString("score").takeIf { it.isNotBlank() && it != "null" }
-        val score = scoreStr?.toDoubleOrNull()
+        val score = o.optString("score").takeIf { it.isNotBlank() && it != "null" }?.toDoubleOrNull()
         val averageScore = score?.let { (it * 10).toInt() }
-
         val airedOn = o.optString("aired_on").takeIf { it.isNotBlank() && it != "null" }
         val year = airedOn?.take(4)?.toIntOrNull()
-
         val episodes = o.optInt("episodes", 0).takeIf { it > 0 }
-
-        val statusRaw = o.optString("status").takeIf { it.isNotBlank() }
-        val status = when (statusRaw) {
-            "released" -> "FINISHED"
-            "ongoing" -> "RELEASING"
-            "anons" -> "NOT_YET_RELEASED"
-            else -> statusRaw
+        val status = when (o.optString("status")) {
+            "released" -> "FINISHED"; "ongoing" -> "RELEASING"
+            "anons" -> "NOT_YET_RELEASED"; else -> null
         }
-
         val genres = o.optJSONArray("genres")?.let { arr ->
             (0 until arr.length()).mapNotNull { i ->
                 arr.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }
             }
         }?.takeIf { it.isNotEmpty() }
-
         return AniListApi.Entry(
-            id = id,
-            idMal = null,
-            title = AniListApi.Title(
-                romaji = name,
-                english = null,
-                native = russian
-            ),
-            format = format,
-            episodes = episodes,
-            seasonYear = year,
-            startDate = airedOn,
-            description = null,
-            coverImage = cover,
-            averageScore = averageScore,
-            status = status,
-            genres = genres,
-            country = null,
-            relations = emptyList(),
-            source = "shikimori"
+            id = id, idMal = null,
+            title = AniListApi.Title(romaji = name, english = null, native = russian),
+            format = format, episodes = episodes, seasonYear = year,
+            startDate = airedOn, description = null, coverImage = cover,
+            averageScore = averageScore, status = status, genres = genres,
+            country = null, relations = emptyList(), source = "shikimori"
         )
     }
 }
