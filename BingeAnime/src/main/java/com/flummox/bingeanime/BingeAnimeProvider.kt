@@ -76,14 +76,27 @@ class BingeAnimeProvider : MainAPI() {
 
     // ── search: AniList only ──
     override suspend fun search(query: String): List<SearchResponse>? {
-        BLog.section("search: $query")
-        val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) {
-            BLog.e("AniList search threw: ${e.message}"); emptyList()
-        }
+    BLog.section("search: $query")
+
+    val ani = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
+    } catch (e: Exception) {
+        BLog.e("AniList search threw: ${e.message}"); emptyList()
+    }
+
+    if (ani.isNotEmpty()) {
         val sorted = AniListApi.sortChronological(ani, query)
         BLog.d("search '$query' → AniList=${sorted.size}")
         return sorted.mapNotNull { it.toSearchResponse() }
+    }
+
+    BLog.d("AniList empty for '$query' — trying Jikan")
+    val jikan = try { JikanApi.search(query) } catch (e: CancellationException) { throw e
+    } catch (e: Exception) {
+        BLog.e("Jikan search threw: ${e.message}"); emptyList()
+    }
+    val sorted = AniListApi.sortChronological(jikan, query)
+    BLog.d("search '$query' → Jikan=${sorted.size}")
+    return sorted.mapNotNull { it.toSearchResponse() }
     }
 
     // ── load ──
