@@ -23,11 +23,11 @@ object AniMapperApi {
         BCCache.get(ck, ROW_TTL)?.let { cached ->
             return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
         }
-            // Trending = currently airing, recently active, non-Chinese.
-    // UPDATED_AT alone is dominated by CN (they ping metadata
-    // constantly). Fetch 2× and filter CN out client-side.
+                // Trending = currently airing, recently active. CN pings
+    // metadata far more often, so raw UPDATED_AT is CN-heavy.
+    // Cap CN at ~30% of the row, fill the rest with non-CN.
     val url = "$BASE/search?sortBy=UPDATED_AT&sortOrder=DESC" +
-        "&status=RELEASING&page=1&limit=${limit * 2}"
+        "&status=RELEASING&page=1&limit=${limit * 3}"
     return try {
         val res = app.get(url, headers = headers())
         BLog.v("animapper trending HTTP ${res.code} len=${res.text.length}")
@@ -35,9 +35,17 @@ object AniMapperApi {
         val root = JSONObject(res.text)
         BCCache.put(ck, root.toString())
         val all = parseResponse(root)
+        val cn = all.filter { it.country == "CN" }
         val nonCn = all.filter { it.country != "CN" }
-        val parsed = nonCn.take(limit)
-        BLog.v("animapper trending → ${parsed.size}/${all.size} non-CN entries")
+        val cnCap = (limit * 0.30).toInt().coerceAtLeast(1)
+        val pickedCn = cn.take(cnCap)
+        val pickedNonCn = nonCn.take(limit - pickedCn.size)
+        // If non-CN pool is thin, top up with more CN.
+        val filler = if (pickedCn.size + pickedNonCn.size < limit) {
+            cn.drop(pickedCn.size).take(limit - pickedCn.size - pickedNonCn.size)
+        } else emptyList()
+        val parsed = (pickedNonCn + pickedCn + filler).take(limit)
+        BLog.v("animapper trending → ${parsed.size} (CN=${pickedCn.size + filler.size}/${cn.size}, nonCN=${pickedNonCn.size}/${nonCn.size})")
         parsed
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
