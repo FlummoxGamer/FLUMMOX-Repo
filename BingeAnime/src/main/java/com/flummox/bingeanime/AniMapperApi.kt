@@ -23,23 +23,28 @@ object AniMapperApi {
         BCCache.get(ck, ROW_TTL)?.let { cached ->
             return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
         }
-        val url = "$BASE/search?sortBy=UPDATED_AT&sortOrder=DESC" +
-            "&status=RELEASING&page=1&limit=$limit"
-        return try {
-            val res = app.get(url, headers = headers())
-            BLog.v("animapper trending HTTP ${res.code} len=${res.text.length}")
-            if (res.code !in 200..299) return emptyList()
-            val root = JSONObject(res.text)
-            BCCache.put(ck, root.toString())
-            val parsed = parseResponse(root).take(limit)
-            BLog.v("animapper trending → ${parsed.size} recently-active entries")
-            parsed
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("animapper trending failed: ${e.message}")
-            emptyList()
-        }
+            // Trending = currently airing, recently active, non-Chinese.
+    // UPDATED_AT alone is dominated by CN (they ping metadata
+    // constantly). Fetch 2× and filter CN out client-side.
+    val url = "$BASE/search?sortBy=UPDATED_AT&sortOrder=DESC" +
+        "&status=RELEASING&page=1&limit=${limit * 2}"
+    return try {
+        val res = app.get(url, headers = headers())
+        BLog.v("animapper trending HTTP ${res.code} len=${res.text.length}")
+        if (res.code !in 200..299) return emptyList()
+        val root = JSONObject(res.text)
+        BCCache.put(ck, root.toString())
+        val all = parseResponse(root)
+        val nonCn = all.filter { it.country != "CN" }
+        val parsed = nonCn.take(limit)
+        BLog.v("animapper trending → ${parsed.size}/${all.size} non-CN entries")
+        parsed
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("animapper trending failed: ${e.message}")
+        emptyList()
+    }
     }
 
     suspend fun donghua(limit: Int = 30, yearFloor: Int? = null): List<AniListApi.Entry> {
@@ -71,31 +76,43 @@ object AniMapperApi {
     // Search by exact title. Used by ShikimoriApi as a cover-image
     // fallback for entries whose Shikimori poster is null.
     suspend fun searchByTitle(title: String): AniListApi.Entry? {
-        if (title.isBlank()) return null
-        val ck = "animapper:title:$title"
-        BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
-        }
-        val encoded = java.net.URLEncoder.encode(title, "UTF-8")
-        val url = "$BASE/search?title=$encoded&mediaType=ANIME&page=1&limit=1"
-        return try {
+    if (title.isBlank()) return null
+    val ck = "animapper:title:$title"
+    BCCache.get(ck, ROW_TTL)?.let { cached ->
+        return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
+    }
+    val encoded = java.net.URLEncoder.encode(title, "UTF-8")
+    // Try `q` first (most common convention), then `title`.
+    // AniMapper docs don't publish the search param name.
+    val urls = listOf(
+        "$BASE/search?q=$encoded&mediaType=ANIME&page=1&limit=1",
+        "$BASE/search?title=$encoded&mediaType=ANIME&page=1&limit=1"
+    )
+    for (url in urls) {
+        try {
             val res = app.get(url, headers = headers())
-            if (res.code !in 200..299) return null
+            BLog.v("animapper searchByTitle '$title' HTTP ${res.code} len=${res.text.length}")
+            if (res.code !in 200..299) continue
             val root = JSONObject(res.text)
             val arr = root.optJSONArray("results")
                 ?: root.optJSONArray("data")
                 ?: root.optJSONObject("data")?.optJSONArray("results")
-                ?: return null
-            if (arr.length() == 0) return null
-            val first = arr.optJSONObject(0)?.optJSONObject("result") ?: arr.optJSONObject(0)
-            val entry = parseEntry(first) ?: return null
+                ?: continue
+            if (arr.length() == 0) continue
+            val first = arr.optJSONObject(0)?.optJSONObject("result")
+                ?: arr.optJSONObject(0)
+            val entry = parseEntry(first) ?: continue
             BCCache.put(ck, first.toString())
-            entry
+            BLog.v("animapper searchByTitle '$title' → hit")
+            return entry
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            null
+            BLog.v("animapper searchByTitle '$title' err: ${e.message}")
         }
+    }
+    BLog.v("animapper searchByTitle '$title' → miss")
+    return null
     }
 
     suspend fun detail(id: Int): AniListApi.Entry? {
