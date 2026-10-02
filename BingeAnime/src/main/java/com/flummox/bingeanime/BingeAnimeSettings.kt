@@ -5,6 +5,7 @@ import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import kotlin.math.roundToInt
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -1037,13 +1038,32 @@ private fun yearScrollPicker(
     return hsv
 }
 
-        text = sym; textSize = 14f
-        setTextColor(if (enabled) TEXT else 0xFF3A4555.toInt())
-        background = shape(SURFACE_2, 8, ctx)
-        gravity = Gravity.CENTER
-        val s = dp(ctx, 30)
-        layoutParams = LinearLayout.LayoutParams(s, s).apply { leftMargin = dp(ctx, 4) }
-        isClickable = enabled
-        if (enabled) setOnClickListener { onClick() }
+        private fun arrowBtn(ctx: Context, sym: String, enabled: Boolean,
+                     onClick: () -> Unit): TextView = TextView(ctx).apply {
+            text = sym; textSize = 14f
+            setTextColor(if (enabled) ACCENT else 0xFF3A4555.toInt())
+            background = shape(SURFACE_2, 8, ctx)
+            gravity = Gravity.CENTER
+            val s = dp(ctx, 30)
+            layoutParams = LinearLayout.LayoutParams(s, s).apply { leftMargin = dp(ctx, 4) }
+            isClickable = enabled
+            if (enabled) setOnClickListener { onClick() }
+        }
+
+    private fun labelBlock(ctx: Context, title: String, subtitle: String?): LinearLayout =
+        LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(ctx, 4), dp(ctx, 10), dp(ctx, 4), dp(ctx, 6))
+        addView(TextView(ctx).apply {
+            text = title; setTextColor(TEXT); textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+        })
+        if (!subtitle.isNullOrBlank()) {
+            addView(TextView(ctx).apply {
+                text = subtitle; setTextColor(SUBTEXT); textSize = 11f
+                setPadding(0, dp(ctx, 3), 0, 0)
+            })
+        }
     }
+
 }
