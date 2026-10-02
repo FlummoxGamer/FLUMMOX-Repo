@@ -110,8 +110,14 @@ object AnimeScheduleApi {
 // fall back to `title` for all three variants — the query
 // ranker then only matches on the top-level title, which is
 // fine for direct-title searches.
+// Search + detail both return the same names shape. Field is
+// "english", not "en". Reading "en" returned null → English
+// never populated → relevanceRank fell to tier 3 on every
+// query → random order. Verified live: names={romaji, english,
+// native, abbreviation, synonyms}.
 val names = o.optJSONObject("names")
-val english = names?.optString("en")?.takeIf { it.isNotBlank() && it != "null" }
+val english = names?.optString("english")
+    ?.takeIf { it.isNotBlank() && it != "null" }
 val romajiFromNames = names?.optString("romaji")
     ?.takeIf { it.isNotBlank() && it != "null" }
 val primary = romajiFromNames ?: titleFallback
