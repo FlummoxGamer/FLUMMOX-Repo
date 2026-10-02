@@ -43,6 +43,16 @@ object AnimeScheduleApi {
                 return emptyList()
             }
             val root = JSONObject(res.text)
+            // DIAGNOSTIC: dump first entry's top-level keys so we can
+            // see whether `names` is present in search results. Remove
+            // after we fix parseEntry.
+            val firstAnime = root.optJSONArray("anime")?.optJSONObject(0)
+            if (firstAnime != null) {
+                val keys = firstAnime.keys().asSequence().joinToString(",")
+                BLog.d("asched search first keys=$keys")
+                BLog.d("asched search names=${firstAnime.optJSONObject("names")}")
+                BLog.d("asched search title=${firstAnime.optString("title")}")
+            }
             BCCache.put(ck, root.toString())
             parseList(root, limit)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -96,11 +106,15 @@ object AnimeScheduleApi {
     // matching in sortChronological — without it, "attack on titan"
     // never tier-0 matches "Shingeki no Kyojin" and everything
     // sorts by year/date randomly.
-    val names = o.optJSONObject("names")
-    val english = names?.optString("en")?.takeIf { it.isNotBlank() && it != "null" }
-    val romajiFromNames = names?.optString("romaji")
-        ?.takeIf { it.isNotBlank() && it != "null" }
-    val primary = romajiFromNames ?: titleFallback
+    // Search endpoint may or may not return `names`. If absent,
+// fall back to `title` for all three variants — the query
+// ranker then only matches on the top-level title, which is
+// fine for direct-title searches.
+val names = o.optJSONObject("names")
+val english = names?.optString("en")?.takeIf { it.isNotBlank() && it != "null" }
+val romajiFromNames = names?.optString("romaji")
+    ?.takeIf { it.isNotBlank() && it != "null" }
+val primary = romajiFromNames ?: titleFallback
 
     val imgRoute = o.optString("imageVersionRoute").takeIf { it.isNotBlank() }
     val cover = imgRoute?.let { "$IMG_BASE$it" }
