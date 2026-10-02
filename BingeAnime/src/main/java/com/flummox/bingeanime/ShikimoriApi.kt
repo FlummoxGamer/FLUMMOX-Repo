@@ -189,8 +189,12 @@ object ShikimoriApi {
     }
 
     // Still missing covers — try AniMapper, capped at 3 per row.
-    val stillMissing = overridden.filter { it.coverImage.isNullOrBlank() }
-    val resolved = if (stillMissing.isEmpty()) overridden else {
+val stillMissing = overridden.filter { it.coverImage.isNullOrBlank() }
+if (stillMissing.isNotEmpty()) {
+    BLog.d("shikimori '$rowName' missing covers: ${stillMissing.size}, trying AniMapper")
+}
+val resolved = if (stillMissing.isEmpty()) overridden else {
+    val lookup = stillMissing.take(3)
         val lookup = stillMissing.take(3)
         val resolvedMap = mutableMapOf<Int, String>()
         for (e in lookup) {
@@ -201,12 +205,13 @@ object ShikimoriApi {
                 if (cov != null) resolvedMap[e.id] = cov
             } catch (_: Exception) {}
         }
-        if (resolvedMap.isNotEmpty()) {
-            synchronized(coverOverrides) {
-                coverOverrides.putAll(resolvedMap)
-                persistCoverOverrides()
-            }
-        }
+        BLog.d("shikimori '$rowName' cover fallback: resolved ${resolvedMap.size}/${lookup.size}")
+if (resolvedMap.isNotEmpty()) {
+    synchronized(coverOverrides) {
+        coverOverrides.putAll(resolvedMap)
+        persistCoverOverrides()
+    }
+}
         overridden.map { e ->
             if (!e.coverImage.isNullOrBlank()) e
             else resolvedMap[e.id]?.let { e.copy(coverImage = it) } ?: e
