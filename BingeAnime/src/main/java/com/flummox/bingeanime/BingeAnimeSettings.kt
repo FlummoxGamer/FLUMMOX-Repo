@@ -510,13 +510,16 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
             if (newlyEnabled.isNotEmpty()) {
                 BLog.d("home changed: prefetching ${newlyEnabled.size} newly enabled rows")
                 ShikimoriApi.prefetchRowsNow(newlyEnabled.toList())
-                try {
-                    com.lagradost.cloudstream3.MainActivity
-                        .reloadHomeEvent.invoke(true)
-                } catch (_: Exception) {}
             }
+           // Always fire reload — year filter changes, row reorder,
+           // and toggles all affect home. Cached rows render
+           // instantly; any changed rows fill in as prefetch lands.
+           try {
+               com.lagradost.cloudstream3.MainActivity
+                   .reloadHomeEvent.invoke(true)
+           } catch (_: Exception) {}
         }
-    ) { body, _ ->
+        ) { body, _ ->
 
         body.addView(actionRow(ctx, "Reset home",
             "Restore default rows, order, toggles", "RESET") {
@@ -965,8 +968,9 @@ private fun yearScrollPicker(
     onPicked: (Int) -> Unit
 ): android.widget.HorizontalScrollView {
     val minYear = 1960
-    val maxYear = java.util.Calendar.getInstance()
-        .get(java.util.Calendar.YEAR)
+    // Cap at 2015. Anything higher thins most genre rows to a
+    // handful of entries — bad first impression.
+    val maxYear = 2015
     val itemW = dp(ctx, 84)
     val screenW = ctx.resources.displayMetrics.widthPixels
     val sidePad = ((screenW - itemW) / 2).coerceAtLeast(0)
@@ -1007,7 +1011,7 @@ private fun yearScrollPicker(
                 child.alpha = a
                 child.textSize = 18f + (a - 0.35f) * 5f
                 // Centered year gets accent color, neighbours stay TEXT.
-                child.setTextColor(if (a > 0.92f) ACCENT else TEXT)
+                child.setTextColor(TEXT)
             }
         }
     }
@@ -1015,12 +1019,16 @@ private fun yearScrollPicker(
     val handler = android.os.Handler(android.os.Looper.getMainLooper())
     var pending: Runnable? = null
 
+    // Center on initial year after layout settles. Two posts —
+    // first schedules after measure, second after the row's
+    // children are measured so itemW and child.left are real.
     hsv.post {
-        val idx = (initialYear - minYear).coerceIn(0, maxYear - minYear)
-        hsv.scrollTo(idx * itemW, 0)
-        updateAlphas(idx * itemW)
+        hsv.post {
+            val idx = (initialYear - minYear).coerceIn(0, maxYear - minYear)
+            hsv.scrollTo(idx * itemW, 0)
+            updateAlphas(idx * itemW)
+        }
     }
-
     hsv.setOnScrollChangeListener { _, scrollX, _, _, _ ->
         updateAlphas(scrollX)
         pending?.let { handler.removeCallbacks(it) }
