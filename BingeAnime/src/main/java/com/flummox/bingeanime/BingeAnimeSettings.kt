@@ -381,53 +381,62 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
         dlg.show()
     }
 
-    // ── sub-window scaffold ──
-    private fun subWindow(ctx: Context, title: String, body: (LinearLayout, Dialog) -> Unit) {
-        val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
-        val root = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            background = shape(BG, 0, ctx)
-            setPadding(dp(ctx, 20), dp(ctx, 40), dp(ctx, 20), dp(ctx, 20))
-        }
-        val header = TextView(ctx).apply {
-            text = title; setTextColor(TEXT); textSize = 26f
-            setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.08f
-        }
-        root.addView(header)
-        val sub = TextView(ctx).apply {
-            text = "FLUMMOX REPO · BINGEANIME"
-            setTextColor(SUBTEXT); textSize = 10f
-            letterSpacing = 0.22f
-            setPadding(0, dp(ctx, 8), 0, dp(ctx, 20))
-        }
-        root.addView(sub)
+    //──Sub Window──
+    private fun subWindow(
+    ctx: Context,
+    title: String,
+    closeLabel: String = "CLOSE",
+    onClose: (() -> Unit)? = null,
+    body: (LinearLayout, Dialog) -> Unit
+) {
+    val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
+    val root = LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        background = shape(BG, 0, ctx)
+        setPadding(dp(ctx, 20), dp(ctx, 40), dp(ctx, 20), dp(ctx, 20))
+    }
+    val header = TextView(ctx).apply {
+        text = title; setTextColor(TEXT); textSize = 26f
+        setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.08f
+    }
+    root.addView(header)
+    val sub = TextView(ctx).apply {
+        text = "FLUMMOX REPO · BINGEANIME"
+        setTextColor(SUBTEXT); textSize = 10f
+        letterSpacing = 0.22f
+        setPadding(0, dp(ctx, 8), 0, dp(ctx, 20))
+    }
+    root.addView(sub)
 
-        val scroll = ScrollView(ctx)
-        val bodyRoot = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        scroll.addView(bodyRoot)
-        root.addView(scroll, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-        ))
-        body(bodyRoot, dlg)
+    val scroll = ScrollView(ctx)
+    val bodyRoot = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+    scroll.addView(bodyRoot)
+    root.addView(scroll, LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+    ))
+    body(bodyRoot, dlg)
 
-        val close = Button(ctx).apply {
-            text = "CLOSE"; textSize = 13f; letterSpacing = 0.18f
-            setTextColor(BG); background = shape(TEXT, 14, ctx)
-            isAllCaps = false; setTypeface(typeface, Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 52)
-            ).apply { topMargin = dp(ctx, 16) }
-            setOnClickListener { dlg.dismiss() }
+    val close = Button(ctx).apply {
+        text = closeLabel; textSize = 13f; letterSpacing = 0.18f
+        setTextColor(BG); background = shape(TEXT, 14, ctx)
+        isAllCaps = false; setTypeface(typeface, Typeface.BOLD)
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 52)
+        ).apply { topMargin = dp(ctx, 16) }
+        setOnClickListener {
+            dlg.dismiss()
+            onClose?.invoke()
         }
-        root.addView(close)
+    }
+    root.addView(close)
 
-        dlg.setContentView(root)
-        dlg.window?.setLayout(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-        )
-        dlg.window?.setBackgroundDrawable(shape(BG, 0, ctx))
-        dlg.setOnShowListener { listOf(header, sub).forEachIndexed { i, v -> stagger(v, i) } }
-        dlg.show()
+    dlg.setContentView(root)
+    dlg.window?.setLayout(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+    )
+    dlg.window?.setBackgroundDrawable(shape(BG, 0, ctx))
+    dlg.setOnShowListener { listOf(header, sub).forEachIndexed { i, v -> stagger(v, i) } }
+    dlg.show()
     }
 
     private fun openSettings(ctx: Context) {
@@ -482,66 +491,173 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
     }
 
     private fun openHomepage(ctx: Context) {
-        subWindow(ctx, "HOMEPAGE") { body, _ ->
-            val holder = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-            fun render() {
-                holder.removeAllViews()
-                val order = getRowOrder()
-                val total = order.size
-                for ((idx, name) in order.withIndex()) {
-                    val row = LinearLayout(ctx).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        background = shape(SURFACE, 12, ctx, 1, BORDER)
-                        setPadding(dp(ctx, 12), dp(ctx, 10), dp(ctx, 12), dp(ctx, 10))
-                        layoutParams = LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                        ).apply { bottomMargin = dp(ctx, 6) }
-                    }
-                    row.addView(TextView(ctx).apply {
-                        text = "${idx + 1}"; setTextColor(SUBTEXT); textSize = 12f
-                        gravity = Gravity.CENTER
-                        val s = dp(ctx, 26)
-                        layoutParams = LinearLayout.LayoutParams(s, s)
-                        background = shape(SURFACE_2, 12, ctx)
-                    })
-                    row.addView(TextView(ctx).apply {
-                        text = name; setTextColor(TEXT); textSize = 13f
-                        maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-                        layoutParams = LinearLayout.LayoutParams(0,
-                            ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                            leftMargin = dp(ctx, 10); rightMargin = dp(ctx, 6)
-                        }
-                    })
-                    val sw = themedSwitch(ctx)
-                    sw.isChecked = isRowEnabled(name)
-                    sw.setOnCheckedChangeListener { _: CompoundButton, v: Boolean ->
-                        setKey(K_ROW_PREFIX + name, v)
-                    }
-                    row.addView(sw)
-                    row.addView(arrowBtn(ctx, "▲", idx > 0) {
-                        val cur = getRowOrder().toMutableList()
-                        val i = cur.indexOf(name)
-                        if (i > 0) { cur[i] = cur[i - 1]; cur[i - 1] = name
-                            setRowOrder(cur); render() }
-                    })
-                    row.addView(arrowBtn(ctx, "▼", idx < total - 1) {
-                        val cur = getRowOrder().toMutableList()
-                        val i = cur.indexOf(name)
-                        if (i >= 0 && i < cur.size - 1) { cur[i] = cur[i + 1]; cur[i + 1] = name
-                            setRowOrder(cur); render() }
-                    })
-                    holder.addView(row)
-                }
+    // Snapshot current state at open. Diffed against end-state on
+    // close so we only refetch rows the user added.
+    val initialEnabled = ROWS.mapNotNull { (_, label) ->
+        if (isRowEnabled(label)) label else null
+    }.toSet()
+
+    subWindow(
+        ctx,
+        "HOMEPAGE",
+        closeLabel = "SAVE & CLOSE",
+        onClose = {
+            val currentEnabled = ROWS.mapNotNull { (_, label) ->
+                if (isRowEnabled(label)) label else null
+            }.toSet()
+            val newlyEnabled = currentEnabled - initialEnabled
+            if (newlyEnabled.isNotEmpty()) {
+                BLog.d("home changed: prefetching ${newlyEnabled.size} newly enabled rows")
+                ShikimoriApi.prefetchRowsNow(newlyEnabled.toList())
+                try {
+                    com.lagradost.cloudstream3.MainActivity
+                        .reloadHomeEvent.invoke(true)
+                } catch (_: Exception) {}
             }
-            render()
-            body.addView(actionRow(ctx, "Reset home",
-                "Restore default rows, order, toggles", "RESET") {
-                resetHomeToDefaults(); render()
-                Toast.makeText(ctx, "Home reset", Toast.LENGTH_SHORT).show()
-            })
-            body.addView(holder)
         }
+    ) { body, _ ->
+
+        body.addView(actionRow(ctx, "Reset home",
+            "Restore default rows, order, toggles", "RESET") {
+            resetHomeToDefaults()
+            // Rebuild list on next open — simpler than mutating here.
+        })
+
+        // ── year filter ──
+        body.addView(labelBlock(ctx, "Year filter",
+            "Hide anime released before a chosen year. Only affects "
+            + "Shikimori-sourced rows; Trending uses its own "
+            + "current-year filter."))
+
+        val yearEnabled = isYearFilterEnabled()
+        val yearDescText = TextView(ctx).apply {
+            text = if (yearEnabled) "Showing ${getYearFloor()} and newer"
+                   else "Off — showing all years"
+            setTextColor(SUBTEXT); textSize = 11f
+            setPadding(dp(ctx, 3), dp(ctx, 3), 0, 0)
+        }
+
+        val yearToggleRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(SURFACE, 12, ctx, 1, BORDER)
+            setPadding(dp(ctx, 16), dp(ctx, 14), dp(ctx, 16), dp(ctx, 14))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(ctx, 8) }
+        }
+        val yCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        yCol.addView(TextView(ctx).apply {
+            text = "Filter by year"
+            setTextColor(TEXT); textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+        })
+        yCol.addView(yearDescText)
+        yearToggleRow.addView(yCol)
+
+        val pickerContainer = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (yearEnabled) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(ctx, 12) }
+        }
+        pickerContainer.addView(TextView(ctx).apply {
+            text = "Tap or scroll a year"
+            setTextColor(SUBTEXT); textSize = 10f
+            letterSpacing = 0.18f
+            setPadding(0, 0, 0, dp(ctx, 6))
+        })
+        pickerContainer.addView(yearScrollPicker(ctx, getYearFloor()) { picked ->
+            setKey(K_YEAR_FLOOR, picked)
+            yearDescText.text = "Showing $picked and newer"
+        })
+
+        val yearSwitch = themedSwitch(ctx).apply {
+            isChecked = yearEnabled
+        }
+        yearSwitch.setOnCheckedChangeListener { _, checked ->
+            setKey(K_YEAR_FILTER_ON, checked)
+            yearDescText.text = if (checked)
+                "Showing ${getYearFloor()} and newer"
+            else
+                "Off — showing all years"
+            pickerContainer.visibility =
+                if (checked) View.VISIBLE else View.GONE
+        }
+        yearToggleRow.addView(yearSwitch)
+        body.addView(yearToggleRow)
+        body.addView(pickerContainer)
+
+        // ── row list ──
+        body.addView(labelBlock(ctx, "Rows",
+            "Position 1 shows first. Toggle, then SAVE & CLOSE to apply."))
+
+        val holder = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        fun render() {
+            holder.removeAllViews()
+            val order = getRowOrder()
+            val total = order.size
+            for ((idx, name) in order.withIndex()) {
+                val row = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = shape(SURFACE, 12, ctx, 1, BORDER)
+                    setPadding(dp(ctx, 12), dp(ctx, 10), dp(ctx, 12), dp(ctx, 10))
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { bottomMargin = dp(ctx, 6) }
+                }
+                row.addView(TextView(ctx).apply {
+                    text = "${idx + 1}"; setTextColor(SUBTEXT); textSize = 12f
+                    gravity = Gravity.CENTER
+                    val s = dp(ctx, 26)
+                    layoutParams = LinearLayout.LayoutParams(s, s)
+                    background = shape(SURFACE_2, 12, ctx)
+                })
+                row.addView(TextView(ctx).apply {
+                    text = name; setTextColor(TEXT); textSize = 13f
+                    maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        leftMargin = dp(ctx, 10); rightMargin = dp(ctx, 6)
+                    }
+                })
+                val sw = themedSwitch(ctx)
+                sw.isChecked = isRowEnabled(name)
+                sw.setOnCheckedChangeListener { _: CompoundButton, v: Boolean ->
+                    setKey(K_ROW_PREFIX + name, v)
+                }
+                row.addView(sw)
+                row.addView(arrowBtn(ctx, "▲", idx > 0) {
+                    val cur = getRowOrder().toMutableList()
+                    val i = cur.indexOf(name)
+                    if (i > 0) {
+                        cur[i] = cur[i - 1]; cur[i - 1] = name
+                        setRowOrder(cur); render()
+                    }
+                })
+                row.addView(arrowBtn(ctx, "▼", idx < total - 1) {
+                    val cur = getRowOrder().toMutableList()
+                    val i = cur.indexOf(name)
+                    if (i in 0 until cur.size - 1) {
+                        cur[i] = cur[i + 1]; cur[i + 1] = name
+                        setRowOrder(cur); render()
+                    }
+                })
+                holder.addView(row)
+            }
+        }
+        render()
+        body.addView(holder)
+    }
     }
 
     private fun openLogs(ctx: Context) {
@@ -840,8 +956,85 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
         return row
     }
 
-    private fun arrowBtn(ctx: Context, sym: String, enabled: Boolean,
-                         onClick: () -> Unit): TextView = TextView(ctx).apply {
+    // Horizontal scroll-wheel year picker. Years scroll left/right,
+// the centered one is "selected". Neighbours fade and shrink.
+private fun yearScrollPicker(
+    ctx: Context,
+    initialYear: Int,
+    onPicked: (Int) -> Unit
+): android.widget.HorizontalScrollView {
+    val minYear = 1960
+    val maxYear = java.util.Calendar.getInstance()
+        .get(java.util.Calendar.YEAR)
+    val itemW = dp(ctx, 84)
+    val screenW = ctx.resources.displayMetrics.widthPixels
+    val sidePad = ((screenW - itemW) / 2).coerceAtLeast(0)
+
+    val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+    row.addView(View(ctx), LinearLayout.LayoutParams(sidePad, 1))
+    for (y in minYear..maxYear) {
+        row.addView(TextView(ctx).apply {
+            text = y.toString()
+            gravity = Gravity.CENTER
+            setTextColor(TEXT)
+            textSize = 22f
+            setTypeface(typeface, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(itemW, dp(ctx, 72))
+            tag = y
+        })
+    }
+    row.addView(View(ctx), LinearLayout.LayoutParams(sidePad, 1))
+
+    val hsv = android.widget.HorizontalScrollView(ctx).apply {
+        isHorizontalScrollBarEnabled = false
+        overScrollMode = View.OVER_SCROLL_NEVER
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 76)
+        )
+        addView(row)
+    }
+
+    fun updateAlphas(scrollX: Int) {
+        val centerViewport = screenW / 2f
+        for (i in 0 until row.childCount) {
+            val child = row.getChildAt(i)
+            if (child is TextView && child.tag is Int) {
+                val childViewport = child.left + child.width / 2f - scrollX
+                val dist = kotlin.math.abs(childViewport - centerViewport)
+                val maxDist = itemW * 2f
+                val a = (1f - dist / maxDist).coerceIn(0.20f, 1f)
+                child.alpha = a
+                child.textSize = 18f + (a - 0.20f) * 5f
+            }
+        }
+    }
+
+    val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    var pending: Runnable? = null
+
+    hsv.post {
+        val idx = (initialYear - minYear).coerceIn(0, maxYear - minYear)
+        hsv.scrollTo(idx * itemW, 0)
+        updateAlphas(idx * itemW)
+    }
+
+    hsv.setOnScrollChangeListener { _, scrollX, _, _, _ ->
+        updateAlphas(scrollX)
+        pending?.let { handler.removeCallbacks(it) }
+        val r = Runnable {
+            val idx = (scrollX.toFloat() / itemW)
+                .roundToInt()
+                .coerceIn(0, maxYear - minYear)
+            hsv.smoothScrollTo(idx * itemW, 0)
+            onPicked(minYear + idx)
+        }
+        pending = r
+        handler.postDelayed(r, 150)
+    }
+
+    return hsv
+}
+
         text = sym; textSize = 14f
         setTextColor(if (enabled) TEXT else 0xFF3A4555.toInt())
         background = shape(SURFACE_2, 8, ctx)
