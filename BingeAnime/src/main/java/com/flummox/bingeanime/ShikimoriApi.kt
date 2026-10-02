@@ -468,8 +468,13 @@ private fun persistCoverOverrides() {
         val russian = o.optString("russian").takeIf { it.isNotBlank() && it != "null" }
         val imgObj = o.optJSONObject("image")
         val imgPath = imgObj?.optString("original")?.takeIf { it.isNotBlank() }
-            ?: imgObj?.optString("preview")?.takeIf { it.isNotBlank() }
-        val cover = imgPath?.let { if (it.startsWith("http")) it else "$IMG_BASE$it" }
+        ?: imgObj?.optString("preview")?.takeIf { it.isNotBlank() }
+        val cover = imgPath
+    ?.let { if (it.startsWith("http")) it else "$IMG_BASE$it" }
+    // Shikimori serves /assets/globals/missing_*.jpg for entries
+    // with no image. Treat those as null so the AniMapper
+    // fallback in fetchForRow kicks in.
+    ?.takeIf { !it.contains("/assets/") }
         val kind = o.optString("kind").takeIf { it.isNotBlank() }
         val format = when (kind) {
             "tv" -> "TV"; "movie" -> "MOVIE"; "ova" -> "OVA"; "ona" -> "ONA"
