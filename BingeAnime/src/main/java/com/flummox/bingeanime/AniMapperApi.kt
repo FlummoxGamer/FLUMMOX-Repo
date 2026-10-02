@@ -13,19 +13,39 @@ object AniMapperApi {
         "User-Agent" to "BingeAnime/1.0"
     )
 
-    // Real trending. sortBy=UPDATED_AT returns shows with recent activity
-    // (new episodes, metadata pings). Combined with status=RELEASING it
-    // gives what users expect from a trending row: currently airing,
-    // high-relevance right now. No format filter — movies, OVAs, and
-    // specials are all trending-eligible.
-    suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
-        val ck = "animapper:trending:$limit"
-        BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
-        }
-                // Trending = currently airing, recently active. CN pings
-    // metadata far more often, so raw UPDATED_AT is CN-heavy.
-    // Cap CN at ~30% of the row, fill the rest with non-CN.
+    // CN ID set cache. AniMapper search responses omit countryOfOrigin —
+// the field only appears in /metadata responses. We can't classify
+// trending entries client-side without an ID lookup. One extra
+// request per hour populates the set; every trending fetch filters
+// against it.
+@Volatile private var cnIds: Set<Int> = emptySet()
+@Volatile private var cnIdsFetchedAt: Long = 0L
+private const val CN_TTL = 60 * 60 * 1000L
+
+private suspend fun ensureCnIds() {
+    val now = System.currentTimeMillis()
+    if (cnIds.isNotEmpty() && now - cnIdsFetchedAt < CN_TTL) return
+    try {
+        val url = "$BASE/search?countryOfOrigin=CN&sortBy=POPULARITY" +
+            "&sortOrder=DESC&page=1&limit=200"
+        val res = app.get(url, headers = headers())
+        if (res.code !in 200..299) return
+        val parsed = parseResponse(JSONObject(res.text))
+        cnIds = parsed.map { it.id }.toSet()
+        cnIdsFetchedAt = now
+        BLog.d("animapper CN id set: ${cnIds.size} entries")
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("animapper CN id fetch failed: ${e.message}")
+    }
+}
+
+// Trending = currently airing, recently active, mixed. No cache on
+// this row — user wants real-time. CN IDs cached 1h.
+// ~30% CN cap, rest non-CN. If non-CN pool is thin, CN fills.
+suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
+    ensureCnIds()
     val url = "$BASE/search?sortBy=UPDATED_AT&sortOrder=DESC" +
         "&status=RELEASING&page=1&limit=${limit * 3}"
     return try {
@@ -33,14 +53,11 @@ object AniMapperApi {
         BLog.v("animapper trending HTTP ${res.code} len=${res.text.length}")
         if (res.code !in 200..299) return emptyList()
         val root = JSONObject(res.text)
-        BCCache.put(ck, root.toString())
         val all = parseResponse(root)
-        val cn = all.filter { it.country == "CN" }
-        val nonCn = all.filter { it.country != "CN" }
+        val (cn, nonCn) = all.partition { it.id in cnIds }
         val cnCap = (limit * 0.30).toInt().coerceAtLeast(1)
         val pickedCn = cn.take(cnCap)
         val pickedNonCn = nonCn.take(limit - pickedCn.size)
-        // If non-CN pool is thin, top up with more CN.
         val filler = if (pickedCn.size + pickedNonCn.size < limit) {
             cn.drop(pickedCn.size).take(limit - pickedCn.size - pickedNonCn.size)
         } else emptyList()
@@ -53,7 +70,7 @@ object AniMapperApi {
         BLog.e("animapper trending failed: ${e.message}")
         emptyList()
     }
-    }
+}
 
     suspend fun donghua(limit: Int = 30, yearFloor: Int? = null): List<AniListApi.Entry> {
         val ck = "animapper:donghua:$limit:${yearFloor ?: 0}"
