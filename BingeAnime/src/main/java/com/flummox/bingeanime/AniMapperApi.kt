@@ -27,30 +27,40 @@ object AniMapperApi {
     BCCache.get(ck, ROW_TTL)?.let { cached ->
         return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
     }
+    // Real trending = currently airing, high popularity, sorted by
+    // recent activity. Filter to RELEASING + last 12 months of
+    // premieres. No movies. Falls through to just-RELEASING if the
+    // 12-month window is too thin.
     val year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-    // Trending = currently relevant. Two filters:
-    //   1. startYear = current year - 1 → hides classics
-    //   2. format = TV,ONA,TV_SHORT → excludes movies
-    // If the format filter starves the row, retry without it and
-    // strip movies client-side.
     return try {
         var url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC" +
-            "&startYear=${year - 1}&format=TV,ONA,TV_SHORT&page=1&limit=$limit"
+            "&status=RELEASING&startYear=${year - 1}" +
+            "&format=TV,ONA,TV_SHORT&page=1&limit=$limit"
         var res = app.get(url, headers = headers())
         if (res.code !in 200..299) return emptyList()
         var root = JSONObject(res.text)
-        var parsed = parseResponse(root)
+        var parsed = parseResponse(root).filter { it.format != "MOVIE" }
 
-        if (parsed.isEmpty()) {
-            BLog.d("animapper trending empty with format filter, retrying")
+        if (parsed.size < limit / 2) {
+            BLog.d("animapper trending thin (${parsed.size}), dropping year filter")
             url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC" +
-                "&startYear=${year - 1}&page=1&limit=$limit"
+                "&status=RELEASING&format=TV,ONA,TV_SHORT&page=1&limit=$limit"
             res = app.get(url, headers = headers())
             if (res.code in 200..299) {
                 root = JSONObject(res.text)
-                parsed = parseResponse(root)
+                parsed = parseResponse(root).filter { it.format != "MOVIE" }
             }
         }
+        val filtered = parsed.take(limit)
+        BCCache.put(ck, root.toString())
+        BLog.v("animapper trending → ${filtered.size} currently-airing entries")
+        filtered
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e
+    } catch (e: Exception) {
+        BLog.e("animapper trending failed: ${e.message}")
+        emptyList()
+    }
+    }
         // Client-side safety net — drop any MOVIE entry the API ignored.
         val filtered = parsed.filter { it.format != "MOVIE" }.take(limit)
         BCCache.put(ck, root.toString())
