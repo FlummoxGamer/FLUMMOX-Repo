@@ -409,7 +409,19 @@ private fun persistCoverOverrides() {
         }
     }
 
-    fun prefetchRowsNow(rows: List<String>) {
+    // Called by the Clear cache button. Wipes in-memory state so the
+// next home load refetches everything from network. Disk folder
+// is deleted by the caller before calling this.
+fun resetForClearCache() {
+    inFlightRows.clear()
+    exclusions = emptyMap()
+    synchronized(coverOverrides) { coverOverrides = mutableMapOf() }
+    lastPrefetchMs = 0L
+    prefetchRunning = false
+    BLog.d("shikimori state reset")
+}
+
+fun prefetchRowsNow(rows: List<String>) {
         prefetchScope.launch {
             for (row in rows) {
                 try { fetchRawForRow(row, 50) } catch (_: Exception) {}
