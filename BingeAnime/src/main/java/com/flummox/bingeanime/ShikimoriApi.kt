@@ -176,9 +176,11 @@ object ShikimoriApi {
     val withYear = if (yearFloor == null) raw else raw.filter {
         (it.seasonYear ?: 0) >= yearFloor
     }
-    // Shuffle with hourly seed. Same hour = same order (stable
-    // during a session). Cache refresh every 1h = new order.
-    val seed = System.currentTimeMillis() / (60 * 60 * 1000L)
+    // Shuffle with hourly seed + year-floor salt. Different filter
+    // states produce different orders within the same hour so the
+    // user sees a visual change when toggling year filter on/off.
+    val hourSeed = System.currentTimeMillis() / (60 * 60 * 1000L)
+    val seed = hourSeed + (yearFloor?.toLong() ?: 0L)
     val shuffled = withYear.shuffled(java.util.Random(seed))
 
     // Apply cached cover overrides first (free — no API call).
