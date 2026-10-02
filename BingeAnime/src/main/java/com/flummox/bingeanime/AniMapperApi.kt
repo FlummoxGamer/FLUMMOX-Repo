@@ -23,45 +23,80 @@ object AniMapperApi {
     )
 
     suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
-        val ck = "animapper:trending:$limit"
-        BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+    val ck = "animapper:trending:$limit"
+    BCCache.get(ck, ROW_TTL)?.let { cached ->
+        return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+    }
+    val year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+    // Trending = currently relevant. Two filters:
+    //   1. startYear = current year - 1 → hides classics
+    //   2. format = TV,ONA,TV_SHORT → excludes movies
+    // If the format filter starves the row, retry without it and
+    // strip movies client-side.
+    return try {
+        var url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC" +
+            "&startYear=${year - 1}&format=TV,ONA,TV_SHORT&page=1&limit=$limit"
+        var res = app.get(url, headers = headers())
+        if (res.code !in 200..299) return emptyList()
+        var root = JSONObject(res.text)
+        var parsed = parseResponse(root)
+
+        if (parsed.isEmpty()) {
+            BLog.d("animapper trending empty with format filter, retrying")
+            url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC" +
+                "&startYear=${year - 1}&page=1&limit=$limit"
+            res = app.get(url, headers = headers())
+            if (res.code in 200..299) {
+                root = JSONObject(res.text)
+                parsed = parseResponse(root)
+            }
         }
-        // Recency filter: only current-year and last year, popular.
-        // Prevents all-time classics from dominating "Trending".
-        val year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-        val url = "$BASE/search?sortBy=POPULARITY&sortOrder=DESC" +
-            "&startYear=${year - 1}&page=1&limit=$limit"
-        return try {
-            val res = app.get(url, headers = headers())
-            if (res.code !in 200..299) return emptyList()
-            val root = JSONObject(res.text)
-            BCCache.put(ck, root.toString())
-            parseResponse(root)
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e
-        } catch (e: Exception) {
-            BLog.e("animapper trending failed: ${e.message}")
-            emptyList()
-        }
+        // Client-side safety net — drop any MOVIE entry the API ignored.
+        val filtered = parsed.filter { it.format != "MOVIE" }.take(limit)
+        BCCache.put(ck, root.toString())
+        BLog.v("animapper trending → ${filtered.size} non-movie entries")
+        filtered
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e
+    } catch (e: Exception) {
+        BLog.e("animapper trending failed: ${e.message}")
+        emptyList()
+    }
     }
 
-    suspend fun donghua(limit: Int = 30): List<AniListApi.Entry> {
-        val ck = "animapper:donghua:$limit"
-        BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+    suspend fun donghua(limit: Int = 30, yearFloor: Int? = null): List<AniListApi.Entry> {
+    // Separate cache key per floor. Year toggle is a rare action
+    // so the extra cache slot is negligible.
+    val ck = "animapper:donghua:$limit:${yearFloor ?: 0}"
+    BCCache.get(ck, ROW_TTL)?.let { cached ->
+        return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+    }
+    val url = buildString {
+        append("$BASE/search?countryOfOrigin=CN&sortBy=POPULARITY&sortOrder=DESC")
+        if (yearFloor != null) append("&startYear=$yearFloor")
+        append("&page=1&limit=$limit")
+    }
+    return try {
+        val res = app.get(url, headers = headers())
+        BLog.v("animapper donghua HTTP ${res.code} len=${res.text.length}")
+        if (res.code == 429) {
+            BLog.e("animapper donghua 429")
+            return emptyList()
         }
-        val url = "$BASE/search?countryOfOrigin=CN&sortBy=POPULARITY&sortOrder=DESC&page=1&limit=$limit"
-        return try {
-            val res = app.get(url, headers = headers())
-            if (res.code !in 200..299) return emptyList()
-            val root = JSONObject(res.text)
-            BCCache.put(ck, root.toString())
-            parseResponse(root)
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e
-        } catch (e: Exception) {
-            BLog.e("animapper donghua failed: ${e.message}")
-            emptyList()
+        if (res.code !in 200..299) {
+            BLog.e("animapper donghua HTTP ${res.code}: ${res.text.take(300)}")
+            return emptyList()
         }
+        val root = JSONObject(res.text)
+        BCCache.put(ck, root.toString())
+        val parsed = parseResponse(root)
+        BLog.v("animapper donghua parsed ${parsed.size} entries (floor=$yearFloor)")
+        parsed
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("animapper donghua failed: ${e.message}")
+        emptyList()
+    }
     }
 
     suspend fun detail(id: Int): AniListApi.Entry? {
