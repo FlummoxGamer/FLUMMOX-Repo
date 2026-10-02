@@ -1,6 +1,8 @@
 package com.flummox.bingeanime
 
 import com.lagradost.cloudstream3.app
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -9,9 +11,68 @@ object AniMapperApi {
     private const val ROW_TTL = 6 * 60 * 60 * 1000L
 
     private fun headers(): Map<String, String> = mapOf(
-        "Accept" to "application/json",
-        "User-Agent" to "BingeAnime/1.0"
-    )
+    "Accept" to "application/json",
+    "User-Agent" to "BingeAnime/1.0"
+)
+
+// ── rating enrichment via AniList ──
+// AniMapper returns no rating field. Its IDs are AniList IDs, so
+// one batched GraphQL query fetches all missing ratings at once.
+// Per-ID cache (24h) means new anime appearing in Trending only
+// trigger a fetch for the ones we don't already know.
+private const val ANILIST_GRAPHQL = "https://graphql.anilist.co"
+private const val RATING_TTL = 24 * 60 * 60 * 1000L
+private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+
+private suspend fun enrichRatings(entries: List<AniListApi.Entry>): List<AniListApi.Entry> {
+    if (entries.isEmpty()) return entries
+    val ratings = mutableMapOf<Int, Int>()
+    val missing = mutableListOf<Int>()
+    for (e in entries) {
+        val ck = "anilist:rating:${e.id}"
+        val cached = BCCache.get(ck, RATING_TTL)
+        if (cached != null) cached.toIntOrNull()?.let { ratings[e.id] = it }
+        else missing.add(e.id)
+    }
+    if (missing.isNotEmpty()) {
+        try {
+            val q = "query { Page(page: 1, perPage: 50) { media(id_in: [" +
+                missing.joinToString(",") + "], type: ANIME) { id averageScore } } }"
+            val body = JSONObject().put("query", q).toString()
+            val res = app.post(ANILIST_GRAPHQL,
+                requestBody = body.toRequestBody(JSON_MEDIA),
+                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+            if (res.code in 200..299) {
+                val arr = JSONObject(res.text)
+                    .optJSONObject("data")
+                    ?.optJSONObject("Page")
+                    ?.optJSONArray("media")
+                var newCount = 0
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val id = o.optInt("id", 0)
+                        val score = o.optInt("averageScore", 0)
+                        if (id > 0 && score > 0) {
+                            ratings[id] = score
+                            BCCache.put("anilist:rating:$id", score.toString())
+                            newCount++
+                        }
+                    }
+                }
+                BLog.d("animapper ratings: ${newCount}/${missing.size} new, ${ratings.size} total")
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("animapper ratings fetch failed: ${e.message}")
+        }
+    }
+    return entries.map { e ->
+        val r = ratings[e.id]
+        if (r != null) e.copy(averageScore = r) else e
+    }
+}
 
     // CN ID set cache. AniMapper search responses omit countryOfOrigin —
 // the field only appears in /metadata responses. We can't classify
@@ -62,8 +123,9 @@ suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
             cn.drop(pickedCn.size).take(limit - pickedCn.size - pickedNonCn.size)
         } else emptyList()
         val parsed = (pickedNonCn + pickedCn + filler).take(limit)
-        BLog.v("animapper trending → ${parsed.size} (CN=${pickedCn.size + filler.size}/${cn.size}, nonCN=${pickedNonCn.size}/${nonCn.size})")
-        parsed
+        val enriched = enrichRatings(parsed)
+        BLog.v("animapper trending → ${enriched.size} (CN=${pickedCn.size + filler.size}/${cn.size}, nonCN=${pickedNonCn.size}/${nonCn.size})")
+        enriched
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
@@ -75,7 +137,7 @@ suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
     suspend fun donghua(limit: Int = 30, yearFloor: Int? = null): List<AniListApi.Entry> {
         val ck = "animapper:donghua:$limit:${yearFloor ?: 0}"
         BCCache.get(ck, ROW_TTL)?.let { cached ->
-            return try { parseResponse(JSONObject(cached)) } catch (_: Exception) { emptyList() }
+            return try { enrichRatings(parseResponse(JSONObject(cached))) } catch (_: Exception) { emptyList() }
         }
         val url = buildString {
             append("$BASE/search?countryOfOrigin=CN&sortBy=POPULARITY&sortOrder=DESC")
@@ -88,8 +150,10 @@ suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
             if (res.code == 429) { BLog.e("animapper donghua 429"); return emptyList() }
             if (res.code !in 200..299) return emptyList()
             val root = JSONObject(res.text)
-            BCCache.put(ck, root.toString())
-            parseResponse(root)
+            val parsed = parseResponse(root)
+            val enriched = enrichRatings(parsed)
+            BLog.v("animapper donghua parsed ${enriched.size} entries (floor=$yearFloor)")
+            enriched
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
