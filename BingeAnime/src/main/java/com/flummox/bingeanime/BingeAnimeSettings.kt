@@ -1047,9 +1047,9 @@ private fun yearScrollPicker(
 }
 
         private fun arrowBtn(ctx: Context, sym: String, enabled: Boolean,
-                     onClick: () -> Unit): TextView = TextView(ctx).apply {
+                             onClick: () -> Unit): TextView = TextView(ctx).apply {
             text = sym; textSize = 14f
-            setTextColor(if (enabled) ACCENT else 0xFF3A4555.toInt())
+            setTextColor(if (enabled) TEXT else 0xFF3A4555.toInt())
             background = shape(SURFACE_2, 8, ctx)
             gravity = Gravity.CENTER
             val s = dp(ctx, 30)
