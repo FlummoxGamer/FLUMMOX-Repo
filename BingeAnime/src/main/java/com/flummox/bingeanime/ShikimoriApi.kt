@@ -314,15 +314,17 @@ object ShikimoriApi {
         prefetchScope.launch {
             try {
                 ensureGenreMap()
-                val enabledRows = ROW_QUERY.keys.filter {
-                    BingeAnimeSettings.isRowEnabled(it)
-                }
-                val priority = listOf("Top Anime Series", "Top Anime Movies")
-                    .filter { it in enabledRows }
-                val rest = enabledRows.filter { it !in priority }
-                BLog.d("shikimori prefetch: ${enabledRows.size} enabled rows")
-                for (row in priority) fetchRawForRow(row, 50)
-                for (row in rest) fetchRawForRow(row, 50)
+   // Only prefetch rows 1-8. Rows 9+ stay cold until
+   // CloudStream calls getMainPage for them on scroll —
+   // our fetchForRow handles the on-demand network call.
+   //
+   // Keeps cold-start burst under 8 requests. Stays well
+   // inside Shikimori's 5/sec burst limiter.
+   val enabledRows = ROW_QUERY.keys.filter {
+       BingeAnimeSettings.isRowEnabled(it)
+   }.take(8)
+   BLog.d("shikimori prefetch: ${enabledRows.size} top rows (lazy for rest)")
+   for (row in enabledRows) fetchRawForRow(row, 50)
                 lastPrefetchMs = System.currentTimeMillis()
                 BLog.d("shikimori prefetch done")
             } catch (e: kotlinx.coroutines.CancellationException) {
