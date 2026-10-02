@@ -197,7 +197,6 @@ if (stillMissing.isNotEmpty()) {
 }
 val resolved = if (stillMissing.isEmpty()) overridden else {
     val lookup = stillMissing.take(3)
-        val lookup = stillMissing.take(3)
         val resolvedMap = mutableMapOf<Int, String>()
         for (e in lookup) {
             val t = e.title.romaji ?: e.title.english ?: continue
