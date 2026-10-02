@@ -1,8 +1,9 @@
 package com.flummox.bingeanime
 
 import android.content.Context
+import android.content.Context
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.NiceResponse
+import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -208,7 +209,7 @@ object ShikimoriApi {
     ): List<AniListApi.Entry> {
         acquireToken()
         val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=${query.third}"
-        val res: NiceResponse = try {
+        val res = try {
             app.get(url, headers = headers())
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -419,8 +420,7 @@ object ShikimoriApi {
             format = format, episodes = episodes, seasonYear = year,
             startDate = airedOn, description = null, coverImage = cover,
             averageScore = averageScore, status = status, genres = genres,
-            country = null, relations = emptyList(), source = "shikimori",
-            subEpisodes = episodes
-        )
+            country = null, relations = emptyList(), source = "shikimori"
+       )
     }
 }
