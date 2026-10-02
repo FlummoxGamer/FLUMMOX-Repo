@@ -63,7 +63,10 @@ class BingeAnimeProvider : MainAPI() {
 
         val entries: List<AniListApi.Entry> = try {
             when (rowName) {
-                "Donghua" -> AniMapperApi.donghua(30)
+                "Donghua" -> AniMapperApi.donghua(
+                    30,
+                    yearFloor = BingeAnimeSettings.getYearFloorIfEnabled()
+                )
                 "Trending" -> AniMapperApi.trending(30).ifEmpty {
                     BLog.d("Trending AniMapper empty — falling back to Shikimori")
                     ShikimoriApi.fetchForRow(rowName, 30)
