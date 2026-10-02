@@ -65,6 +65,11 @@ object ShikimoriApi {
     private val DYNAMIC_ROWS = setOf("Trending", "Top Anime Series", "Top Anime Movies")
     @Volatile private var exclusions: Map<String, Set<String>> = emptyMap()
 
+    // Shiki id → resolved cover URL. Populated from AniMapper lookups
+    // when Shikimori's `image.original` is null. Persisted so we only
+    // pay the lookup cost once per title.
+    @Volatile private var coverOverrides: MutableMap<Int, String> = mutableMapOf()
+
     private fun headers(): Map<String, String> = mapOf(
         "Accept" to "application/json",
         "User-Agent" to UA
@@ -136,7 +141,22 @@ object ShikimoriApi {
                 if (now - f.lastModified() > ROW_TTL) staleRows.add(rowName)
             } catch (_: Exception) {}
         }
-        BLog.d("shikimori disk cache loaded ($loaded rows, ${staleRows.size} stale)")
+        // Load cover overrides
+        try {
+            val co = prefs.getString("cover_overrides", null)
+            if (co != null) {
+                val obj = JSONObject(co)
+                val map = mutableMapOf<Int, String>()
+                obj.keys().forEach { k ->
+                    val v = obj.optString(k).takeIf { it.isNotBlank() }
+                    if (v != null) map[k.toIntOrNull() ?: return@forEach] = v
+                }
+                coverOverrides = map
+                BLog.v("shikimori cover overrides loaded (${map.size})")
+           }
+       } catch (_: Exception) {}
+
+       BLog.d("shikimori disk cache loaded ($loaded rows, ${staleRows.size} stale)")
 
         if (staleRows.isNotEmpty()) {
             prefetchScope.launch {
@@ -151,16 +171,64 @@ object ShikimoriApi {
 
     // ── public fetch: applies year filter at return time ──
     suspend fun fetchForRow(rowName: String, limit: Int = 30): List<AniListApi.Entry> {
-        // Always fetch/compute on 50 items; filter+trim at return.
-        val raw = fetchRawForRow(rowName, 50)
-        val yearFloor = BingeAnimeSettings.getYearFloorIfEnabled()
-        val filtered = if (yearFloor == null) raw else raw.filter {
-            (it.seasonYear ?: 0) >= yearFloor
-        }
-        val result = filtered.take(limit)
-        BLog.v("shikimori '$rowName' → ${raw.size} raw, ${result.size} after filter (floor=$yearFloor)")
-        return result
+    val raw = fetchRawForRow(rowName, 50)
+    val yearFloor = BingeAnimeSettings.getYearFloorIfEnabled()
+    val withYear = if (yearFloor == null) raw else raw.filter {
+        (it.seasonYear ?: 0) >= yearFloor
     }
+    // Shuffle with hourly seed. Same hour = same order (stable
+    // during a session). Cache refresh every 1h = new order.
+    val seed = System.currentTimeMillis() / (60 * 60 * 1000L)
+    val shuffled = withYear.shuffled(java.util.Random(seed))
+
+    // Apply cached cover overrides first (free — no API call).
+    val overridden = shuffled.map { e ->
+        val c = e.coverImage
+        if (!c.isNullOrBlank()) e
+        else coverOverrides[e.id]?.let { e.copy(coverImage = it) } ?: e
+    }
+
+    // Still missing covers — try AniMapper, capped at 3 per row.
+    val stillMissing = overridden.filter { it.coverImage.isNullOrBlank() }
+    val resolved = if (stillMissing.isEmpty()) overridden else {
+        val lookup = stillMissing.take(3)
+        val resolvedMap = mutableMapOf<Int, String>()
+        for (e in lookup) {
+            val t = e.title.romaji ?: e.title.english ?: continue
+            try {
+                val hit = AniMapperApi.searchByTitle(t)
+                val cov = hit?.coverImage?.takeIf { it.isNotBlank() }
+                if (cov != null) resolvedMap[e.id] = cov
+            } catch (_: Exception) {}
+        }
+        if (resolvedMap.isNotEmpty()) {
+            synchronized(coverOverrides) {
+                coverOverrides.putAll(resolvedMap)
+                persistCoverOverrides()
+            }
+        }
+        overridden.map { e ->
+            if (!e.coverImage.isNullOrBlank()) e
+            else resolvedMap[e.id]?.let { e.copy(coverImage = it) } ?: e
+        }
+    }
+
+    // Final: drop any still-coverless entries so CS shows no broken tile.
+    val finalList = resolved.filter { !it.coverImage.isNullOrBlank() }
+    val result = finalList.take(limit)
+    BLog.v("shikimori '$rowName' → ${raw.size} raw, ${result.size} returned (floor=$yearFloor, shuffled)")
+    return result
+}
+
+private fun persistCoverOverrides() {
+    try {
+        val obj = JSONObject()
+        synchronized(coverOverrides) {
+            coverOverrides.forEach { (k, v) -> obj.put(k.toString(), v) }
+        }
+        prefs.edit().putString("cover_overrides", obj.toString()).apply()
+    } catch (_: Exception) {}
+}
 
     // ── raw fetch: cache + network, returns unfiltered list ──
     private suspend fun fetchRawForRow(rowName: String, limit: Int): List<AniListApi.Entry> {
