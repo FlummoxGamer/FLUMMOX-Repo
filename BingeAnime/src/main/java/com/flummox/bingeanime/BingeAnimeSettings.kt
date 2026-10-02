@@ -1002,9 +1002,11 @@ private fun yearScrollPicker(
                 val childViewport = child.left + child.width / 2f - scrollX
                 val dist = kotlin.math.abs(childViewport - centerViewport)
                 val maxDist = itemW * 2f
-                val a = (1f - dist / maxDist).coerceIn(0.20f, 1f)
+                val a = (1f - dist / maxDist).coerceIn(0.35f, 1f)
                 child.alpha = a
-                child.textSize = 18f + (a - 0.20f) * 5f
+                child.textSize = 18f + (a - 0.35f) * 5f
+                // Centered year gets accent color, neighbours stay TEXT.
+                child.setTextColor(if (a > 0.92f) ACCENT else TEXT)
             }
         }
     }
