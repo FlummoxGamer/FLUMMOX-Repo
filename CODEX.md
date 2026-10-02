@@ -29,18 +29,31 @@ path: build.gradle.kts
 path: settings.gradle.kts
 - pluginManagement — plugin id → module mapping
 - rootProject.name = "FLUMMOX-Repo"
-- includes :BingeCloud and :Otakutsu
+- includes :BingeCloud, :Otakutsu, :BingeAnime
 
 ## gradle.properties
 path: gradle.properties
-- bingecloud_version — SINGLE SOURCE OF TRUTH for plugin version
+- bingecloud_version — SINGLE SOURCE OF TRUTH for BingeCloud version
 - otakutsu_version — plugin version for Otakutsu
+- bingeanime_version — plugin version for BingeAnime
+
+## build.yml
+path: .github/workflows/build.yml
+- Triggers on push to main, master, dev
+- Outputs to builds/ (main) or builds-dev/ (dev)
+- Env passed to `gradle make` and `makePluginsJson`:
+  - TMDB_API_KEY, TVDB_API_KEY (BingeCloud)
+  - MAL_CLIENT_ID (BingeAnime — MAL fallback search, currently unused)
+  - ANIMESCHEDULE_API_KEY (BingeAnime — search fallback)
+  - IS_DEV_BUILD (analytics gate)
+- Reads bingecloud_version for the CI sanity check + NEW_VERSION env
 
 ## patch_plugins.py
 path: patch_plugins.py
 - reads NEW_VERSION, OUTPUT_BRANCH, GITHUB_REPOSITORY env
 - rewrites builds/plugins.json URLs + versions
-- [v2] also reads src/gradle.properties → {internalName.lower()}_version per plugin
+- reads src/gradle.properties → {internalName.lower()}_version per plugin
+- currently handles BingeCloud, Otakutsu, BingeAnime automatically
 
 
 ## BingeCloud/build.gradle.kts
@@ -57,8 +70,10 @@ path: BingeCloud/build.gradle.kts
 
 ## AiometaApi.kt
 - AIOMETA_BASE — Aiometa metadata base URL
-- AioCast, AioVideo, AioAppExtras, AioMeta, AioMetaResponse, AioCatalogResponse — data models (AioMeta has originalLanguage field)
-- aioFetchMeta — fetch single meta by type/id
+- AioCast, AioVideo, AioAppExtras, AioMeta, AioMetaResponse, AioCatalogResponse — data models
+  - AioAppExtras.seasonPosters marked @JsonIgnore — AIOMetadata sometimes returns an
+    object here, not String[]. Jackson hard-failed on type mismatch. Field unused.
+- aioFetchMeta — fetch single meta by type/id (diagnostic logs HTTP code + body head on failure)
 - aioFetchCatalog — fetch catalog page
 - aioSearch — search Aiometa
 - TmdbDiscoverItem, TmdbDiscoverResponse — TMDB models
@@ -110,6 +125,9 @@ path: BingeCloud/build.gradle.kts
 - buildVariants — generate shortened query variants
 - search — AniZone search (cached 30min)
 - pickBest — pick best AniZone hit
+  — fuzzy step now requires containsAll either direction (query tokens fully
+    inside candidate, or vice versa). Blocks "The Final Problem" matching
+    "Shingeki no Kyojin: The Final Season" on shared stopwords.
 - getEpisodes — episode list (cached 60min)
 - getStream — resolve m3u8 from vidstackPlayer JSON
 - pickBestAniList — pick best AniList entry by title/year
@@ -213,7 +231,9 @@ path: BingeCloud/build.gradle.kts
 
 
 ## LinkScore.kt
-- prelimScore — 0-100 score per mirror; demotes MovieBox sbcdn5 edge (−50) — sbcdn5 serves certain subjects at unsustainable bitrate (Reacher 2022 confirmed, sticky per subject ID)
+- prelimScore — 0-100 score per mirror; demotes MovieBox sbcdn5 edge (−50) —
+  sbcdn5 serves certain subjects at unsustainable bitrate (Reacher 2022
+  confirmed, sticky per subject ID)
 - emoji — 🟢🟡🔴 bands
 - hostOf — URL → host
 
@@ -241,12 +261,15 @@ path: BingeCloud/build.gradle.kts
 - MB_SECRET_B64, MB_SECRET_ALT_B64, MB_VERSION_CODE, MB_VERSION_NAME, MB_PACKAGE, MB_INSTALL_STORE, MB_UA — DO NOT TOUCH
 - MB_HOSTS — native API host pool (api3..api6, api4sg)
 - MB_WEB_DOMAINS — 7 candidate web domains for /wefeed-h5api-bff/subject/play
-- MB_WEB_UA — Chrome 154 Mobile UA for web path (matches reference)
+- MB_WEB_UA — Chrome 154 Mobile UA for web path
 - MB_BOOTSTRAP_HOST, MB_BOOTSTRAP_PATH
 - deviceId, clientInfo — request fingerprint
 - md5Hex, b64DecodeBytes, b64Encode — encoding helpers
 - generateXClientToken, buildCanonicalString, generateXTrSignature, buildHeaders — signing
-- parseJwtExp, restoreMbSession, bootstrapToken, ensureSession
+- parseJwtExp — decode exp claim
+- restoreMbSession — reads saved token from Settings, restores mbSession
+  (real implementation now; previously a no-op stub)
+- bootstrapToken, ensureSession
 - mbGet — GET with retry + cache
 - MBSubject, MBStream — data models (MBStream has emitHeaders: Map<String,String>)
 - highestQuality — pick max resolution from "1080,720,480" → "1080p"
@@ -254,8 +277,10 @@ path: BingeCloud/build.gradle.kts
 - mbSearch, parseSearchResults — search
 - mbDetail, mbLanguages — detail + audio tracks
 - mbPlay — orchestrator: fetch detail → try web → fallback native
-- mbPlayWeb — iterate MB_WEB_DOMAINS, hit /wefeed-h5api-bff/subject/play, parse dash/hls/streams
-- parseWebStreams — apply skip rules, extract signCookie + signHeaderKey, build emitHeaders
+- mbPlayWeb — iterate MB_WEB_DOMAINS, hit /wefeed-h5api-bff/subject/play,
+  parse dash/hls/streams
+- parseWebStreams — apply skip rules, extract signCookie + signHeaderKey,
+  build emitHeaders (Origin / Referer / UA / sign cookie)
 - mbPlayNative — original play-info + resourceDetectors, DASH-first sort
 
 
@@ -317,6 +342,7 @@ path: BingeCloud/build.gradle.kts
 - resolveWrapper — wrapper URL resolver
 - PER_SOURCE_TIMEOUT_MS
 - scrapeAllSources — parallel source dispatcher
+  — sources-done log line includes ANIZONE bucket
 
 
 ## TvdbApi.kt
@@ -557,26 +583,294 @@ Body: ["<animeId>", <ep>, "<streamToken>"]
 
 
 # ══════════════════════════════════════════════════════════════
+# BINGEANIME MODULE
+# ══════════════════════════════════════════════════════════════
+
+## BingeAnime/build.gradle.kts
+path: BingeAnime/build.gradle.kts
+- android — namespace com.flummox.bingeanime, compileSdk 35, minSdk 21
+- defaultConfig — PLUGIN_VERSION, IS_DEV_BUILD, MAL_CLIENT_ID, ANIMESCHEDULE_API_KEY from env
+- cloudstream — description, authors, tvTypes=[Anime, AnimeMovie], version from bingeanime_version
+- dependencies — cloudstream3 pre-release, NiceHttp, jsoup, okhttp, jackson, coroutines
+
+
+## package: com.flummox.bingeanime
+## path: BingeAnime/src/main/java/com/flummox/bingeanime/
+
+
+## AniListApi.kt
+- ENDPOINT — https://graphql.anilist.co
+- JSON_MEDIA — application/json media type
+- CACHE_TTL — 24h
+- Title — data model (romaji, english, native) with .all()
+- Entry — universal data model shared by every source
+  — fields: id, idMal, title, format, episodes, seasonYear, startDate,
+    description, coverImage, bannerUrl, averageScore, status, genres,
+    country, relations, source, sourceId, subEpisodes, dubEpisodes
+  — `source` values: "anilist" | "mal" | "shikimori" | "animapper" | "animeschedule"
+  — `sourceId` used by sources whose IDs are strings (AnimeSchedule routes)
+- Relation — flattened to avoid R8 metadata rewriter crash on cycles
+- MEDIA_FIELDS, MEDIA_FIELDS_WITH_RELATIONS — GraphQL projections
+  — MEDIA_FIELDS includes nextAiringEpisode { episode } and bannerImage
+- CatalogSpec — batch query descriptor (key, sort, genre, tag, format, country, status, year)
+- fetchCatalogBatch — alias-batched GraphQL: one HTTP request for N rows
+  — safeAlias sanitizes key for GraphQL alias charset
+  — inFlightBatch dedupes concurrent callers
+- parsePageArray — extract entries from a batch alias response
+- parseList — extract Page.media
+- searchAnime — GraphQL search, SEARCH_MATCH sort, 20 hits
+- getEntry — full entry with relations by AniList ID
+- PartInfo, parsePartInfo — Part/Season marker parsing
+- RX_COUR_N, RX_ROMAN_WORD, ROMAN_MAP — display helpers
+- stripCourBranding — "X Cour N" → "X" (N<=1) or "X Part N"
+- baseTitleKey — franchise grouping key (before-first-colon prefix)
+- convertRomanSeasons — "… III: …" → "… Season 3: …"
+- formatPriority — TV 0, ONA 1, MOVIE 2, OVA 3, SPECIAL 4, TV_SHORT 5
+- relevanceRank — 0 exact, 1 prefix, 2 contains, 3 fuzzy
+- titleOf — pick best title (english → romaji → native)
+- SPINOFF_MARKERS, isSpinoff — side-content detection
+- effectiveFormatPriority — spinoffs forced to 100
+- seasonOrdinal — Season N | roman | Final Season → 99 | bare trailing N
+- partOrdinal — "Part N" / "Cour N"
+- sortChronological — relevance → format → season → part → year → date
+- filterAndSortChronological — drop tier-3 when any tier 0-2 exists
+  (fixes AnimeSchedule fuzzy-match noise like "Tsuihou Sareta Cheat...")
+- mergeKey — MAL ID primary, title+format fallback
+- parseEntry — AniList JSON → Entry (source = "anilist")
+
+
+## AniMapperApi.kt
+- BASE — https://api.animapper.net/api/v1
+- ROW_TTL — 6h
+- headers — Accept + custom UA
+- ANILIST_GRAPHQL — https://graphql.anilist.co (rating enrichment)
+- RATING_TTL — 24h per-ID rating cache
+- JSON_MEDIA — application/json media type
+- CN_TTL — 1h CN ID set cache
+- cnIds, cnIdsFetchedAt — cached CN ID set (search responses omit countryOfOrigin)
+- ensureCnIds — one query returns ~100-200 CN IDs, cached 1h
+- enrichRatings — batch fetch missing ratings via one AniList GraphQL query
+  — per-ID cache 24h; new IDs fetch, cached are free
+  — wired into trending(), donghua(), detail()
+- trending — sortBy=UPDATED_AT + status=RELEASING; 30% CN cap; no row cache
+- donghua — countryOfOrigin=CN; optional yearFloor; cached 6h
+- searchByTitle — for Shikimori cover fallback; tries ?q= then ?title=
+- detail — /metadata?id=N, unwraps {result}, runs enrichRatings
+- parseResponse — flexible shape: results | data | data.results | data.media
+- parseEntry — maps titles.{ja-ro,main,user-preferred,en,ja} + images.{coverXl,coverLg,coverMd,bannerUrl} + totalUnits
+
+
+## AnimeScheduleApi.kt
+- BASE — https://animeschedule.net/api/v3
+- IMG_BASE — https://img.animeschedule.net/production/assets/public/img/
+- ROW_TTL — 6h
+- headers — Bearer token from BuildConfig.ANIMESCHEDULE_API_KEY
+- search — GET /anime?q=...&st=popularity; 30s timeout via app.get
+- detail — GET /anime/{route}; no per-episode endpoint; counts from *Override
+- parseList — extract from `anime` array
+- parseEntry
+  — reads names.{romaji, english, native, abbreviation, synonyms}
+  — format mapped by substring ("tv short" → TV_SHORT, "tv" → TV)
+  — episodes: max of subEpisodeOverride / episodeOverride / dubEpisodeOverride
+    (each is an object with nested overrideEpisode int)
+  — subEpisodes / dubEpisodes from their respective overrides
+  — score: stats.rating (0-100) > stats.averageScore (0-100) > stats.score (0-10)
+  — sourceId = route slug; id = route.hashCode()
+
+
+## BLog.kt
+- init — file + buffer setup
+- d, v, e, section — log levels (d=normal, v=verbose, e=error)
+- recent(n) — last n lines (used in tile preview if any)
+- allSanitized, count, clear — debug UI support
+- sanitize — regex redaction (JWT, bearer, cookie)
+- setVerbose, isVerbose — toggle
+
+
+## BingeAnimePlugin.kt
+- BingeAnimePlugin — @CloudstreamPlugin entry point
+- load — BLog.init, ShikimoriApi.init, registerMainAPI(BingeAnimeProvider),
+  openSettings → BingeAnimeSettings.show, ShikimoriApi.warmPrefetch
+
+
+## BingeAnimeProvider.kt
+- ROW_SEP — "|" separator for row config
+- ROWS — top-level list of (configString, label); filtered at runtime by
+  isRowEnabled in `mainPage`
+- BingeAnimeProvider — MainAPI class
+  - mainUrl — https://shikimori.one (legacy default)
+  - supportedTypes — Anime, AnimeMovie
+  - mainPage — filtered by BingeAnimeSettings.isRowEnabled per label
+  - getMainPage — dispatches per row:
+    - "Donghua" → AniMapperApi.donghua(30, yearFloor)
+    - "Trending" → AniMapperApi.trending(30) with Shikimori fallback
+    - else → ShikimoriApi.fetchForRow(rowName, 30)
+    — then rebuildExclusions + isExcluded filter for cross-row dedup
+    — hasNext = false (CloudStream otherwise re-fetches page 2+)
+  - search — primary source switch (BingeAnimeSettings.getSearchSource)
+    - "animeschedule" → AnimeSchedule primary, AniList fallback
+    - "anilist" (default) → AniList primary, AnimeSchedule fallback
+    — AnimeSchedule path uses filterAndSortChronological (tier-3 drop)
+    — AniList path uses plain sortChronological
+  - load — dispatches by URL prefix:
+    - animeschedule:{route} → AnimeScheduleApi.detail
+    - animapper:{id} → AniMapperApi.detail
+    - shikimori:{id} → ShikimoriApi.detail
+    - anilist:{id} → AniListApi.getEntry
+    - mal:{id} → JikanApi.detail (dead — Jikan shut down 2026-10-01)
+    — sets backgroundPosterUrl = entry.bannerUrl
+  - loadLinks — Phase 2 stub, returns false
+  - toSearchResponse — private extension; source tag from sourceId
+
+- StreamQuery — data class (title, year, type, sourceUrl, season, episode, totalEpisodes)
+- encodeQuery, decodeQuery — JSON serialization
+
+
+## BingeAnimeSettings.kt
+- Colors — BG, SURFACE, SURFACE_2, BORDER, BORDER_HI, TEXT, SUBTEXT, ACTIVE, ACCENT, RED, LOG_TEXT
+- K_* pref keys:
+  - K_CONCURRENCY, K_PREFETCH, K_PREFILTER, K_VERBOSE
+  - K_SRC_ANIKOTO, K_SRC_ANIZONE, K_SRC_OTAKUTSU
+  - K_ROW_ORDER, K_ROW_PREFIX
+  - K_YEAR_FILTER_ON, K_YEAR_FLOOR
+  - K_SEARCH_SOURCE
+- getConcurrency, isPrefetchEnabled, isPrefilterEnabled, isVerbose
+- isSrcAniKoto, isSrcAniZone, isSrcOtakutsu
+- isYearFilterEnabled, getYearFloor, getYearFloorIfEnabled
+- getSearchSource, setSearchSource
+- getRowOrder, setRowOrder, isRowEnabled (falls back to DEFAULT_ON_ROWS),
+  resetHomeToDefaults
+- DEFAULT_ON_ROWS — 19 rows enabled by default (dynamic + demographics + some genre)
+- dp, shape — UI helpers
+- stagger — animation helper
+- themedSwitch — overrides Material purple: thumb TEXT/SUBTEXT, track 0x3A3A3A/0x1A1A1A
+- GlyphView — Canvas vector glyphs, monochrome TEXT, idle pulse 0.75↔1.0 at 2200ms
+- tile — square tile with glyph + press animation + accent underline
+- show — root dialog with 4 tiles
+- subWindow — scaffold with onClose + onDismiss callbacks; dialog-level
+- openSettings — prefetch, prefilter, concurrency, clear cache, search source toggle
+- openSources — AniKoto / AniZone / Otakutsu toggles
+- openHomepage — year filter toggle, yearScrollPicker, row list with
+  snapshot/restore semantics (revert on non-SAVE dismiss), RESET action
+- openLogs — verbose toggle, log view, REFRESH/SAVE/COPY/CLEAR
+- toggleRow, stepperRow, actionRow, arrowBtn, labelBlock — reusable rows
+- yearScrollPicker — HorizontalScrollView, centered year auto-snaps,
+  neighbours fade to 0.35 alpha, range 1960–2015
+- Helpers: labelBlock, arrowBtn
+
+
+## Cache.kt
+- BCCache — text-only LRU cache
+  - get(key, ttl) — default 5min
+  - put(key, body)
+  - clear
+  — used by all sources for row + detail + rating caches
+
+
+## JikanApi.kt [DEAD]
+- Whole file is dead as of 2026-10-01. Jikan public API shut down permanently.
+- Kept for reference only. No callers reach it except BingeAnimeProvider.load()
+  `mal:` branch — but no source produces `mal:` URLs anymore.
+- Delete candidate for a future cleanup commit.
+
+
+## LogScrollbar.kt
+- LogScrollbar — custom draggable scrollbar for the logs sub-window
+- thumbColor default 0x8CB8B8B8 (gray) — was 0x8C38BDF8 (blue), changed to
+  match the monochrome palette
+
+
+## ShikimoriApi.kt
+- BASE — https://shikimori.one/api
+- IMG_BASE — https://shikimori.one
+- UA — "BingeAnime/1.0" (custom; browser UAs get IP-banned)
+- ROW_TTL — 1h
+- GENRE_TTL — 7 days (SharedPreferences-persisted genre map)
+- requestLock, lastRequestMs, MIN_GAP_MS = 250 — strict serial throttle;
+  holds lock through entire HTTP call, guarantees steady 4/sec, zero bursts
+- throttled<T>(block) — rate-limited wrapper used by every HTTP call
+- DYNAMIC_ROWS — Trending, Top Anime Series, Top Anime Movies (excluded
+  from cross-row dedup counting)
+- exclusions — rowName → set of dedupeKeys to drop (cross-row dedup)
+- coverOverrides — shiki id → AniMapper-resolved cover URL (persisted)
+- prefs, cacheDir — SharedPreferences + filesDir/shikimori_rows
+- genreMap — name → id (anime genres/themes only)
+- genreMapDeferred — single-flight guard for /api/genres fetch
+- ROW_QUERY — LinkedHashMap row label → Triple(paramKey, paramValue, sort)
+  — "id" / "name:..." / "kind" / "order" modes
+  — Isekai hardcoded as id:62 (not exposed via /api/genres)
+- init — load disk cache + genre map + cover overrides; schedule
+  background revalidation of stale rows (stale-while-revalidate)
+- fetchForRow — public; applies year filter, hourly-seeded shuffle,
+  cover override, AniMapper fallback (capped 3/row), drops still-coverless
+- fetchRawForRow — in-flight dedup + resolve name→id + fetchAndStore
+- fetchAndStore — throttled GET → JSON → disk + memory cache → parse
+- detail — throttled GET /animes/{id}
+- ensureGenreMap — single-flight fetch + 7d SharedPreferences cache
+- resolveRowId — name → id lookup
+- isExcluded, rebuildExclusions — cross-row dedup by dedupeKey
+- resetForClearCache — wipes inFlight, exclusions, cover overrides,
+  prefetch timer (called by Clear Cache button)
+- warmPrefetch — enabled rows only, top 8 priority, then rest with delay
+- prefetchRowsNow(rows) — on-demand prefetch after SAVE & CLOSE
+- persistCoverOverrides — JSON persist
+- dedupeKey — normalized title (lowercase, alnum-only, 48 chars)
+- parseList, parseEntry — Shikimori JSON → Entry
+  — filters /assets/* placeholder URLs (site's missing-image marker) so
+    AniMapper fallback in fetchForRow triggers
+
+
+# ══════════════════════════════════════════════════════════════
 # CROSS-CUTTING — Dev-build analytics gate (2026-09-28)
 # ══════════════════════════════════════════════════════════════
 
 - build.yml passes IS_DEV_BUILD env (github.ref_name == 'dev')
-- BingeCloud + Otakutsu build.gradle.kts emit BuildConfig.IS_DEV_BUILD boolean
+- BingeCloud + Otakutsu + BingeAnime build.gradle.kts emit BuildConfig.IS_DEV_BUILD
 - RepoAnalytics.ping() and OAnalytics.ping() early-return when true
 - Effect: dev branch builds never contribute to Firebase ping counts
-- Stable builds (main branch) ping normally
 
 
 # ══════════════════════════════════════════════════════════════
 # CROSS-CUTTING — MovieBox web-path fix (2026-09-29)
 # ══════════════════════════════════════════════════════════════
 
-- Root cause: mbPlay previously used only the native play-info endpoint
-- Fix: mbPlay now tries mbPlayWeb (7 candidate web domains) first,
-  falls back to mbPlayNative if web returns empty
+- mbPlay now tries mbPlayWeb (7 candidate web domains) first, then falls
+  back to mbPlayNative if web returns empty
 - Web path attaches per-stream emitHeaders (Origin/Referer/UA/sign cookie)
-- Scrapers wire MBStream.emitHeaders → ScrapedMirror.headers
-- Pre-flight probe in BingeCloudProvider.loadLinks deleted (was
-  tripping 429 on CDN and poisoning subsequent ExoPlayer fetch)
-- Fix verified: all title types resolve via web path, no 429, no
-  buffering except on sbcdn5 edge (see LinkScore demotion)
+- Pre-flight probe in BingeCloudProvider.loadLinks deleted (was tripping
+  429 on CDN and poisoning subsequent ExoPlayer fetch)
+
+
+# ══════════════════════════════════════════════════════════════
+# CROSS-CUTTING — BingeAnime module (2026-10-02)
+# ══════════════════════════════════════════════════════════════
+
+Architecture:
+- Home rows: Shikimori (18 rows) + AniMapper (Trending + Donghua)
+- Search: AniList primary (default), AnimeSchedule toggle alternative
+- Detail: dispatch per source prefix (anilist / animapper / shikimori /
+  animeschedule)
+- Ratings on AniMapper entries: enriched via one batched AniList GraphQL
+  query, cached per-ID for 24h
+- Cross-row dedup: any title in 3+ genre rows kept only in top 2 by
+  ROW_QUERY order; dynamic rows exempt
+- Year filter: opt-in floor (1960–2015), applied client-side after fetch
+  (raw fetch always 50, filtered to <=30 for return)
+- Hourly shuffle on rows: same hour = same order, different hour = reshuffle
+
+Persistence:
+- Shikimori row cache: filesDir/shikimori_rows/*.json, 1h TTL
+- Shikimori genre map: SharedPreferences "genre_map" + "genre_map_ts", 7d TTL
+- Shikimori cover overrides: SharedPreferences "cover_overrides"
+- AniList rating cache: BCCache per-ID 24h
+- Row toggle prefs: CloudStream keys K_ROW_PREFIX + label
+
+Rate limiting:
+- Shikimori: strict serial 250ms gap → 4/sec peak, zero bursts, no 429s
+- AniMapper: 60/min server-side; fetchForRow unaffected
+- AnimeSchedule: 120/min server-side
+- AniList: only search + detail + rating enrichment; kept well under 30/min
+
+Dead code:
+- JikanApi.kt unused (Jikan public API shut down 2026-10-01)
+- BingeAnimeProvider.loadLinks is a stub (scrapers pending)
