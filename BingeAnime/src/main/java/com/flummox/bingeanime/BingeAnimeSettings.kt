@@ -388,6 +388,7 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
     title: String,
     closeLabel: String = "CLOSE",
     onClose: (() -> Unit)? = null,
+    onDismiss: (() -> Unit)? = null,
     body: (LinearLayout, Dialog) -> Unit
 ) {
     val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
@@ -424,22 +425,22 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 52)
         ).apply { topMargin = dp(ctx, 16) }
-        setOnClickListener {
-            dlg.dismiss()
-            onClose?.invoke()
-        }
+            setOnClickListener {
+        onClose?.invoke()
+        dlg.dismiss()
     }
-    root.addView(close)
+}
+root.addView(close)
 
     dlg.setContentView(root)
     dlg.window?.setLayout(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
     )
     dlg.window?.setBackgroundDrawable(shape(BG, 0, ctx))
+        dlg.setOnDismissListener { onDismiss?.invoke() }
     dlg.setOnShowListener { listOf(header, sub).forEachIndexed { i, v -> stagger(v, i) } }
     dlg.show()
     }
-
     private fun openSettings(ctx: Context) {
         subWindow(ctx, "SETTINGS") { body, _ ->
             // Search source — switch between AniList (default/recommended)
