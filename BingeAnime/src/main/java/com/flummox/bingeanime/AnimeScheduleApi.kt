@@ -151,14 +151,22 @@ object AnimeScheduleApi {
         else -> null
     }
 
-    // Score. AnimeSchedule exposes stats.rating (0-100) and
-    // stats.averageScore (0-100). Either works — divide by 10 to
-    // convert to the 0-10 scale AniListApi.Entry uses internally.
-    val stats = o.optJSONObject("stats")
-    val score = stats?.optDouble("rating", 0.0)?.takeIf { it > 0 }
-        ?: stats?.optDouble("averageScore", 0.0)?.takeIf { it > 0 }
-        ?: stats?.optDouble("score", 0.0)?.takeIf { it > 0 }
-    val averageScore = score?.let { (it / 10.0 * 10).toInt().coerceIn(1, 100) }
+    // AnimeSchedule stats has three candidates:
+//   rating       — 0-100
+//   averageScore — 0-100
+//   score        — 0-10
+// Prefer rating, then averageScore, then score. Only score
+// needs ×10 conversion.
+val stats = o.optJSONObject("stats")
+val rawRating = stats?.optDouble("rating", 0.0)?.takeIf { it > 0 }
+val rawAvg = stats?.optDouble("averageScore", 0.0)?.takeIf { it > 0 }
+val rawScore = stats?.optDouble("score", 0.0)?.takeIf { it > 0 }
+val averageScore: Int? = when {
+    rawRating != null -> rawRating.toInt()
+    rawAvg != null -> rawAvg.toInt()
+    rawScore != null -> (rawScore * 10).toInt()
+    else -> null
+}
 
     val description = o.optString("description").takeIf { it.isNotBlank() && it != "null" }
 
