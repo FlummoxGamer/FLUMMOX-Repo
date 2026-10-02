@@ -492,17 +492,25 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
     }
 
     private fun openHomepage(ctx: Context) {
-    // Snapshot current state at open. Diffed against end-state on
-    // close so we only refetch rows the user added.
-    val initialEnabled = ROWS.mapNotNull { (_, label) ->
+    // Snapshot state at open. If the dialog is dismissed any other
+    // way than SAVE & CLOSE, revert every change. Prevents accidental
+    // row toggles from sticking when the user hits back/tap-outside.
+    val snapOrder = getRowOrder()
+    val snapEnabled = ROWS.mapNotNull { (_, label) ->
         if (isRowEnabled(label)) label else null
     }.toSet()
+    val snapYearOn = isYearFilterEnabled()
+    val snapYearFloor = getYearFloor()
+
+    val initialEnabled = snapEnabled
+    var confirmed = false
 
     subWindow(
         ctx,
         "HOMEPAGE",
         closeLabel = "SAVE & CLOSE",
         onClose = {
+            confirmed = true
             val currentEnabled = ROWS.mapNotNull { (_, label) ->
                 if (isRowEnabled(label)) label else null
             }.toSet()
@@ -511,99 +519,32 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
                 BLog.d("home changed: prefetching ${newlyEnabled.size} newly enabled rows")
                 ShikimoriApi.prefetchRowsNow(newlyEnabled.toList())
             }
-           // Always fire reload — year filter changes, row reorder,
-           // and toggles all affect home. Cached rows render
-           // instantly; any changed rows fill in as prefetch lands.
-           try {
-               com.lagradost.cloudstream3.MainActivity
-                   .reloadHomeEvent.invoke(true)
-           } catch (_: Exception) {}
+            // Defer reload — the dialog is still dismissing when
+            // this callback fires. Post to next frame so the
+            // activity is fully interactive.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try {
+                    com.lagradost.cloudstream3.MainActivity
+                        .reloadHomeEvent.invoke(true)
+                } catch (_: Exception) {}
+            }, 250L)
+        },
+        onDismiss = {
+            if (!confirmed) {
+                // Revert to snapshot.
+                setRowOrder(snapOrder)
+                for ((_, label) in ROWS) {
+                    setKey(K_ROW_PREFIX + label, label in snapEnabled)
+                }
+                setKey(K_YEAR_FILTER_ON, snapYearOn)
+                setKey(K_YEAR_FLOOR, snapYearFloor)
+            }
         }
-        ) { body, _ ->
+    ) { body, _ ->
 
-        body.addView(actionRow(ctx, "Reset home",
-            "Restore default rows, order, toggles", "RESET") {
-            resetHomeToDefaults()
-            // Rebuild list on next open — simpler than mutating here.
-        })
-
-        // ── year filter ──
-        body.addView(labelBlock(ctx, "Year filter",
-            "Hide anime released before a chosen year. Only affects "
-            + "Shikimori-sourced rows; Trending uses its own "
-            + "current-year filter."))
-
-        val yearEnabled = isYearFilterEnabled()
-        val yearDescText = TextView(ctx).apply {
-            text = if (yearEnabled) "Showing ${getYearFloor()} and newer"
-                   else "Off — showing all years"
-            setTextColor(SUBTEXT); textSize = 11f
-            setPadding(dp(ctx, 3), dp(ctx, 3), 0, 0)
-        }
-
-        val yearToggleRow = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = shape(SURFACE, 12, ctx, 1, BORDER)
-            setPadding(dp(ctx, 16), dp(ctx, 14), dp(ctx, 16), dp(ctx, 14))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(ctx, 8) }
-        }
-        val yCol = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        yCol.addView(TextView(ctx).apply {
-            text = "Filter by year"
-            setTextColor(TEXT); textSize = 14f
-            setTypeface(typeface, Typeface.BOLD)
-        })
-        yCol.addView(yearDescText)
-        yearToggleRow.addView(yCol)
-
-        val pickerContainer = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = if (yearEnabled) View.VISIBLE else View.GONE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(ctx, 12) }
-        }
-        pickerContainer.addView(TextView(ctx).apply {
-            text = "Tap or scroll a year"
-            setTextColor(SUBTEXT); textSize = 10f
-            letterSpacing = 0.18f
-            setPadding(0, 0, 0, dp(ctx, 6))
-        })
-        pickerContainer.addView(yearScrollPicker(ctx, getYearFloor()) { picked ->
-            setKey(K_YEAR_FLOOR, picked)
-            yearDescText.text = "Showing $picked and newer"
-        })
-
-        val yearSwitch = themedSwitch(ctx).apply {
-            isChecked = yearEnabled
-        }
-        yearSwitch.setOnCheckedChangeListener { _, checked ->
-            setKey(K_YEAR_FILTER_ON, checked)
-            yearDescText.text = if (checked)
-                "Showing ${getYearFloor()} and newer"
-            else
-                "Off — showing all years"
-            pickerContainer.visibility =
-                if (checked) View.VISIBLE else View.GONE
-        }
-        yearToggleRow.addView(yearSwitch)
-        body.addView(yearToggleRow)
-        body.addView(pickerContainer)
-
-        // ── row list ──
-        body.addView(labelBlock(ctx, "Rows",
-            "Position 1 shows first. Toggle, then SAVE & CLOSE to apply."))
-
+        // ── row list holder defined first so Reset can re-render ──
         val holder = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+
         fun render() {
             holder.removeAllViews()
             val order = getRowOrder()
@@ -659,10 +600,91 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
                 holder.addView(row)
             }
         }
+
+        // ── Reset ──
+        body.addView(actionRow(ctx, "Reset home",
+            "Restore default rows, order, toggles", "RESET") {
+            resetHomeToDefaults()
+            render()
+            Toast.makeText(ctx, "Home reset to defaults",
+                Toast.LENGTH_SHORT).show()
+        })
+
+        // ── Year filter ──
+        body.addView(labelBlock(ctx, "Year filter",
+            "Hide anime released before a chosen year"))
+
+        val yearEnabled = isYearFilterEnabled()
+        val yearDescText = TextView(ctx).apply {
+            text = if (yearEnabled) "Showing ${getYearFloor()} and newer"
+                   else "Off — showing all years"
+            setTextColor(SUBTEXT); textSize = 11f
+            setPadding(dp(ctx, 3), dp(ctx, 3), 0, 0)
+        }
+
+        val yearToggleRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(SURFACE, 12, ctx, 1, BORDER)
+            setPadding(dp(ctx, 16), dp(ctx, 14), dp(ctx, 16), dp(ctx, 14))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(ctx, 8) }
+        }
+        val yCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        yCol.addView(TextView(ctx).apply {
+            text = "Filter by year"
+            setTextColor(TEXT); textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+        })
+        yCol.addView(yearDescText)
+        yearToggleRow.addView(yCol)
+
+        val pickerContainer = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (yearEnabled) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(ctx, 12) }
+        }
+        pickerContainer.addView(TextView(ctx).apply {
+            text = "Tap or scroll a year"
+            setTextColor(SUBTEXT); textSize = 10f
+            letterSpacing = 0.18f
+            setPadding(0, 0, 0, dp(ctx, 6))
+        })
+        pickerContainer.addView(yearScrollPicker(ctx, getYearFloor()) { picked ->
+            setKey(K_YEAR_FLOOR, picked)
+            yearDescText.text = "Showing $picked and newer"
+        })
+
+        val yearSwitch = themedSwitch(ctx).apply { isChecked = yearEnabled }
+        yearSwitch.setOnCheckedChangeListener { _, checked ->
+            setKey(K_YEAR_FILTER_ON, checked)
+            yearDescText.text = if (checked)
+                "Showing ${getYearFloor()} and newer"
+            else
+                "Off — showing all years"
+            pickerContainer.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+        yearToggleRow.addView(yearSwitch)
+        body.addView(yearToggleRow)
+        body.addView(pickerContainer)
+
+        // ── Rows list ──
+        body.addView(labelBlock(ctx, "Rows",
+            "Position 1 shows first. Toggle, then SAVE & CLOSE to apply."))
         render()
         body.addView(holder)
     }
     }
+
 
     private fun openLogs(ctx: Context) {
         val dlg = Dialog(ctx).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
