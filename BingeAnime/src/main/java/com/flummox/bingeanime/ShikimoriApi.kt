@@ -22,32 +22,25 @@ object ShikimoriApi {
     private const val ROW_TTL = 60 * 60 * 1000L
     private const val GENRE_TTL = 7L * 24 * 60 * 60 * 1000
 
-    // ── rate limiter: token bucket ──
-    // Hard cap: no more than 5 HTTP requests in any rolling 1-second window.
-    // Shikimori's burst limit is 5/sec. Staying at or below guarantees no 429.
-    private val requestTimes = ArrayDeque<Long>()
-    private val bucketLock = Mutex()
-    private const val WINDOW_MS = 1000L
-    private const val MAX_PER_WINDOW = 5
+    // ── rate limiter: strict serial with fixed gap ──
+// Token buckets burst 4-5 requests in the first ~100ms of each
+// second, which trips Shikimori's burst limiter even when the
+// rolling 1-sec count looks safe. This enforces a fixed 250ms gap
+// between consecutive requests and holds the lock through the
+// entire HTTP call — peak 4/sec, zero burst, no clock-skew races.
+private val requestLock = Mutex()
+private var lastRequestMs = 0L
+private const val MIN_GAP_MS = 250L
 
-    private suspend fun acquireToken() {
-        while (true) {
-            val wait: Long = bucketLock.withLock {
-                val now = System.currentTimeMillis()
-                while (requestTimes.isNotEmpty() && now - requestTimes.first() > WINDOW_MS) {
-                    requestTimes.removeFirst()
-                }
-                if (requestTimes.size < MAX_PER_WINDOW) {
-                    requestTimes.addLast(now)
-                    return@withLock 0L
-                }
-                // Wait until the oldest request falls out of the window
-                WINDOW_MS - (now - requestTimes.first()) + 20L
-            }
-            if (wait <= 0L) return
-            delay(wait)
-        }
+private suspend fun <T> throttled(block: suspend () -> T): T {
+    return requestLock.withLock {
+        val gap = System.currentTimeMillis() - lastRequestMs
+        if (gap < MIN_GAP_MS) delay(MIN_GAP_MS - gap)
+        val result = block()
+        lastRequestMs = System.currentTimeMillis()
+        result
     }
+}
 
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var lastPrefetchMs = 0L
@@ -280,10 +273,9 @@ private fun persistCoverOverrides() {
         ck: String, rowName: String,
         query: Triple<String, String, String>, limit: Int
     ): List<AniListApi.Entry> {
-        acquireToken()
         val url = "$BASE/animes?${query.first}=${query.second}&limit=$limit&order=${query.third}"
         val res = try {
-            app.get(url, headers = headers())
+            throttled { app.get(url, headers = headers()) }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -315,8 +307,7 @@ private fun persistCoverOverrides() {
             return
         }
         try {
-            acquireToken()
-            val res = app.get("$BASE/genres", headers = headers())
+            val res = throttled { app.get("$BASE/genres", headers = headers()) }
             if (res.code !in 200..299) {
                 BLog.e("shikimori genre fetch HTTP ${res.code}")
                 deferred.complete(null)
@@ -368,9 +359,8 @@ private fun persistCoverOverrides() {
         BCCache.get(ck, ROW_TTL)?.let { cached ->
             return try { parseEntry(JSONObject(cached)) } catch (_: Exception) { null }
         }
-        acquireToken()
         return try {
-            val res = app.get("$BASE/animes/$shikiId", headers = headers())
+            val res = throttled { app.get("$BASE/animes/$shikiId", headers = headers()) }
             if (res.code !in 200..299) return null
             val obj = JSONObject(res.text)
             BCCache.put(ck, obj.toString())
