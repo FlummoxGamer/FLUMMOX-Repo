@@ -50,8 +50,11 @@ class BingeAnimeProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
     override val mainPage get() = mainPageOf(
-        *ROWS.map { (data, label) -> data to label }.toTypedArray()
-    )
+    *ROWS
+        .filter { (_, label) -> BingeAnimeSettings.isRowEnabled(label) }
+        .map { (data, label) -> data to label }
+        .toTypedArray()
+)
 
     // ── home: Shikimori for 18 rows, AniMapper for Donghua ──
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
