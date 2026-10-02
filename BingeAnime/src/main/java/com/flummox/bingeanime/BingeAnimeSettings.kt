@@ -59,7 +59,9 @@ object BingeAnimeSettings {
     const val K_SEARCH_SOURCE = "bingeanime_search_source"
     const val K_ROW_ORDER = "bingeanime_row_order"
     const val K_ROW_PREFIX = "bingeanime_row_"
-
+    const val K_YEAR_FILTER_ON = "bingeanime_year_filter_on"
+    const val K_YEAR_FLOOR = "bingeanime_year_floor"
+ 
     fun getConcurrency(): Int = (getKey<Int>(K_CONCURRENCY) ?: 6).coerceIn(1, 30)
     fun isPrefetchEnabled(): Boolean = getKey<Boolean>(K_PREFETCH) ?: true
     fun isPrefilterEnabled(): Boolean = getKey<Boolean>(K_PREFILTER) ?: true
@@ -67,6 +69,11 @@ object BingeAnimeSettings {
     fun isSrcAniKoto(): Boolean = getKey<Boolean>(K_SRC_ANIKOTO) ?: true
     fun isSrcAniZone(): Boolean = getKey<Boolean>(K_SRC_ANIZONE) ?: true
     fun isSrcOtakutsu(): Boolean = getKey<Boolean>(K_SRC_OTAKUTSU) ?: true
+
+    fun isYearFilterEnabled(): Boolean = getKey<Boolean>(K_YEAR_FILTER_ON) ?: false
+    fun getYearFloor(): Int = getKey<Int>(K_YEAR_FLOOR) ?: 2010
+    fun getYearFloorIfEnabled(): Int? =
+        if (isYearFilterEnabled()) getYearFloor() else null
 
     // "anilist" (default, recommended) or "animeschedule"
     fun getSearchSource(): String =
