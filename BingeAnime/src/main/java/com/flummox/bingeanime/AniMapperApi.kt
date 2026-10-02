@@ -215,7 +215,10 @@ suspend fun trending(limit: Int = 30): List<AniListApi.Entry> {
             val root = JSONObject(res.text)
             val obj = root.optJSONObject("result") ?: root.optJSONObject("data") ?: root
             BCCache.put(ck, obj.toString())
-            parseEntry(obj)
+            val entry = parseEntry(obj) ?: return null
+            // /metadata has no rating field — same as /search. Enrich
+            // via the same AniList batch lookup used for trending/donghua.
+            enrichRatings(listOf(entry)).firstOrNull()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
