@@ -39,7 +39,7 @@ class OtakutsuProvider : MainAPI() {
     // The 40-hex is never emitted to client JS. Confirmed dead-end after scanning
     // homepage, homepage chunks, and watch route chunks — 0 hits everywhere.
     // Hardcoded fallback + stale detection heuristic in fetchChain covers rotation.
-    private val NEXT_ACTION_ID = "787faac6445fbc39cfe9376659cbfb5168c3f714b2"
+    private val NEXT_ACTION_ID = "78fa65ebe342217eb53596be1441583a330a26f90d"
 
     private var playbackCookie: String = ""
 
