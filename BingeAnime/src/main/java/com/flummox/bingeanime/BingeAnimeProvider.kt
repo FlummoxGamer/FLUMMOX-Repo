@@ -309,12 +309,14 @@ private suspend fun emitMirrorScored(
     callback: (ExtractorLink) -> Unit,
     count: AtomicInteger
 ) {
-    // Smart links ON  → emoji + source label + mirror descriptor
-    // Smart links OFF → raw URL as display name
-    val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
-    val displayName = if (cosmetic) {
-        "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
-    } else m.url
+// Smart links ON  → emoji + source label + mirror descriptor
+// Smart links OFF → same label, no emoji, arrival order
+val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
+val displayName = if (cosmetic) {
+    "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
+} else {
+    "${m.source} · ${m.mirror}"
+}
 
     val linkType = when {
         m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
