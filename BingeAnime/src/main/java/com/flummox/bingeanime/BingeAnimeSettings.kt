@@ -64,7 +64,7 @@ object BingeAnimeSettings {
     const val K_YEAR_FILTER_ON = "bingeanime_year_filter_on"
     const val K_YEAR_FLOOR = "bingeanime_year_floor"
  
-    fun getConcurrency(): Int = (getKey<Int>(K_CONCURRENCY) ?: 6).coerceIn(1, 30)
+    fun getConcurrency(): Int = (getKey<Int>(K_CONCURRENCY) ?: 50).coerceIn(1, 50)
     fun isPrefetchEnabled(): Boolean = getKey<Boolean>(K_PREFETCH) ?: true
     fun isPrefilterEnabled(): Boolean = getKey<Boolean>(K_PREFILTER) ?: true
     fun isVerbose(): Boolean = getKey<Boolean>(K_VERBOSE) ?: false
@@ -457,7 +457,7 @@ root.addView(close)
                 setSearchSource(if (it) "animeschedule" else "anilist")
             })
             body.addView(toggleRow(ctx, "Smart prefetch",
-                "Pre-cache next episode in background", isPrefetchEnabled()) {
+                "Pre-cache video + subs. Home rows always preload.", isPrefetchEnabled()) {
                 setKey(K_PREFETCH, it)
             })
             body.addView(toggleRow(ctx, "Smart link ranking",
@@ -465,12 +465,12 @@ root.addView(close)
                 setKey(K_PREFILTER, it)
             })
             body.addView(stepperRow(ctx, "Concurrency",
-                "Parallel source scrapers (1-30)", 1, 30, getConcurrency()) {
+                "Parallel source scrapers (1-50)", 1, 50, getConcurrency()) {
                 setKey(K_CONCURRENCY, it)
             })
             body.addView(actionRow(ctx, "Clear cache",
-    "Wipes in-memory + disk caches", "CLEAR") {
-    BCCache.clear()
+                "Wipes in-memory + disk caches", "CLEAR") {
+                BCCache.clear()
     try {
         java.io.File(ctx.filesDir, "shikimori_rows").deleteRecursively()
     } catch (_: Exception) {}
