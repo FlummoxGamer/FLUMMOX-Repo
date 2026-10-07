@@ -35,6 +35,12 @@ private val SUB_PROVIDERS = setOf("koto", "suge")
 // Priority order — koto and suge first, then kiwi/wave, then the rest.
 private val SERVER_PRIORITY = listOf("koto", "suge", "kiwi", "wave")
 
+// Dropped — non-functional on AniKage's side.
+//   dib : returns dead mirrors / wrong content
+//   megg: times out >8s on every title
+//   zen : empty sources[] on every title
+private val DROPPED_SERVERS = setOf("dib", "megg", "zen")
+
 private val STOP_WORDS = setOf(
     "the", "a", "an", "of", "and", "or", "in", "on", "at", "to",
     "season", "part", "cour", "episode", "ova", "ona", "special", "x"
@@ -192,6 +198,7 @@ suspend fun anikageExtractRaw(
     BLog.d("anikage: using slug=$slug ('$matchedTitle') ep=$ep")
 
     val servers = AnikageApi.servers(slug, ep)
+        .filter { it.id !in DROPPED_SERVERS }
     if (servers.isEmpty()) { BLog.d("anikage: no servers"); return emptyList() }
 
     // Order servers by priority — koto/suge first so their responses
