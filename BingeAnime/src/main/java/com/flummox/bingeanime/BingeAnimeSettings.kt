@@ -57,6 +57,8 @@ object BingeAnimeSettings {
     const val K_SRC_ANIKOTO = "bingeanime_src_anikoto"
     const val K_SRC_ANIZONE = "bingeanime_src_anizone"
     const val K_SRC_OTAKUTSU = "bingeanime_src_otakutsu"
+    const val K_SRC_ANIKAGE = "bingeanime_src_aniktrue
+    
     const val K_SEARCH_SOURCE = "bingeanime_search_source"
     const val K_ROW_ORDER = "bingeanime_row_order"
     const val K_ROW_PREFIX = "bingeanime_row_"
@@ -70,6 +72,7 @@ object BingeAnimeSettings {
     fun isSrcAniKoto(): Boolean = getKey<Boolean>(K_SRC_ANIKOTO) ?: true
     fun isSrcAniZone(): Boolean = getKey<Boolean>(K_SRC_ANIZONE) ?: true
     fun isSrcOtakutsu(): Boolean = getKey<Boolean>(K_SRC_OTAKUTSU) ?: true
+    fun isSrcAnikage(): Boolean = getKey<Boolean>(K_SRC_ANIKAGE) ?: true
 
     fun isYearFilterEnabled(): Boolean = getKey<Boolean>(K_YEAR_FILTER_ON) ?: false
     fun getYearFloor(): Int = getKey<Int>(K_YEAR_FLOOR) ?: 2010
@@ -486,11 +489,13 @@ root.addView(close)
     private fun openSources(ctx: Context) {
         subWindow(ctx, "SOURCES") { body, _ ->
             body.addView(toggleRow(ctx, "AniKoto",
-                "Sub / Dub / HSub streams", isSrcAniKoto()) { setKey(K_SRC_ANIKOTO, it) })
+                "Sub / Dub", isSrcAniKoto()) { setKey(K_SRC_ANIKOTO, it) })
             body.addView(toggleRow(ctx, "AniZone",
-                "Sub streams, HLS", isSrcAniZone()) { setKey(K_SRC_ANIZONE, it) })
+                "Sub / Dub", isSrcAniZone()) { setKey(K_SRC_ANIZONE, it) })
             body.addView(toggleRow(ctx, "Otakutsu",
-                "Sub / Dub, M3U8", isSrcOtakutsu()) { setKey(K_SRC_OTAKUTSU, it) })
+                "Sub / Dub", isSrcOtakutsu()) { setKey(K_SRC_OTAKUTSU, it) })
+            body.addView(toggleRow(ctx, "AniKage",
+                "Sub / Dub", isSrcAnikage()) { setKey(K_SRC_ANIKAGE, it) })
         }
     }
 
