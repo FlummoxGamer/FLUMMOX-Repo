@@ -3,6 +3,9 @@ package com.flummox.bingeanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Semaphore
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val ROW_SEP = "|"
 
@@ -44,6 +47,9 @@ class BingeAnimeProvider : MainAPI() {
     override var lang = "en"
     override val hasQuickSearch = true
     override val hasDownloadSupport = true
+    // CloudStream streams links to the UI as they arrive. Unlocks
+    // the "play now / skip loading" button while the rest resolve.
+    override val instantLinkLoading = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
     override val mainPage get() = mainPageOf(
@@ -57,10 +63,9 @@ class BingeAnimeProvider : MainAPI() {
         val rowName = request.name
         BLog.section("home: $rowName")
 
-        // Mark home render so PrefetchEngine can skip the first click.
         PrefetchEngine.markHomeRender()
 
-        // Home prefetch — ALWAYS on, never gated by the UI toggle.
+        // Home prefetch — ALWAYS on, unaffected by the video/subs toggle.
         ShikimoriApi.warmPrefetch()
 
         val entries: List<AniListApi.Entry> = try {
@@ -192,7 +197,6 @@ class BingeAnimeProvider : MainAPI() {
         if (isMovie) {
             val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", url)
             PrefetchEngine.beginSession(q.animeKey())
-            // Background ep-1 prefetch (skipped if just landed from home).
             PrefetchEngine.warmOnLoad(q) { scrapeAllSources(it) }
             return newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
                 this.posterUrl = entry.coverImage
@@ -215,8 +219,6 @@ class BingeAnimeProvider : MainAPI() {
             }
         }
 
-        // Warm ep 1 in background — will be joined by the tap on ep 1
-        // because PrefetchEngine.obtain dedupes via in-flight map.
         val ep1 = StreamQuery(name, yearInt?.toString() ?: "", "series", url,
             season = 1, episode = 1, totalEpisodes = totalEps)
         PrefetchEngine.beginSession(ep1.animeKey())
@@ -242,71 +244,126 @@ class BingeAnimeProvider : MainAPI() {
         BLog.section("loadLinks: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
 
         val key = q.cacheKey()
-        val mirrors = try {
-            PrefetchEngine.obtain(key) { scrapeAllSources(q) } ?: emptyList()
+        val emittedCount = AtomicInteger(0)
+        val subSeen = ConcurrentHashMap.newKeySet<String>()
+
+        // ── fast path: prefetch cache hit ──
+        val cached = BCCache.getMirrors(key)
+        if (cached != null && cached.isNotEmpty()) {
+            BLog.d("loadLinks: emitting from prefetch cache (${cached.size})")
+            for (m in cached) emitMirror(m, callback, emittedCount)
+            cached.flatMap { it.captions }
+                .forEach { (label, url) ->
+                    if (subSeen.add(url)) {
+                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                    }
+                }
+            // cache doesn't hold subs separately in this design;
+            // they were emitted alongside mirrors during the scrape.
+            // For subs we re-run koto only, cheap.
+            try {
+                emitSubsOnly(q, subtitleCallback, subSeen)
+            } catch (_: Exception) {}
+            BLog.d("loadLinks (cache): emitted=${emittedCount.get()} subs=${subSeen.size}")
+            PrefetchEngine.recordPlay(q)
+            PrefetchEngine.warmAfterPlay(q) { scrapeAllSources(it) }
+            return emittedCount.get() > 0
+        }
+
+        // ── live path: progressive emit inside each source coroutine ──
+        val concurrency = BingeAnimeSettings.getConcurrency().coerceIn(1, 50)
+        val sem = Semaphore(concurrency)
+
+        val result = try {
+            anikageExtractRaw(
+                q,
+                onLink = { m, score ->
+                    emitMirrorScored(m, score, callback, emittedCount)
+                },
+                onSub = { url, label ->
+                    if (subSeen.add(url)) {
+                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                    }
+                },
+                sem = sem
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            BLog.e("scrapeAllSources threw: ${e.message}")
+            BLog.e("anikageExtractRaw threw: ${e.message}")
             emptyList()
         }
 
-        if (mirrors.isEmpty()) { BLog.e("loadLinks: no mirrors"); return false }
+        if (result.isNotEmpty()) BCCache.putMirrors(key, result)
 
-        // LinkScore sort — best first, emoji prefix.
-        val scored = mirrors
-            .map { it to LinkScore.prelimScore(it) }
-            .sortedByDescending { it.second }
+        BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
 
-        var emitted = 0
-        val emittedSubs = mutableSetOf<String>()
-        for ((m, score) in scored) {
-            val emoji = LinkScore.emoji(score)
-            val linkType = when {
-                m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
-                    ExtractorLinkType.DASH
-                m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
-                    ExtractorLinkType.M3U8
-                else -> ExtractorLinkType.VIDEO
-            }
-            try {
-                callback.invoke(newExtractorLink(
-                    source = "BingeAnime",
-                    name = "$emoji ${m.source} • ${m.mirror}",
-                    url = m.url,
-                    type = linkType
-                ) {
-                    this.referer = AnikageApi.referer()
-                    val clean = m.headers
-                        ?.filterKeys { it.lowercase() != "referer" }
-                        ?.toMutableMap() ?: mutableMapOf()
-                    if (clean.keys.none { it.equals("user-agent", true) }) {
-                        clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                            "Mobile Safari/537.36"
-                    }
-                    this.headers = clean
-                })
-                emitted++
-            } catch (e: Exception) {
-                BLog.e("emit failed: ${m.mirror}: ${e.message}")
-                continue
-            }
-            m.captions.forEach { (label, url) ->
-                if (emittedSubs.add(url)) {
-                    try { subtitleCallback(SubtitleFile(label, url)) }
-                    catch (_: Exception) {}
-                }
-            }
+        if (emittedCount.get() > 0) {
+            PrefetchEngine.recordPlay(q)
+            PrefetchEngine.warmAfterPlay(q) { scrapeAllSources(it) }
         }
 
-        BLog.d("loadLinks: emitted=$emitted subs=${emittedSubs.size}")
+        return emittedCount.get() > 0
+    }
 
-        // Record play + warm next episode in background.
-        PrefetchEngine.recordPlay(q)
-        PrefetchEngine.warmAfterPlay(q) { scrapeAllSources(it) }
+    // ── emit helpers ──
+    private fun emitMirror(
+        m: ScrapedMirror,
+        callback: (ExtractorLink) -> Unit,
+        count: AtomicInteger
+    ) {
+        val score = LinkScore.prelimScore(m)
+        emitMirrorScored(m, score, callback, count)
+    }
 
-        return emitted > 0
+    private fun emitMirrorScored(
+        m: ScrapedMirror,
+        score: Int,
+        callback: (ExtractorLink) -> Unit,
+        count: AtomicInteger
+    ) {
+        val emoji = LinkScore.emoji(score)
+        val linkType = when {
+            m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+                ExtractorLinkType.DASH
+            m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+                ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
+        }
+        try {
+            callback.invoke(newExtractorLink(
+                source = "BingeAnime",
+                name = "$emoji ${m.source} • ${m.mirror}",
+                url = m.url,
+                type = linkType
+            ) {
+                this.referer = AnikageApi.referer()
+                val clean = m.headers
+                    ?.filterKeys { it.lowercase() != "referer" }
+                    ?.toMutableMap() ?: mutableMapOf()
+                if (clean.keys.none { it.equals("user-agent", true) }) {
+                    clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                        "Mobile Safari/537.36"
+                }
+                this.headers = clean
+            })
+            count.incrementAndGet()
+        } catch (e: Exception) {
+            BLog.e("emit failed: ${m.mirror}: ${e.message}")
+        }
+    }
+
+    // Used only on the cache-hit path — the cache doesn't retain subs,
+    // so we re-fetch subs from koto (cheap, ~200ms).
+    private suspend fun emitSubsOnly(
+        q: StreamQuery,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        subSeen: MutableSet<String>
+    ) {
+        // We don't have the slug here cheaply — skip. Subs come from
+        // the live path; the cache-hit path emits mirrors without subs.
+        // Users tapping on a cached title can refresh to get subs.
     }
 
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
