@@ -119,9 +119,14 @@ internal fun allSubLangs(): List<SubLang> = ALL_SUB_LANGS
     fun isSrcAnikage(): Boolean = getKey<Boolean>(K_SRC_ANIKAGE) ?: true
 
     fun isYearFilterEnabled(): Boolean = getKey<Boolean>(K_YEAR_FILTER_ON) ?: false
-    fun getYearFloor(): Int = getKey<Int>(K_YEAR_FLOOR) ?: 2010
-    fun getYearFloorIfEnabled(): Int? =
-        if (isYearFilterEnabled()) getYearFloor() else null
+    fun getYearFloor(): Int = getKey<Int>(K_YEAR_FLOOR) ?: DEFAULT_YEAR_FLOOR
+
+    // The row filter always runs. Toggle OFF → default floor (2010).
+    // Toggle ON  → user's chosen floor. Never returns null.
+    fun getYearFloorIfEnabled(): Int =
+    if (isYearFilterEnabled()) getYearFloor() else DEFAULT_YEAR_FLOOR
+
+    private const val DEFAULT_YEAR_FLOOR = 2010
 
     // "anilist" (default, recommended) or "animeschedule"
     fun getSearchSource(): String =
@@ -752,7 +757,7 @@ private fun openSubtitles(ctx: Context) {
         val yearEnabled = isYearFilterEnabled()
         val yearDescText = TextView(ctx).apply {
             text = if (yearEnabled) "Showing ${getYearFloor()} and newer"
-                   else "Off — showing all years"
+                   else "Default · hiding pre-$DEFAULT_YEAR_FLOOR"
             setTextColor(SUBTEXT); textSize = 11f
             setPadding(dp(ctx, 3), dp(ctx, 3), 0, 0)
         }
@@ -805,7 +810,7 @@ private fun openSubtitles(ctx: Context) {
             yearDescText.text = if (checked)
                 "Showing ${getYearFloor()} and newer"
             else
-                "Off — showing all years"
+               "Default · hiding pre-$DEFAULT_YEAR_FLOOR"
             pickerContainer.visibility = if (checked) View.VISIBLE else View.GONE
         }
         yearToggleRow.addView(yearSwitch)
