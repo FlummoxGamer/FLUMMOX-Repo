@@ -57,6 +57,10 @@ class BingeAnimeProvider : MainAPI() {
         val rowName = request.name
         BLog.section("home: $rowName")
 
+        // Mark home render so PrefetchEngine can skip the first click.
+        PrefetchEngine.markHomeRender()
+
+        // Home prefetch — ALWAYS on, never gated by the UI toggle.
         ShikimoriApi.warmPrefetch()
 
         val entries: List<AniListApi.Entry> = try {
@@ -187,6 +191,9 @@ class BingeAnimeProvider : MainAPI() {
 
         if (isMovie) {
             val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", url)
+            PrefetchEngine.beginSession(q.animeKey())
+            // Background ep-1 prefetch (skipped if just landed from home).
+            PrefetchEngine.warmOnLoad(q) { scrapeAllSources(it) }
             return newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
                 this.posterUrl = entry.coverImage
                 this.backgroundPosterUrl = entry.bannerUrl
@@ -208,6 +215,13 @@ class BingeAnimeProvider : MainAPI() {
             }
         }
 
+        // Warm ep 1 in background — will be joined by the tap on ep 1
+        // because PrefetchEngine.obtain dedupes via in-flight map.
+        val ep1 = StreamQuery(name, yearInt?.toString() ?: "", "series", url,
+            season = 1, episode = 1, totalEpisodes = totalEps)
+        PrefetchEngine.beginSession(ep1.animeKey())
+        PrefetchEngine.warmOnLoad(ep1) { scrapeAllSources(it) }
+
         return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
             this.posterUrl = entry.coverImage
             this.backgroundPosterUrl = entry.bannerUrl
@@ -227,8 +241,9 @@ class BingeAnimeProvider : MainAPI() {
         val q = decodeQuery(data) ?: return false
         BLog.section("loadLinks: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
 
+        val key = q.cacheKey()
         val mirrors = try {
-            scrapeAllSources(q)
+            PrefetchEngine.obtain(key) { scrapeAllSources(q) } ?: emptyList()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -238,53 +253,59 @@ class BingeAnimeProvider : MainAPI() {
 
         if (mirrors.isEmpty()) { BLog.e("loadLinks: no mirrors"); return false }
 
+        // LinkScore sort — best first, emoji prefix.
+        val scored = mirrors
+            .map { it to LinkScore.prelimScore(it) }
+            .sortedByDescending { it.second }
+
         var emitted = 0
-        var subCount = 0
-        for (m in mirrors) {
-        // AniKage URLs are https://og.bakayaro.live/m3u8/{slug} — no dot
-        // before m3u8. Must match both ".m3u8" and "/m3u8" to catch all
-        // shapes across sources.
-        val linkType = when {
-             m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
-                 ExtractorLinkType.DASH
-             m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
-                 ExtractorLinkType.M3U8
-             else -> ExtractorLinkType.VIDEO
-        }
-        try {
-            callback.invoke(newExtractorLink(
-                source = "BingeAnime",
-                name = "${m.source} • ${m.mirror}",
-                url = m.url,
-                type = linkType
-            ) {
-                // Set referer via .referer only — CloudStream injects it.
-                // Duplicating it inside .headers sends two Referer entries
-                // and confuses ExoPlayer's HLS data source.
-                this.referer = AnikageApi.referer()
-                val clean = m.headers
-                    ?.filterKeys { it.lowercase() != "referer" }
-                    ?.toMutableMap()
-                    ?: mutableMapOf()
-                if (clean.keys.none { it.equals("user-agent", true) }) {
-                    clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                        "Mobile Safari/537.36"
-                }
-                this.headers = clean
-            })
-            emitted++
-        } catch (e: Exception) {
-            BLog.e("emit failed: ${m.mirror}: ${e.message}")
-            continue
-        }
+        val emittedSubs = mutableSetOf<String>()
+        for ((m, score) in scored) {
+            val emoji = LinkScore.emoji(score)
+            val linkType = when {
+                m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+                    ExtractorLinkType.DASH
+                m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+                    ExtractorLinkType.M3U8
+                else -> ExtractorLinkType.VIDEO
+            }
+            try {
+                callback.invoke(newExtractorLink(
+                    source = "BingeAnime",
+                    name = "$emoji ${m.source} • ${m.mirror}",
+                    url = m.url,
+                    type = linkType
+                ) {
+                    this.referer = AnikageApi.referer()
+                    val clean = m.headers
+                        ?.filterKeys { it.lowercase() != "referer" }
+                        ?.toMutableMap() ?: mutableMapOf()
+                    if (clean.keys.none { it.equals("user-agent", true) }) {
+                        clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                            "Mobile Safari/537.36"
+                    }
+                    this.headers = clean
+                })
+                emitted++
+            } catch (e: Exception) {
+                BLog.e("emit failed: ${m.mirror}: ${e.message}")
+                continue
+            }
             m.captions.forEach { (label, url) ->
-                try { subtitleCallback(SubtitleFile(label, url)); subCount++ }
-                catch (_: Exception) {}
+                if (emittedSubs.add(url)) {
+                    try { subtitleCallback(SubtitleFile(label, url)) }
+                    catch (_: Exception) {}
+                }
             }
         }
 
-        BLog.d("loadLinks: emitted=$emitted subs=$subCount")
+        BLog.d("loadLinks: emitted=$emitted subs=${emittedSubs.size}")
+
+        // Record play + warm next episode in background.
+        PrefetchEngine.recordPlay(q)
+        PrefetchEngine.warmAfterPlay(q) { scrapeAllSources(it) }
+
         return emitted > 0
     }
 
