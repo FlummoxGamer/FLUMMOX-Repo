@@ -305,7 +305,11 @@ object AniListApi {
     }
 
     private val RX_COUR_N = Regex("""\bcour\s+(\d+)\b""", RegexOption.IGNORE_CASE)
-    private val RX_ROMAN_WORD = Regex("""\b(II|III|IV|V|VI|VII|VIII|IX|X)\b""", RegexOption.IGNORE_CASE)
+    // Case-sensitive on purpose. "Hunter x Hunter" and "Spy x Family"
+    // use a lowercase x separator — must NOT be treated as Roman X.
+    // Require the numeral to end a clause (colon, dash, or end-of-string)
+    // so mid-title numbers like "World War II" tokens don't leak in.
+    private val RX_ROMAN_WORD = Regex("""\b(II|III|IV|V|VI|VII|VIII|IX|X)(?=\s*[:–—-]|\s*$)""")
     private val ROMAN_MAP = mapOf(
         "II" to 2, "III" to 3, "IV" to 4, "V" to 5,
         "VI" to 6, "VII" to 7, "VIII" to 8, "IX" to 9, "X" to 10
