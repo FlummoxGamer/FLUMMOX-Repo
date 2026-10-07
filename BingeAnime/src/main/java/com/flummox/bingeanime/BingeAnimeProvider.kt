@@ -241,26 +241,43 @@ class BingeAnimeProvider : MainAPI() {
         var emitted = 0
         var subCount = 0
         for (m in mirrors) {
-            val linkType = when {
-                m.url.contains(".mpd", true) -> ExtractorLinkType.DASH
-                m.url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
-                else -> ExtractorLinkType.VIDEO
-            }
-            try {
-                callback.invoke(newExtractorLink(
-                    source = "BingeAnime",
-                    name = "${m.source} • ${m.mirror}",
-                    url = m.url,
-                    type = linkType
-                ) {
-                    this.referer = AnikageApi.referer()
-                    m.headers?.let { this.headers = it }
-                })
-                emitted++
-            } catch (e: Exception) {
-                BLog.e("emit failed: ${m.mirror}: ${e.message}")
-                continue
-            }
+        // AniKage URLs are https://og.bakayaro.live/m3u8/{slug} — no dot
+        // before m3u8. Must match both ".m3u8" and "/m3u8" to catch all
+        // shapes across sources.
+        val linkType = when {
+             m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+                 ExtractorLinkType.DASH
+             m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+                 ExtractorLinkType.M3U8
+             else -> ExtractorLinkType.VIDEO
+        }
+        try {
+            callback.invoke(newExtractorLink(
+                source = "BingeAnime",
+                name = "${m.source} • ${m.mirror}",
+                url = m.url,
+                type = linkType
+            ) {
+                // Set referer via .referer only — CloudStream injects it.
+                // Duplicating it inside .headers sends two Referer entries
+                // and confuses ExoPlayer's HLS data source.
+                this.referer = AnikageApi.referer()
+                val clean = m.headers
+                    ?.filterKeys { it.lowercase() != "referer" }
+                    ?.toMutableMap()
+                    ?: mutableMapOf()
+                if (clean.keys.none { it.equals("user-agent", true) }) {
+                    clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                        "Mobile Safari/537.36"
+                }
+                this.headers = clean
+            })
+            emitted++
+        } catch (e: Exception) {
+            BLog.e("emit failed: ${m.mirror}: ${e.message}")
+            continue
+        }
             m.captions.forEach { (label, url) ->
                 try { subtitleCallback(SubtitleFile(label, url)); subCount++ }
                 catch (_: Exception) {}
