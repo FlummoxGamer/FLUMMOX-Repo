@@ -17,9 +17,11 @@ data class ScrapedMirror(
 
 private const val PER_SOURCE_TIMEOUT_MS = 25000L
 
+// ── title matcher ──
+// "x" is a separator ("Hunter x Hunter", "Spy x Family"), not content.
 private val STOP_WORDS = setOf(
     "the", "a", "an", "of", "and", "or", "in", "on", "at", "to",
-    "season", "part", "cour", "episode", "ova", "ona", "special"
+    "season", "part", "cour", "episode", "ova", "ona", "special", "x"
 )
 
 private fun stripQualifiers(s: String): String {
@@ -34,85 +36,117 @@ private fun stripQualifiers(s: String): String {
         .joinToString(" ")
 }
 
-fun titleMatches(a: String, b: String): Boolean {
-    val sa = stripQualifiers(a)
-    val sb = stripQualifiers(b)
-    if (sa.isEmpty() || sb.isEmpty()) return false
-    if (sa == sb) return true
-    val ta = sa.split(" ").filter { it.isNotBlank() }.toSet()
-    val tb = sb.split(" ").filter { it.isNotBlank() }.toSet()
-    if (ta.isEmpty() || tb.isEmpty()) return false
-    val common = ta.intersect(tb)
-    if (common.isEmpty()) return false
-    if (ta.size == 1) return sb.startsWith(sa)
-    if (tb.size == 1) return sa.startsWith(sb)
-    val qInC = common.size.toFloat() / ta.size
-    val cInQ = common.size.toFloat() / tb.size
-    return qInC >= 0.7f || cInQ >= 0.7f
+// Strict bidirectional score. Returns 0-100.
+// Requires the query to be ≥70% covered AND candidate not to be
+// much longer than the query (kills spinoff/side-story false matches).
+private fun matchScore(query: String, candidate: String): Int {
+    val sq = stripQualifiers(query)
+    val sc = stripQualifiers(candidate)
+    if (sq.isEmpty() || sc.isEmpty()) return 0
+    if (sq == sc) return 100
+    val tq = sq.split(" ").filter { it.isNotBlank() }.toSet()
+    val tc = sc.split(" ").filter { it.isNotBlank() }.toSet()
+    if (tq.isEmpty() || tc.isEmpty()) return 0
+    if (tq.size == 1) return if (sc.startsWith(sq)) 30 else 0
+    if (tc.size == 1) return if (sq.startsWith(sc)) 25 else 0
+    val common = tq.intersect(tc).size
+    if (common == 0) return 0
+    val qInC = common.toFloat() / tq.size
+    val cInQ = common.toFloat() / tc.size
+    if (qInC < 0.7f || cInQ < 0.7f) return 0
+    return (qInC * 100f).toInt()
 }
 
-// ═══════════════════════════════════════════════════════════════
-// AniKage scraper
-// ═══════════════════════════════════════════════════════════════
-suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
-    BLog.d("anikage: searching '${q.title}' (${q.year})")
+private fun pickBest(
+    hits: List<AniListApi.Entry>,
+    query: String,
+    year: Int?
+): AniListApi.Entry? {
+    if (hits.isEmpty()) return null
+    data class Scored(val entry: AniListApi.Entry, val score: Int, val yearMatch: Boolean)
+    val scored = hits.mapNotNull { h ->
+        val variants = listOfNotNull(h.title.english, h.title.romaji, h.title.native)
+        val best = variants.maxOfOrNull { matchScore(query, it) } ?: 0
+        if (best == 0) null else Scored(h, best, year != null && h.seasonYear == year)
+    }
+    if (scored.isEmpty()) return null
+    val yearMatches = scored.filter { it.yearMatch }
+    val pool = if (yearMatches.isNotEmpty()) yearMatches else scored
+    return pool.maxByOrNull { it.score }?.entry
+}
 
-    // ── build candidate titles: query title first, then
-    //    AniList romaji/english/native variants ──
-    val candidates = linkedSetOf<String>()
-    if (q.title.isNotBlank()) candidates.add(q.title)
-
-    // Pull variants from AniList. Prefer direct ID from sourceUrl
-    // (anilist:123), fall back to a title search.
+// ── AniList reference lookup (cached) ──
+private suspend fun lookupAniListRef(q: StreamQuery): AniListApi.Entry? {
+    val ck = "anikage:ref:${q.sourceUrl}:${q.title}:${q.year}"
+    BCCache.get(ck, 6 * 60 * 60 * 1000L)?.let { _ ->
+        // cache disabled for now; lookups are cheap
+    }
     val alId = Regex("anilist:(\\d+)").find(q.sourceUrl)?.groupValues?.get(1)?.toIntOrNull()
-    val refEntry: AniListApi.Entry? = try {
-        if (alId != null) AniListApi.getEntry(alId)
-        else AniListApi.searchAnime(q.title, q.year.toIntOrNull()).firstOrNull()
+    if (alId != null) {
+        return try { AniListApi.getEntry(alId) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { BLog.v("anikage: AniList getEntry $alId failed: ${e.message}"); null }
+    }
+    return try {
+        val hits = AniListApi.searchAnime(q.title, q.year.toIntOrNull())
+        pickBest(hits, q.title, q.year.toIntOrNull())
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
-        BLog.v("anikage: AniList lookup failed: ${e.message}"); null
+        BLog.v("anikage: AniList search failed: ${e.message}"); null
     }
-    refEntry?.let { e ->
-        listOfNotNull(e.title.english, e.title.romaji, e.title.native)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .forEach { candidates.add(it) }
-    }
-    BLog.v("anikage candidates: ${candidates.joinToString(" | ")}")
+}
 
-    // ── try each candidate until we get a hit ──
+private suspend fun trySearchAndPick(query: String, year: Int?): AniListApi.Entry? {
+    val hits = try { AnikageApi.search(query) }
+    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+    catch (e: Exception) { BLog.v("anikage search '$query' failed: ${e.message}"); return null }
+    if (hits.isEmpty()) return null
+    BLog.v("anikage '$query' → ${hits.size} hits")
+    return pickBest(hits, query, year)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AniKage scraper — fast path first, AniList variants on miss.
+// ═══════════════════════════════════════════════════════════════
+suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     val yr = q.year.toIntOrNull()
+    BLog.d("anikage: searching '${q.title}' (${q.year})")
+
     var slug: String? = null
     var matchedTitle: String? = null
-    for (cand in candidates) {
-        val hits = try { AnikageApi.search(cand) } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.v("anikage search '$cand' failed: ${e.message}"); emptyList()
-        }
-        if (hits.isEmpty()) continue
-        BLog.v("anikage '$cand' → ${hits.size} hits, top: ${hits.first().title.english ?: hits.first().title.romaji}")
 
-        val withYear = hits.firstOrNull { h ->
-            val t = h.title.english ?: h.title.romaji ?: h.title.native ?: return@firstOrNull false
-            titleMatches(cand, t) && yr != null && h.seasonYear == yr
-        }
-        val anyYear = hits.firstOrNull { h ->
-            val t = h.title.english ?: h.title.romaji ?: h.title.native ?: return@firstOrNull false
-            titleMatches(cand, t)
-        }
-        val best = withYear ?: anyYear
-        if (best != null) {
-            slug = best.sourceId
-            matchedTitle = best.title.english ?: best.title.romaji ?: best.title.native
-            BLog.d("anikage: matched '$cand' → slug=$slug (${if (withYear != null) "year-match" else "no-year"})")
-            break
+    // Fast path: search with the query title directly.
+    val fast = trySearchAndPick(q.title, yr)
+    if (fast?.sourceId != null) {
+        slug = fast.sourceId
+        matchedTitle = fast.title.english ?: fast.title.romaji ?: fast.title.native
+        BLog.d("anikage: fast match '$matchedTitle' slug=$slug")
+    } else {
+        // Slow path: pull AniList variants and retry.
+        BLog.d("anikage: fast path missed, trying variants")
+        val ref = lookupAniListRef(q)
+        if (ref != null) {
+            val variants = linkedSetOf<String>()
+            listOfNotNull(ref.title.english, ref.title.romaji, ref.title.native)
+                .map { it.trim() }
+                .filter { it.isNotBlank() && it != q.title }
+                .forEach { variants.add(it) }
+            BLog.v("anikage variants: ${variants.joinToString(" | ")}")
+            for (v in variants) {
+                val h = trySearchAndPick(v, yr) ?: continue
+                if (h.sourceId != null) {
+                    slug = h.sourceId
+                    matchedTitle = h.title.english ?: h.title.romaji ?: h.title.native
+                    BLog.d("anikage: variant match '$v' → '$matchedTitle' slug=$slug")
+                    break
+                }
+            }
         }
     }
 
     if (slug == null) {
-        BLog.d("anikage: no title match across ${candidates.size} candidates")
+        BLog.d("anikage: no title match")
         return emptyList()
     }
 
@@ -136,6 +170,7 @@ suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
                         val subs = bundle.subs.map { it.label to AnikageApi.subUrl(it.file) }
                         val out = mutableListOf<ScrapedMirror>()
 
+                        // Primary: opaque slug via og.bakayaro proxy.
                         bundle.sources.forEach { s ->
                             if (!s.isM3U8) return@forEach
                             out.add(ScrapedMirror(
@@ -153,18 +188,21 @@ suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
                             ))
                         }
 
-                        val opaqueUrls = out.map { it.url }.toSet()
-                        bundle.embeds.forEach { eo ->
-                            val alreadyCovered = opaqueUrls.any { it.contains(eo.key) }
-                            if (alreadyCovered) return@forEach
-                            val extracted = megaplayExtract(
-                                eo.url,
-                                "${eo.label} · ${lang.uppercase()}"
-                            )
-                            extracted.forEach { m ->
-                                out.add(m.copy(
-                                    captions = if (m.captions.isEmpty()) subs else m.captions
-                                ))
+                        // Embeds only as fallback — if opaque is populated,
+                        // E-Koto / E-Wish / E-Zen point to the same content
+                        // via megaplay. Firing them anyway doubles the
+                        // work for zero new mirrors.
+                        if (out.isEmpty() && bundle.embeds.isNotEmpty()) {
+                            bundle.embeds.forEach { eo ->
+                                val extracted = megaplayExtract(
+                                    eo.url,
+                                    "${eo.label} · ${lang.uppercase()}"
+                                )
+                                extracted.forEach { m ->
+                                    out.add(m.copy(
+                                        captions = if (m.captions.isEmpty()) subs else m.captions
+                                    ))
+                                }
                             }
                         }
 
@@ -185,7 +223,6 @@ suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     BLog.d("anikage: ${deduped.size} mirrors (${mirrors.size} pre-dedup)")
     return deduped
 }
-
 
 // ═══════════════════════════════════════════════════════════════
 // Dispatcher
