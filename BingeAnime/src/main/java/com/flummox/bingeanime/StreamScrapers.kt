@@ -121,8 +121,8 @@ private suspend fun trySearchAndPick(query: String, year: Int?): AniListApi.Entr
 // ═══════════════════════════════════════════════════════════════
 suspend fun anikageExtractRaw(
     q: StreamQuery,
-    onLink: ((ScrapedMirror, Int) -> Unit)? = null,
-    onSub: ((String, String) -> Unit)? = null,
+    onLink: (suspend (ScrapedMirror, Int) -> Unit)? = null,
+    onSub: (suspend (String, String) -> Unit)? = null,
     sem: Semaphore? = null
 ): List<ScrapedMirror> {
     val yr = q.year.toIntOrNull()
