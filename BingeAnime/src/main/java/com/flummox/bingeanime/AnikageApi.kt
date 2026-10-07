@@ -15,7 +15,7 @@ object AnikageApi {
     private const val TTL_SEARCH = 30L * 60 * 1000
     private const val TTL_EPS = 6L * 60 * 60 * 1000
     private const val TTL_SERVERS = 6L * 60 * 60 * 1000
-    private const val TTL_SOURCES = 60L * 1000
+    private const val TTL_SOURCES = 10L * 60 * 1000
 
     private fun headers() = mapOf(
         "Accept" to "application/json",
