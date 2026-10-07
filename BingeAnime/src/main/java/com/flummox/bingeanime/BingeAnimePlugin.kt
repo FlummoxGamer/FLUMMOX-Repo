@@ -8,18 +8,14 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class BingeAnimePlugin : Plugin() {
     override fun load(context: Context) {
         BLog.init(context)
-       // One-time reset of stale row prefs + genre cache from earlier
-       // builds. Safe to remove next version — everything defaults
-       // correctly now.
-       ShikimoriApi.init(context)
+        BingeAnimeCtx.context = context.applicationContext
+        ShikimoriApi.init(context)
         BLog.setVerbose(BingeAnimeSettings.isVerbose())
         BLog.d("BingeAnime boot v${BuildConfig.PLUGIN_VERSION}")
         registerMainAPI(BingeAnimeProvider())
         this.openSettings = { ctx ->
             BingeAnimeSettings.show(ctx)
         }
-        // Kick off home-row prefetch in background. Cache will be warm
-        // by the time the user navigates to home.
         ShikimoriApi.warmPrefetch()
     }
 }
