@@ -6,9 +6,6 @@ import kotlinx.coroutines.CancellationException
 
 private const val ROW_SEP = "|"
 
-// The data-column is unused by the current provider (each row's actual
-// query lives in ShikimoriApi.ROW_QUERY). The label is what matters —
-// it must match a ROW_QUERY key exactly, otherwise the row is skipped.
 internal val ROWS: List<Pair<String, String>> = listOf(
     "TRENDING_DESC||||||0"              to "Trending",
     "SCORE_DESC|||TV|||0"               to "Top Anime Series",
@@ -50,18 +47,16 @@ class BingeAnimeProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
     override val mainPage get() = mainPageOf(
-    *ROWS
-        .filter { (_, label) -> BingeAnimeSettings.isRowEnabled(label) }
-        .map { (data, label) -> data to label }
-        .toTypedArray()
-)
+        *ROWS
+            .filter { (_, label) -> BingeAnimeSettings.isRowEnabled(label) }
+            .map { (data, label) -> data to label }
+            .toTypedArray()
+    )
 
-    // ── home: Shikimori for 18 rows, AniMapper for Donghua ──
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val rowName = request.name
         BLog.section("home: $rowName")
 
-        // Fire background prefetch — no-op if already warm or running.
         ShikimoriApi.warmPrefetch()
 
         val entries: List<AniListApi.Entry> = try {
@@ -82,69 +77,63 @@ class BingeAnimeProvider : MainAPI() {
             BLog.e("row '$rowName' failed: ${e.message}")
             emptyList()
         }
-        // Rebuild dedup tables from currently cached rows. Cheap — reads
-        // ~26 in-memory lists. Idempotent, safe per-row.
+
         ShikimoriApi.rebuildExclusions()
 
-       // Drop titles already appearing in 2 higher-priority genre rows.
-       // Dynamic rows (Trending/Top Series/Top Movies) are exempted via
-       // DYNAMIC_ROWS inside rebuildExclusions.
-       val filtered = entries.filter { entry ->
-           val t = entry.title.romaji ?: entry.title.english ?: entry.title.native ?: ""
-           if (t.isBlank()) true else !ShikimoriApi.isExcluded(rowName, t)
-       }
-       val dropped = entries.size - filtered.size
-       BLog.d("row '$rowName' → ${filtered.size}${if (dropped > 0) " (dedup -$dropped)" else ""}")
+        val filtered = entries.filter { entry ->
+            val t = entry.title.romaji ?: entry.title.english ?: entry.title.native ?: ""
+            if (t.isBlank()) true else !ShikimoriApi.isExcluded(rowName, t)
+        }
+        val dropped = entries.size - filtered.size
+        BLog.d("row '$rowName' → ${filtered.size}${if (dropped > 0) " (dedup -$dropped)" else ""}")
 
-       val items = filtered.mapNotNull { it.toSearchResponse() }
-       return newHomePageResponse(rowName, items, hasNext = false)
+        val items = filtered.mapNotNull { it.toSearchResponse() }
+        return newHomePageResponse(rowName, items, hasNext = false)
     }
 
-    // ── search: AniList only ──
     override suspend fun search(query: String): List<SearchResponse>? {
-    BLog.section("search: $query")
-    val useAsched = BingeAnimeSettings.getSearchSource() == "animeschedule"
-    BLog.d("search source: ${if (useAsched) "AnimeSchedule" else "AniList"} (primary)")
+        BLog.section("search: $query")
+        val useAsched = BingeAnimeSettings.getSearchSource() == "animeschedule"
+        BLog.d("search source: ${if (useAsched) "AnimeSchedule" else "AniList"} (primary)")
 
-    return if (useAsched) {
-        val a = try { AnimeScheduleApi.search(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) { BLog.e("AnimeSchedule search threw: ${e.message}"); emptyList() }
-        if (a.isNotEmpty()) {
-            val sorted = AniListApi.filterAndSortChronological(a, query)
-            BLog.d("search '$query' → AnimeSchedule=${sorted.size}")
-            return sorted.mapNotNull { it.toSearchResponse() }
-        }
-        BLog.d("AnimeSchedule empty — falling back to AniList")
-        val b = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) { BLog.e("AniList search threw: ${e.message}"); emptyList() }
-        val sorted = AniListApi.sortChronological(b, query)
-        BLog.d("search '$query' → AniList=${sorted.size}")
-        sorted.mapNotNull { it.toSearchResponse() }
-    } else {
-        val b = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) { BLog.e("AniList search threw: ${e.message}"); emptyList() }
-        if (b.isNotEmpty()) {
+        return if (useAsched) {
+            val a = try { AnimeScheduleApi.search(query) } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { BLog.e("AnimeSchedule search threw: ${e.message}"); emptyList() }
+            if (a.isNotEmpty()) {
+                val sorted = AniListApi.filterAndSortChronological(a, query)
+                BLog.d("search '$query' → AnimeSchedule=${sorted.size}")
+                return sorted.mapNotNull { it.toSearchResponse() }
+            }
+            BLog.d("AnimeSchedule empty — falling back to AniList")
+            val b = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { BLog.e("AniList search threw: ${e.message}"); emptyList() }
             val sorted = AniListApi.sortChronological(b, query)
             BLog.d("search '$query' → AniList=${sorted.size}")
-            return sorted.mapNotNull { it.toSearchResponse() }
+            sorted.mapNotNull { it.toSearchResponse() }
+        } else {
+            val b = try { AniListApi.searchAnime(query) } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { BLog.e("AniList search threw: ${e.message}"); emptyList() }
+            if (b.isNotEmpty()) {
+                val sorted = AniListApi.sortChronological(b, query)
+                BLog.d("search '$query' → AniList=${sorted.size}")
+                return sorted.mapNotNull { it.toSearchResponse() }
+            }
+            BLog.d("AniList empty — falling back to AnimeSchedule")
+            val a = try { AnimeScheduleApi.search(query) } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { BLog.e("AnimeSchedule search threw: ${e.message}"); emptyList() }
+            val sorted = AniListApi.filterAndSortChronological(a, query)
+            BLog.d("search '$query' → AnimeSchedule=${sorted.size}")
+            sorted.mapNotNull { it.toSearchResponse() }
         }
-        BLog.d("AniList empty — falling back to AnimeSchedule")
-        val a = try { AnimeScheduleApi.search(query) } catch (e: CancellationException) { throw e
-        } catch (e: Exception) { BLog.e("AnimeSchedule search threw: ${e.message}"); emptyList() }
-        val sorted = AniListApi.filterAndSortChronological(a, query)
-        BLog.d("search '$query' → AnimeSchedule=${sorted.size}")
-        sorted.mapNotNull { it.toSearchResponse() }
-    }
     }
 
-    // ── load ──
     override suspend fun load(url: String): LoadResponse? {
         val shikiMatch = Regex("""shikimori:(\d+)""").find(url)
         val animapperMatch = Regex("""animapper:(\d+)""").find(url)
         val aniMatch = Regex("""anilist:(\d+)""").find(url)
         val malMatch = Regex("""mal:(\d+)""").find(url)
         val aschedMatch = Regex("""animeschedule:(.+)""").find(url)
- 
+
         val entry = when {
             aschedMatch != null -> {
                 val route = aschedMatch.groupValues[1]
@@ -217,16 +206,16 @@ class BingeAnimeProvider : MainAPI() {
                 this.episode = epNum
                 this.posterUrl = entry.coverImage
             }
-         }
+        }
 
-         return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
-             this.posterUrl = entry.coverImage
-             this.backgroundPosterUrl = entry.bannerUrl
-             this.plot = plotWithStatus
-             this.year = yearInt
-             this.tags = entry.genres
-             if (score10 != null) this.score = Score.from10(score10)
-         }
+        return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
+            this.posterUrl = entry.coverImage
+            this.backgroundPosterUrl = entry.bannerUrl
+            this.plot = plotWithStatus
+            this.year = yearInt
+            this.tags = entry.genres
+            if (score10 != null) this.score = Score.from10(score10)
+        }
     }
 
     override suspend fun loadLinks(
@@ -235,16 +224,57 @@ class BingeAnimeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        BLog.section("loadLinks (scraper phase pending)")
-        return false
+        val q = decodeQuery(data) ?: return false
+        BLog.section("loadLinks: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
+
+        val mirrors = try {
+            scrapeAllSources(q)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("scrapeAllSources threw: ${e.message}")
+            emptyList()
+        }
+
+        if (mirrors.isEmpty()) { BLog.e("loadLinks: no mirrors"); return false }
+
+        var emitted = 0
+        var subCount = 0
+        for (m in mirrors) {
+            val linkType = when {
+                m.url.contains(".mpd", true) -> ExtractorLinkType.DASH
+                m.url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
+                else -> ExtractorLinkType.VIDEO
+            }
+            try {
+                callback.invoke(newExtractorLink(
+                    source = "BingeAnime",
+                    name = "${m.source} • ${m.mirror}",
+                    url = m.url,
+                    type = linkType
+                ) {
+                    this.referer = AnikageApi.referer()
+                    m.headers?.let { this.headers = it }
+                })
+                emitted++
+            } catch (e: Exception) {
+                BLog.e("emit failed: ${m.mirror}: ${e.message}")
+                continue
+            }
+            m.captions.forEach { (label, url) ->
+                try { subtitleCallback(SubtitleFile(label, url)); subCount++ }
+                catch (_: Exception) {}
+            }
+        }
+
+        BLog.d("loadLinks: emitted=$emitted subs=$subCount")
+        return emitted > 0
     }
 
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
         val displayName = AniListApi.convertRomanSeasons(AniListApi.stripCourBranding(raw))
         val tvType = if (format == "MOVIE") TvType.Movie else TvType.Anime
-        // AnimeSchedule (and any future non-numeric source) carries its
-        // route slug in sourceId. Numeric sources use the int id.
         val url = if (sourceId != null) "$source:$sourceId" else "$source:$id"
         return newMovieSearchResponse(displayName, url, tvType) {
             this.posterUrl = coverImage
