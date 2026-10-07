@@ -54,6 +54,7 @@ object BingeAnimeSettings {
     const val K_PREFETCH = "bingeanime_prefetch"
     const val K_PREFILTER = "bingeanime_prefilter"
     const val K_VERBOSE = "bingeanime_verbose"
+    const val K_SUB_LANGS = "bingeanime_sub_langs"
     const val K_SRC_ANIKOTO = "bingeanime_src_anikoto"
     const val K_SRC_ANIZONE = "bingeanime_src_anizone"
     const val K_SRC_OTAKUTSU = "bingeanime_src_otakutsu"
@@ -68,6 +69,50 @@ object BingeAnimeSettings {
     fun isPrefetchEnabled(): Boolean = getKey<Boolean>(K_PREFETCH) ?: true
     fun isPrefilterEnabled(): Boolean = getKey<Boolean>(K_PREFILTER) ?: true
     fun isVerbose(): Boolean = getKey<Boolean>(K_VERBOSE) ?: false
+
+// ── subtitle language preferences ──
+data class SubLang(val code: String, val label: String, val matches: List<String>)
+
+// Popularity order: English first (always on), then by real-world usage.
+private val ALL_SUB_LANGS: List<SubLang> = listOf(
+    SubLang("en", "English", listOf("english")),
+    SubLang("es-LA", "Spanish (Latin America)", listOf("spanish (latin", "latino", "español latino")),
+    SubLang("pt-BR", "Portuguese (Brazil)", listOf("portuguese (brazil", "português (brasil", "portugues (brazil")),
+    SubLang("ar", "Arabic", listOf("arabic", "العربية")),
+    SubLang("fr", "French", listOf("french", "français", "francais")),
+    SubLang("id", "Indonesian", listOf("indonesian", "bahasa indonesia")),
+    SubLang("de", "German", listOf("german", "deutsch")),
+    SubLang("it", "Italian", listOf("italian", "italiano")),
+    SubLang("ru", "Russian", listOf("russian", "русский"))
+)
+
+fun enabledSubLangs(): Set<String> {
+    val raw = getKey<String>(K_SUB_LANGS) ?: "en"
+    val set = raw.split(",").map { it.trim() }.filter { it.isNotBlank() }.toMutableSet()
+    set.add("en") // English always on
+    return set
+}
+
+fun isSubLangEnabled(code: String): Boolean = code in enabledSubLangs()
+
+fun setSubLangEnabled(code: String, on: Boolean) {
+    if (code == "en") return // English locked
+    val cur = enabledSubLangs().toMutableSet()
+    if (on) cur.add(code) else cur.remove(code)
+    setKey(K_SUB_LANGS, cur.joinToString(","))
+}
+
+// True if the subtitle label from AniKage matches any enabled language.
+fun subLangMatches(label: String): Boolean {
+    val enabled = enabledSubLangs()
+    val lower = label.lowercase()
+    return ALL_SUB_LANGS.any { lang ->
+        lang.code in enabled && lang.matches.any { lower.contains(it) }
+    }
+}
+
+internal fun allSubLangs(): List<SubLang> = ALL_SUB_LANGS
+    
     fun isSrcAniKoto(): Boolean = getKey<Boolean>(K_SRC_ANIKOTO) ?: true
     fun isSrcAniZone(): Boolean = getKey<Boolean>(K_SRC_ANIZONE) ?: true
     fun isSrcOtakutsu(): Boolean = getKey<Boolean>(K_SRC_OTAKUTSU) ?: true
@@ -221,9 +266,29 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
                     cx - r * 0.6f, cy + r * 0.85f, paint)
                 canvas.drawLine(cx + r * 0.6f, cy - r * 0.7f,
                     cx + r * 0.6f, cy + r * 0.85f, paint)
-            }
+           }
+           "SUBTITLES" -> {
+               // broadcast CC symbol: rounded rect outline + two C arcs
+               val rectW = r * 2.2f
+               val rectH = r * 1.4f
+               val left = cx - rectW / 2f
+               val top = cy - rectH / 2f
+               val right = cx + rectW / 2f
+               val bottom = cy + rectH / 2f
+               val rr = RectF(left, top, right, bottom)
+               canvas.drawRoundRect(rr, r * 0.3f, r * 0.3f, paint)
+
+               val cRad = r * 0.32f
+               val leftCx = cx - r * 0.42f
+               val rightCx = cx + r * 0.42f
+               val leftArc = RectF(leftCx - cRad, cy - cRad, leftCx + cRad, cy + cRad)
+               val rightArc = RectF(rightCx - cRad, cy - cRad, rightCx + cRad, cy + cRad)
+               // Each C opens to the right
+               canvas.drawArc(leftArc, 55f, 250f, false, paint)
+               canvas.drawArc(rightArc, 55f, 250f, false, paint)
+           }
         }
-    }
+      }
     }
     
 
@@ -331,29 +396,40 @@ private fun themedSwitch(ctx: Context): Switch = Switch(ctx).apply {
 
         val rowH = dp(ctx, 160)
 
-        val row1 = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(ctx, 14) }
-        }
-        row1.addView(tile(ctx, "SETTINGS") { openSettings(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) })
-        row1.addView(tile(ctx, "SOURCES") { openSources(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f))
-        root.addView(row1)
+val row1 = LinearLayout(ctx).apply {
+    orientation = LinearLayout.HORIZONTAL
+    layoutParams = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+    ).apply { bottomMargin = dp(ctx, 14) }
+}
+row1.addView(tile(ctx, "SETTINGS") { openSettings(ctx) },
+    LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) })
+row1.addView(tile(ctx, "SOURCES") { openSources(ctx) },
+    LinearLayout.LayoutParams(0, rowH, 1f))
+root.addView(row1)
 
-        val row2 = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        row2.addView(tile(ctx, "LOGS") { openLogs(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) })
-        row2.addView(tile(ctx, "HOMEPAGE") { openHomepage(ctx) },
-            LinearLayout.LayoutParams(0, rowH, 1f))
-        root.addView(row2)
+val row2 = LinearLayout(ctx).apply {
+    orientation = LinearLayout.HORIZONTAL
+    layoutParams = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+    ).apply { bottomMargin = dp(ctx, 14) }
+}
+row2.addView(tile(ctx, "SUBTITLES") { openSubtitles(ctx) },
+    LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) })
+row2.addView(tile(ctx, "HOMEPAGE") { openHomepage(ctx) },
+    LinearLayout.LayoutParams(0, rowH, 1f))
+root.addView(row2)
+
+val row3 = LinearLayout(ctx).apply {
+    orientation = LinearLayout.HORIZONTAL
+    layoutParams = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+    )
+}
+row3.addView(tile(ctx, "LOGS") { openLogs(ctx) },
+    LinearLayout.LayoutParams(0, rowH, 1f).apply { rightMargin = dp(ctx, 14) })
+row3.addView(View(ctx), LinearLayout.LayoutParams(0, rowH, 1f))
+root.addView(row3)
 
         root.addView(View(ctx), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
@@ -460,8 +536,8 @@ root.addView(close)
                 "Pre-cache video + subs. Home rows always preload.", isPrefetchEnabled()) {
                 setKey(K_PREFETCH, it)
             })
-            body.addView(toggleRow(ctx, "Smart link ranking",
-                "Rank mirrors by confidence (🟢🟡🔴)", isPrefilterEnabled()) {
+            body.addView(toggleRow(ctx, "Smart links",
+                "Rank, label, and order mirrors by confidence", isPrefilterEnabled()) {
                 setKey(K_PREFILTER, it)
             })
             body.addView(stepperRow(ctx, "Concurrency",
@@ -484,6 +560,58 @@ root.addView(close)
 })
         }
     }
+private fun openSubtitles(ctx: Context) {
+    subWindow(ctx, "SUBTITLES") { body, _ ->
+        body.addView(labelBlock(ctx, "Available languages",
+            "Choose which subtitle languages appear in the player. English is always enabled."))
+
+        val all = allSubLangs()
+        val enabled = enabledSubLangs()
+        for (lang in all) {
+            val locked = lang.code == "en"
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = shape(SURFACE, 12, ctx, 1, BORDER)
+                setPadding(dp(ctx, 16), dp(ctx, 14), dp(ctx, 16), dp(ctx, 14))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(ctx, 8) }
+            }
+            val col = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            col.addView(TextView(ctx).apply {
+                text = lang.label
+                setTextColor(TEXT)
+                textSize = 14f
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            if (locked) {
+                col.addView(TextView(ctx).apply {
+                    text = "Default · always enabled"
+                    setTextColor(SUBTEXT)
+                    textSize = 11f
+                    setPadding(0, dp(ctx, 3), 0, 0)
+                })
+            }
+            row.addView(col)
+            val sw = themedSwitch(ctx).apply {
+                isChecked = lang.code in enabled
+                isEnabled = !locked
+                alpha = if (locked) 0.5f else 1f
+                setOnCheckedChangeListener { _: CompoundButton, v: Boolean ->
+                    setSubLangEnabled(lang.code, v)
+                }
+            }
+            row.addView(sw)
+            body.addView(row)
+        }
+    }
+}
 
     private fun openSources(ctx: Context) {
         subWindow(ctx, "SOURCES") { body, _ ->
