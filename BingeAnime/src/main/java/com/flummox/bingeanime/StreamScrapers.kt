@@ -194,50 +194,55 @@ suspend fun anikageExtractRaw(
                                 }
                             }
 
-                            // Mirrors — emit each as it arrives.
-                            bundle.sources.forEach { s ->
-                                if (!s.isM3U8) return@forEach
-                                val m = ScrapedMirror(
-                                    quality = s.quality,
-                                    mirror = "$pid · ${lang.uppercase()} · ${s.quality}",
-                                    url = AnikageApi.hlsUrl(s.slug),
-                                    source = "ANIKAGE",
-                                    headers = mapOf(
-                                        "Referer" to AnikageApi.referer(),
-                                        "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                                            "Mobile Safari/537.36"
-                                    ),
-                                    captions = emptyList() // subs already pushed via onSub
-                                )
-                                synchronized(collectedLock) {
-                                    if (collected.putIfAbsent(m.url, m) == null) {
-                                        val score = LinkScore.prelimScore(m)
-                                        try { onLink?.invoke(m, score) } catch (_: Exception) {}
-                                        emittedCount.incrementAndGet()
-                                    }
-                                }
-                            }
+// Mirrors — emit each as it arrives.
+bundle.sources.forEach { s ->
+    if (!s.isM3U8) return@forEach
+    val m = ScrapedMirror(
+        quality = s.quality,
+        mirror = "$pid · ${lang.uppercase()} · ${s.quality}",
+        url = AnikageApi.hlsUrl(s.slug),
+        source = "ANIKAGE",
+        headers = mapOf(
+            "Referer" to AnikageApi.referer(),
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                "Mobile Safari/537.36"
+        ),
+        captions = emptyList() // subs already pushed via onSub
+    )
+    // Insert check outside synchronized — the
+    // suspend onLink call cannot live inside
+    // a synchronized block.
+    val isNew = synchronized(collectedLock) {
+        collected.putIfAbsent(m.url, m) == null
+    }
+    if (isNew) {
+        val score = LinkScore.prelimScore(m)
+        try { onLink?.invoke(m, score) } catch (_: Exception) {}
+        emittedCount.incrementAndGet()
+    }
+}
 
-                            // Embed fallback — only if opaque sources empty.
-                            if (bundle.sources.isEmpty() && bundle.embeds.isNotEmpty()) {
-                                bundle.embeds.forEach { eo ->
-                                    val extracted = megaplayExtract(
-                                        eo.url,
-                                        "${eo.label} · ${lang.uppercase()}"
-                                    )
-                                    extracted.forEach { m ->
-                                        synchronized(collectedLock) {
-                                            if (collected.putIfAbsent(m.url, m) == null) {
-                                                val score = LinkScore.prelimScore(m)
-                                                try { onLink?.invoke(m, score) } catch (_: Exception) {}
-                                                emittedCount.incrementAndGet()
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+// Embed fallback — only if opaque sources empty.
+if (bundle.sources.isEmpty() && bundle.embeds.isNotEmpty()) {
+    bundle.embeds.forEach { eo ->
+        val extracted = megaplayExtract(
+            eo.url,
+            "${eo.label} · ${lang.uppercase()}"
+        )
+        extracted.forEach { m ->
+            val isNew = synchronized(collectedLock) {
+                collected.putIfAbsent(m.url, m) == null
+            }
+            if (isNew) {
+                val score = LinkScore.prelimScore(m)
+                try { onLink?.invoke(m, score) } catch (_: Exception) {}
+                emittedCount.incrementAndGet()
+            }
+        }
+    }
+}
+                    }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
