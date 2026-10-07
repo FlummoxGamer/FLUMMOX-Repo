@@ -1,9 +1,12 @@
 package com.flummox.bingeanime
 
+import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 
 data class ScrapedMirror(
@@ -15,10 +18,17 @@ data class ScrapedMirror(
     val captions: List<Pair<String, String>> = emptyList()
 )
 
-private const val PER_SOURCE_TIMEOUT_MS = 25000L
+// Reduced from 25s — AniKage responds in 1-3s normally. A stalled
+// server should not hold the whole batch.
+private const val PER_SOURCE_TIMEOUT_MS = 8000L
+private const val SUB_HEAD_TIMEOUT_MS = 3000L
 
-// ── title matcher ──
-// "x" is a separator ("Hunter x Hunter", "Spy x Family"), not content.
+// Only these providers expose subtitle tracks in AniKage's API.
+private val SUB_PROVIDERS = setOf("koto", "suge")
+
+// Dropped — server is non-functional on AniKage's side.
+private val DROPPED_SERVERS = setOf("dib")
+
 private val STOP_WORDS = setOf(
     "the", "a", "an", "of", "and", "or", "in", "on", "at", "to",
     "season", "part", "cour", "episode", "ova", "ona", "special", "x"
@@ -36,9 +46,6 @@ private fun stripQualifiers(s: String): String {
         .joinToString(" ")
 }
 
-// Strict bidirectional score. Returns 0-100.
-// Requires the query to be ≥70% covered AND candidate not to be
-// much longer than the query (kills spinoff/side-story false matches).
 private fun matchScore(query: String, candidate: String): Int {
     val sq = stripQualifiers(query)
     val sc = stripQualifiers(candidate)
@@ -75,12 +82,7 @@ private fun pickBest(
     return pool.maxByOrNull { it.score }?.entry
 }
 
-// ── AniList reference lookup (cached) ──
 private suspend fun lookupAniListRef(q: StreamQuery): AniListApi.Entry? {
-    val ck = "anikage:ref:${q.sourceUrl}:${q.title}:${q.year}"
-    BCCache.get(ck, 6 * 60 * 60 * 1000L)?.let { _ ->
-        // cache disabled for now; lookups are cheap
-    }
     val alId = Regex("anilist:(\\d+)").find(q.sourceUrl)?.groupValues?.get(1)?.toIntOrNull()
     if (alId != null) {
         return try { AniListApi.getEntry(alId) }
@@ -106,8 +108,16 @@ private suspend fun trySearchAndPick(query: String, year: Int?): AniListApi.Entr
     return pickBest(hits, query, year)
 }
 
+// HEAD-check a sub URL — drop dead ones so we don't show empty pickers.
+private suspend fun subIsLive(url: String): Boolean = try {
+    val res = withTimeoutOrNull(SUB_HEAD_TIMEOUT_MS) {
+        app.head(url, headers = mapOf("Referer" to AnikageApi.referer()))
+    }
+    res != null && res.code in 200..299
+} catch (_: Exception) { false }
+
 // ═══════════════════════════════════════════════════════════════
-// AniKage scraper — fast path first, AniList variants on miss.
+// AniKage scraper
 // ═══════════════════════════════════════════════════════════════
 suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     val yr = q.year.toIntOrNull()
@@ -116,14 +126,12 @@ suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     var slug: String? = null
     var matchedTitle: String? = null
 
-    // Fast path: search with the query title directly.
     val fast = trySearchAndPick(q.title, yr)
     if (fast?.sourceId != null) {
         slug = fast.sourceId
         matchedTitle = fast.title.english ?: fast.title.romaji ?: fast.title.native
         BLog.d("anikage: fast match '$matchedTitle' slug=$slug")
     } else {
-        // Slow path: pull AniList variants and retry.
         BLog.d("anikage: fast path missed, trying variants")
         val ref = lookupAniListRef(q)
         if (ref != null) {
@@ -145,87 +153,114 @@ suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
         }
     }
 
-    if (slug == null) {
-        BLog.d("anikage: no title match")
-        return emptyList()
-    }
+    if (slug == null) { BLog.d("anikage: no title match"); return emptyList() }
 
     val ep = if (q.type == "movie") 1 else q.episode.takeIf { it > 0 } ?: 1
     BLog.d("anikage: using slug=$slug ('$matchedTitle') ep=$ep")
 
     val servers = AnikageApi.servers(slug, ep)
+        .filter { it.id !in DROPPED_SERVERS }
     if (servers.isEmpty()) { BLog.d("anikage: no servers"); return emptyList() }
 
     val pairs = servers.flatMap { sv -> sv.subTypes.map { sv.id to it } }
     BLog.d("anikage: ${servers.size} servers → ${pairs.size} source fetches")
 
+    // Global concurrency cap — matches CloudStream UX. AniKage's
+    // natural parallelism is ~10; the cap is a ceiling, not a target.
+    val concurrency = BingeAnimeSettings.getConcurrency().coerceIn(1, 50)
+    val sem = Semaphore(concurrency)
+
+    // Collect unique sub URLs across all sources, but only from
+    // koto/suge. Other providers return empty tracks.
+    val subMap = LinkedHashMap<String, String>() // url → label
+    val subLock = Any()
+
     val mirrors = coroutineScope {
         pairs.map { (pid, lang) ->
             async {
-                try {
-                    withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
-                        val bundle = AnikageApi.sources(slug, ep, pid, lang)
-                            ?: return@withTimeoutOrNull emptyList()
+                sem.withPermit {
+                    try {
+                        withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
+                            val bundle = AnikageApi.sources(slug, ep, pid, lang)
+                                ?: return@withTimeoutOrNull emptyList()
 
-                        val subs = bundle.subs.map { it.label to AnikageApi.subUrl(it.file) }
-                        val out = mutableListOf<ScrapedMirror>()
-
-                        // Primary: opaque slug via og.bakayaro proxy.
-                        bundle.sources.forEach { s ->
-                            if (!s.isM3U8) return@forEach
-                            out.add(ScrapedMirror(
-                                quality = s.quality,
-                                mirror = "$pid · ${lang.uppercase()} · ${s.quality}",
-                                url = AnikageApi.hlsUrl(s.slug),
-                                source = "ANIKAGE",
-                                headers = mapOf(
-                                    "Referer" to AnikageApi.referer(),
-                                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                                        "Mobile Safari/537.36"
-                                ),
-                                captions = subs
-                            ))
-                        }
-
-                        // Embeds only as fallback — if opaque is populated,
-                        // E-Koto / E-Wish / E-Zen point to the same content
-                        // via megaplay. Firing them anyway doubles the
-                        // work for zero new mirrors.
-                        if (out.isEmpty() && bundle.embeds.isNotEmpty()) {
-                            bundle.embeds.forEach { eo ->
-                                val extracted = megaplayExtract(
-                                    eo.url,
-                                    "${eo.label} · ${lang.uppercase()}"
-                                )
-                                extracted.forEach { m ->
-                                    out.add(m.copy(
-                                        captions = if (m.captions.isEmpty()) subs else m.captions
-                                    ))
+                            if (pid in SUB_PROVIDERS) {
+                                bundle.subs.forEach { s ->
+                                    val url = AnikageApi.subUrl(s.file)
+                                    synchronized(subLock) {
+                                        if (!subMap.containsKey(url)) {
+                                            subMap[url] = s.label
+                                        }
+                                    }
                                 }
                             }
-                        }
 
-                        out
-                    } ?: emptyList()
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    BLog.v("anikage $pid/$lang failed: ${e.message}")
-                    emptyList()
+                            val out = mutableListOf<ScrapedMirror>()
+                            bundle.sources.forEach { s ->
+                                if (!s.isM3U8) return@forEach
+                                out.add(ScrapedMirror(
+                                    quality = s.quality,
+                                    mirror = "$pid · ${lang.uppercase()} · ${s.quality}",
+                                    url = AnikageApi.hlsUrl(s.slug),
+                                    source = "ANIKAGE",
+                                    headers = mapOf(
+                                        "Referer" to AnikageApi.referer(),
+                                        "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                                            "Mobile Safari/537.36"
+                                    ),
+                                    captions = emptyList() // filled after sub verification
+                                ))
+                            }
+
+                            // Embed fallback — only if opaque sources empty.
+                            if (out.isEmpty() && bundle.embeds.isNotEmpty()) {
+                                bundle.embeds.forEach { eo ->
+                                    val extracted = megaplayExtract(
+                                        eo.url,
+                                        "${eo.label} · ${lang.uppercase()}"
+                                    )
+                                    out.addAll(extracted)
+                                }
+                            }
+
+                            out
+                        } ?: emptyList()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        BLog.v("anikage $pid/$lang failed: ${e.message}")
+                        emptyList()
+                    }
                 }
             }
         }.awaitAll().flatten()
     }
 
+    // Verify subs in parallel — keep only live ones.
+    val verifiedSubs: List<Pair<String, String>> = if (subMap.isEmpty()) {
+        emptyList()
+    } else {
+        val checks = coroutineScope {
+            subMap.entries.map { (url, label) ->
+                async { if (subIsLive(url)) (url to label) else null }
+            }.awaitAll().filterNotNull()
+        }
+        BLog.d("anikage: subs ${checks.size}/${subMap.size} live")
+        checks
+    }
+
+    // Attach verified subs to every mirror.
+    val withSubs = mirrors.map { m -> m.copy(captions = verifiedSubs) }
+
     val seen = mutableSetOf<String>()
-    val deduped = mirrors.filter { seen.add(it.url) }
+    val deduped = withSubs.filter { seen.add(it.url) }
     BLog.d("anikage: ${deduped.size} mirrors (${mirrors.size} pre-dedup)")
     return deduped
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Dispatcher
+// Dispatcher — parallel across enabled sources
 // ═══════════════════════════════════════════════════════════════
 suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
     BLog.section("scrapeAllSources: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
@@ -233,7 +268,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
         val jobs = mutableListOf<Deferred<List<ScrapedMirror>>>()
 
         if (BingeAnimeSettings.isSrcAnikage()) jobs.add(async {
-            withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
+            withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS * 3) {
                 try { anikageExtractRaw(q) }
                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (e: Exception) { BLog.e("anikage: ${e.message}"); emptyList() }
