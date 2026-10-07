@@ -1,7 +1,7 @@
 [
   {
     "iconUrl": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/main/BingeAnime/icon.png",
-    "fileHash": "sha256-d32a4988eefc0c3653a930c944a591510522b32ede1033df3e2e4795a603b7f7",
+    "fileHash": "sha256-86ac062e00cc3e2d7565a3f8f0d24d98def7a6fad61f9ed59f8fb0e3f9580896",
     "apiVersion": 1,
     "fileSize": 162883,
     "status": 1,
@@ -13,7 +13,7 @@
       "Anime",
       "AnimeMovie"
     ],
-    "version": 1,
+    "version": 2,
     "internalName": "BingeAnime",
     "description": "Anime streaming \u2014 multi-source, AniList catalog",
     "url": "https://raw.githubusercontent.com/FlummoxGamer/FLUMMOX-Repo/builds-dev/BingeAnime.cs3",
