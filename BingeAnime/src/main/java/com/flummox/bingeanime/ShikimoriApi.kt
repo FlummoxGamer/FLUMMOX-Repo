@@ -166,9 +166,8 @@ private suspend fun <T> throttled(block: suspend () -> T): T {
     suspend fun fetchForRow(rowName: String, limit: Int = 30): List<AniListApi.Entry> {
     val raw = fetchRawForRow(rowName, 50)
     val yearFloor = BingeAnimeSettings.getYearFloorIfEnabled()
-    val withYear = if (yearFloor == null) raw else raw.filter {
-        (it.seasonYear ?: 0) >= yearFloor
-    }
+    val withYear = raw.filter { (it.seasonYear ?: 0) >= yearFloor }
+    
     // Shuffle with hourly seed + year-floor salt. Different filter
     // states produce different orders within the same hour so the
     // user sees a visual change when toggling year filter on/off.
