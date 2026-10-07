@@ -1,6 +1,5 @@
 package com.flummox.bingeanime
 
-import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -8,6 +7,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 data class ScrapedMirror(
     val quality: String,
@@ -18,10 +19,7 @@ data class ScrapedMirror(
     val captions: List<Pair<String, String>> = emptyList()
 )
 
-// Reduced from 25s — AniKage responds in 1-3s normally. A stalled
-// server should not hold the whole batch.
 private const val PER_SOURCE_TIMEOUT_MS = 8000L
-private const val SUB_HEAD_TIMEOUT_MS = 3000L
 
 // Only these providers expose subtitle tracks in AniKage's API.
 private val SUB_PROVIDERS = setOf("koto", "suge")
@@ -108,18 +106,25 @@ private suspend fun trySearchAndPick(query: String, year: Int?): AniListApi.Entr
     return pickBest(hits, query, year)
 }
 
-// HEAD-check a sub URL — drop dead ones so we don't show empty pickers.
-private suspend fun subIsLive(url: String): Boolean = try {
-    val res = withTimeoutOrNull(SUB_HEAD_TIMEOUT_MS) {
-        app.head(url, headers = mapOf("Referer" to AnikageApi.referer()))
-    }
-    res != null && res.code in 200..299
-} catch (_: Exception) { false }
-
 // ═══════════════════════════════════════════════════════════════
 // AniKage scraper
+//
+// Signature mirrors the progressive-emit pattern:
+//   • onLink  — called from inside each parallel source coroutine
+//               the moment its mirrors resolve. CloudStream renders
+//               them immediately (instantLinkLoading).
+//   • onSub   — same for verified subs.
+//   • sem     — global concurrency cap (mirrors BingeCloud).
+//
+// Return value is the full mirror list, used by the caller to
+// write the cache. Progressive emit is a side effect.
 // ═══════════════════════════════════════════════════════════════
-suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
+suspend fun anikageExtractRaw(
+    q: StreamQuery,
+    onLink: ((ScrapedMirror, Int) -> Unit)? = null,
+    onSub: ((String, String) -> Unit)? = null,
+    sem: Semaphore? = null
+): List<ScrapedMirror> {
     val yr = q.year.toIntOrNull()
     BLog.d("anikage: searching '${q.title}' (${q.year})")
 
@@ -165,40 +170,34 @@ suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
     val pairs = servers.flatMap { sv -> sv.subTypes.map { sv.id to it } }
     BLog.d("anikage: ${servers.size} servers → ${pairs.size} source fetches")
 
-    // Global concurrency cap — matches CloudStream UX. AniKage's
-    // natural parallelism is ~10; the cap is a ceiling, not a target.
-    val concurrency = BingeAnimeSettings.getConcurrency().coerceIn(1, 50)
-    val sem = Semaphore(concurrency)
+    val subSeen = ConcurrentHashMap.newKeySet<String>()
+    val emittedCount = AtomicInteger(0)
+    val collected = ConcurrentHashMap<String, ScrapedMirror>()
+    val collectedLock = Any()
 
-    // Collect unique sub URLs across all sources, but only from
-    // koto/suge. Other providers return empty tracks.
-    val subMap = LinkedHashMap<String, String>() // url → label
-    val subLock = Any()
-
-    val mirrors = coroutineScope {
+    coroutineScope {
         pairs.map { (pid, lang) ->
             async {
-                sem.withPermit {
+                val runnable = suspend {
                     try {
                         withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
                             val bundle = AnikageApi.sources(slug, ep, pid, lang)
-                                ?: return@withTimeoutOrNull emptyList()
+                                ?: return@withTimeoutOrNull
 
-                            if (pid in SUB_PROVIDERS) {
+                            // Subs — koto/suge only, dedup by URL.
+                            if (pid in SUB_PROVIDERS && onSub != null) {
                                 bundle.subs.forEach { s ->
                                     val url = AnikageApi.subUrl(s.file)
-                                    synchronized(subLock) {
-                                        if (!subMap.containsKey(url)) {
-                                            subMap[url] = s.label
-                                        }
+                                    if (subSeen.add(url)) {
+                                        try { onSub.invoke(url, s.label) } catch (_: Exception) {}
                                     }
                                 }
                             }
 
-                            val out = mutableListOf<ScrapedMirror>()
+                            // Mirrors — emit each as it arrives.
                             bundle.sources.forEach { s ->
                                 if (!s.isM3U8) return@forEach
-                                out.add(ScrapedMirror(
+                                val m = ScrapedMirror(
                                     quality = s.quality,
                                     mirror = "$pid · ${lang.uppercase()} · ${s.quality}",
                                     url = AnikageApi.hlsUrl(s.slug),
@@ -209,58 +208,60 @@ suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> {
                                             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
                                             "Mobile Safari/537.36"
                                     ),
-                                    captions = emptyList() // filled after sub verification
-                                ))
+                                    captions = emptyList() // subs already pushed via onSub
+                                )
+                                synchronized(collectedLock) {
+                                    if (collected.putIfAbsent(m.url, m) == null) {
+                                        val score = LinkScore.prelimScore(m)
+                                        try { onLink?.invoke(m, score) } catch (_: Exception) {}
+                                        emittedCount.incrementAndGet()
+                                    }
+                                }
                             }
 
                             // Embed fallback — only if opaque sources empty.
-                            if (out.isEmpty() && bundle.embeds.isNotEmpty()) {
+                            if (bundle.sources.isEmpty() && bundle.embeds.isNotEmpty()) {
                                 bundle.embeds.forEach { eo ->
                                     val extracted = megaplayExtract(
                                         eo.url,
                                         "${eo.label} · ${lang.uppercase()}"
                                     )
-                                    out.addAll(extracted)
+                                    extracted.forEach { m ->
+                                        synchronized(collectedLock) {
+                                            if (collected.putIfAbsent(m.url, m) == null) {
+                                                val score = LinkScore.prelimScore(m)
+                                                try { onLink?.invoke(m, score) } catch (_: Exception) {}
+                                                emittedCount.incrementAndGet()
+                                            }
+                                        }
+                                    }
                                 }
                             }
-
-                            out
-                        } ?: emptyList()
+                        }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         BLog.v("anikage $pid/$lang failed: ${e.message}")
-                        emptyList()
                     }
                 }
+                if (sem != null) sem.withPermit { runnable() } else runnable()
             }
-        }.awaitAll().flatten()
+        }.awaitAll()
     }
 
-    // Verify subs in parallel — keep only live ones.
-    val verifiedSubs: List<Pair<String, String>> = if (subMap.isEmpty()) {
-        emptyList()
-    } else {
-        val checks = coroutineScope {
-            subMap.entries.map { (url, label) ->
-                async { if (subIsLive(url)) (url to label) else null }
-            }.awaitAll().filterNotNull()
-        }
-        BLog.d("anikage: subs ${checks.size}/${subMap.size} live")
-        checks
-    }
-
-    // Attach verified subs to every mirror.
-    val withSubs = mirrors.map { m -> m.copy(captions = verifiedSubs) }
-
-    val seen = mutableSetOf<String>()
-    val deduped = withSubs.filter { seen.add(it.url) }
-    BLog.d("anikage: ${deduped.size} mirrors (${mirrors.size} pre-dedup)")
-    return deduped
+    val result = synchronized(collectedLock) { collected.values.toList() }
+    BLog.d("anikage: ${result.size} mirrors (${emittedCount.get()} emitted live)")
+    return result
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Dispatcher — parallel across enabled sources
+// Background variant — returns list, no emit. Used by prefetch.
+// ═══════════════════════════════════════════════════════════════
+suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> =
+    anikageExtractRaw(q, onLink = null, onSub = null, sem = null)
+
+// ═══════════════════════════════════════════════════════════════
+// Dispatcher — background (prefetch).
 // ═══════════════════════════════════════════════════════════════
 suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
     BLog.section("scrapeAllSources: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
