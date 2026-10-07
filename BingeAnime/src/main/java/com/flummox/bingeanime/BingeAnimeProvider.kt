@@ -306,22 +306,22 @@ class BingeAnimeProvider : MainAPI() {
         return emittedCount.get() > 0
     }
 
-    // ── emit helpers ──
-    private fun emitMirror(
-        m: ScrapedMirror,
-        callback: (ExtractorLink) -> Unit,
-        count: AtomicInteger
-    ) {
-        val score = LinkScore.prelimScore(m)
-        emitMirrorScored(m, score, callback, count)
-    }
+// ── emit helpers ──
+private suspend fun emitMirror(
+    m: ScrapedMirror,
+    callback: (ExtractorLink) -> Unit,
+    count: AtomicInteger
+) {
+    val score = LinkScore.prelimScore(m)
+    emitMirrorScored(m, score, callback, count)
+}
 
-    private fun emitMirrorScored(
-        m: ScrapedMirror,
-        score: Int,
-        callback: (ExtractorLink) -> Unit,
-        count: AtomicInteger
-    ) {
+private suspend fun emitMirrorScored(
+    m: ScrapedMirror,
+    score: Int,
+    callback: (ExtractorLink) -> Unit,
+    count: AtomicInteger
+) {
         val emoji = LinkScore.emoji(score)
         val linkType = when {
             m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
