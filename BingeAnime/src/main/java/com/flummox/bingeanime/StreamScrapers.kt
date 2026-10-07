@@ -129,24 +129,56 @@ private fun md5(s: String): String =
         .joinToString("") { "%02x".format(it) }
 
 // Downloads the sub body to app-private storage and returns a
-// file:// URI. Cached forever — one download per sub URL.
+// file:// URI.
+//
+// Why this is not a simple app.get():
+//   og.bakayaro.live/stream/{opaque} serves subtitles with
+//   Content-Encoding: zstd, which OkHttp cannot decompress. Reading
+//   res.text yields garbage bytes and the WEBVTT check fails.
+//   The browser (which supports zstd) follows the redirect to the
+//   upstream CDN and gets a plain uncompressed VTT file. We have to
+//   force the proxy to send us the identity encoding — if the server
+//   ignores that, we fall back to emitting the raw URL so ExoPlayer
+//   can try it with text/vtt mime inference (see emit path).
 private suspend fun fetchSubLocal(remoteUrl: String): String? {
-    val ctx = BingeAnimeCtx.context ?: return null
+    val ctx = BingeAnimeCtx.context ?: run {
+        BLog.e("sub dl: no context"); return null
+    }
     val dir = File(ctx.filesDir, "anikage_subs").apply { mkdirs() }
     val f = File(dir, "${md5(remoteUrl)}.vtt")
-    if (f.exists() && f.length() > 0) return "file://${f.absolutePath}"
+    if (f.exists() && f.length() > 0) {
+        BLog.v("sub dl: cache hit ${f.length()}b")
+        return "file://${f.absolutePath}"
+    }
     return try {
         val res = app.get(
             remoteUrl,
-            headers = mapOf("Referer" to AnikageApi.referer())
+            headers = mapOf(
+                "Referer" to AnikageApi.referer(),
+                // Force identity encoding so the proxy serves raw VTT
+                // instead of zstd-compressed bytes. OkHttp does not
+                // support zstd; the browser does, which is why the
+                // site's own player works.
+                "Accept-Encoding" to "identity"
+            )
         )
-        if (res.code !in 200..299) return null
+        val ce = res.headers["Content-Encoding"].orEmpty()
+        val ct = res.headers["Content-Type"].orEmpty()
+        BLog.d("sub dl: code=${res.code} ct=$ct ce=$ce len=${res.text.length}")
+        if (res.code !in 200..299) { BLog.e("sub dl: bad code"); return null }
         val body = res.text
-        if (body.isBlank() || !body.contains("WEBVTT", ignoreCase = true)) return null
+        if (ce.contains("zstd", ignoreCase = true)) {
+            BLog.e("sub dl: server ignored identity, still zstd")
+            return null
+        }
+        val hasVtt = body.contains("WEBVTT", ignoreCase = true)
+        BLog.d("sub dl: hasVtt=$hasVtt head='${body.take(40).replace("\n", "\\n")}'")
+        if (body.length < 20 || !hasVtt) return null
         f.writeText(body)
+        BLog.d("sub dl: wrote ${f.length()}b → ${f.absolutePath}")
         "file://${f.absolutePath}"
     } catch (e: Exception) {
-        BLog.v("sub download failed: ${e.message}")
+        BLog.e("sub dl: exception ${e.message}")
         null
     }
 }
@@ -251,15 +283,22 @@ suspend fun anikageExtractRaw(
                             }
                         }
 
-                        // 3. Download English subs to local .vtt (no permit held).
+                        // 3. English subs. Try local download first
+                        //    (bypasses proxy zstd). If that fails, emit
+                        //    the raw proxy URL with a .vtt suffix so
+                        //    CloudStream infers text/vtt mime type and
+                        //    ExoPlayer's WebvttExtractor can sniff it.
                         if (pid in SUB_PROVIDERS && onSub != null) {
                             bundle.subs
                                 .filter { isEnglish(it.label) }
                                 .forEach { s ->
-                                    val local = fetchSubLocal(AnikageApi.subUrl(s.file))
-                                    if (local != null) {
-                                        try { onSub.invoke(local, "English") } catch (_: Exception) {}
-                                    }
+                                    val proxyUrl = AnikageApi.subUrl(s.file)
+                                    val local = fetchSubLocal(proxyUrl)
+                                    val emitUrl = local ?: "$proxyUrl.vtt"
+                                    BLog.d("sub emit: ${if (local != null) "local" else "raw"} $emitUrl")
+                                    try {
+                                        onSub.invoke(emitUrl, "English")
+                                    } catch (_: Exception) {}
                                 }
                         }
 
