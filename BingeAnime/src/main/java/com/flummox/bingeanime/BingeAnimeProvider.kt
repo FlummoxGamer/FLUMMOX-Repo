@@ -3,7 +3,6 @@ package com.flummox.bingeanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -261,24 +260,23 @@ class BingeAnimeProvider : MainAPI() {
             return emittedCount.get() > 0
         }
 
-        // ── live path: progressive emit inside each source coroutine ──
-        val concurrency = BingeAnimeSettings.getConcurrency().coerceIn(1, 50)
-        val sem = Semaphore(concurrency)
-
-        val result = try {
-            anikageExtractRaw(
-                q,
-                onLink = { m, score ->
-                    emitMirrorScored(m, score, callback, emittedCount)
-                },
-                onSub = { url, label ->
-                    if (subSeen.add(url)) {
-                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
-                    }
-                },
-                sem = sem
-            )
-        } catch (e: CancellationException) {
+// ── live path: progressive emit inside each source coroutine ──
+// Concurrency cap lives inside anikageExtractRaw now (hardcoded
+// ANIKAGE_CONCURRENCY = 4 to stay under AniKage's 15/min
+// /sources rate limit).
+val result = try {
+    anikageExtractRaw(
+        q,
+        onLink = { m, score ->
+            emitMirrorScored(m, score, callback, emittedCount)
+        },
+        onSub = { url, label ->
+            if (subSeen.add(url)) {
+                try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+            }
+        }
+    )
+} catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             BLog.e("anikageExtractRaw threw: ${e.message}")
