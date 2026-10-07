@@ -242,94 +242,101 @@ suspend fun anikageExtractRaw(
     val pairs = ordered.flatMap { sv -> sv.subTypes.map { sv.id to it } }
     BLog.d("anikage: ${servers.size} servers → ${pairs.size} source fetches (cap=$ANIKAGE_CONCURRENCY)")
 
-    val sem = Semaphore(ANIKAGE_CONCURRENCY)
+// Kiwi (Nero mirror) is slow and frequently half-broken on their side.
+// Demote to fallback: fire only if every other server returns zero
+// mirrors for this episode.
+val primaryPairs = pairs.filter { it.first != "kiwi" }
+val kiwiPairs = pairs.filter { it.first == "kiwi" }
+
+val sem = Semaphore(ANIKAGE_CONCURRENCY)
     val collected = ConcurrentHashMap<String, ScrapedMirror>()
     val collectedLock = Any()
     val emittedCount = AtomicInteger(0)
 
-    coroutineScope {
-        pairs.map { (pid, lang) ->
-            async {
-                try {
-                    withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
-                        // 1. Fetch source bundle under the permit.
-                        val bundle = sem.withPermit {
-                            AnikageApi.sources(slug, ep, pid, lang)
-                        } ?: return@withTimeoutOrNull
+suspend fun handleOne(pid: String, lang: String) {
+    try {
+        withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
+            val bundle = sem.withPermit {
+                AnikageApi.sources(slug, ep, pid, lang)
+            } ?: return@withTimeoutOrNull
 
-                        // 2. Emit mirrors immediately (progressive).
-                        bundle.sources.forEach { s ->
-                            if (!s.isM3U8) return@forEach
-                            val m = ScrapedMirror(
-                                quality = s.quality,
-                                mirror = "$pid · ${lang.uppercase()} · ${s.quality}",
-                                url = AnikageApi.hlsUrl(s.slug),
-                                source = "ANIKAGE",
-                                headers = mapOf(
-                                    "Referer" to AnikageApi.referer(),
-                                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                                        "Mobile Safari/537.36"
-                                ),
-                                captions = emptyList()
-                            )
-                            val isNew = synchronized(collectedLock) {
-                                collected.putIfAbsent(m.url, m) == null
-                            }
-                            if (isNew) {
-                                val score = LinkScore.prelimScore(m)
-                                try { onLink?.invoke(m, score) } catch (_: Exception) {}
-                                emittedCount.incrementAndGet()
-                            }
-                        }
-
-                        // 3. English subs. Try local download first
-                        //    (bypasses proxy zstd). If that fails, emit
-                        //    the raw proxy URL with a .vtt suffix so
-                        //    CloudStream infers text/vtt mime type and
-                        //    ExoPlayer's WebvttExtractor can sniff it.
-                        if (pid in SUB_PROVIDERS && onSub != null) {
-                            bundle.subs
-                                .filter { isEnglish(it.label) }
-                                .forEach { s ->
-                                    val proxyUrl = AnikageApi.subUrl(s.file)
-                                    val local = fetchSubLocal(proxyUrl)
-                                    val emitUrl = local ?: "$proxyUrl.vtt"
-                                    BLog.d("sub emit: ${if (local != null) "local" else "raw"} $emitUrl")
-                                    try {
-                                        onSub.invoke(emitUrl, "English")
-                                    } catch (_: Exception) {}
-                                }
-                        }
-
-                        // 4. Embed fallback — only if opaque empty.
-                        if (bundle.sources.isEmpty() && bundle.embeds.isNotEmpty()) {
-                            bundle.embeds.forEach { eo ->
-                                val extracted = megaplayExtract(
-                                    eo.url,
-                                    "${eo.label} · ${lang.uppercase()}"
-                                )
-                                extracted.forEach { m ->
-                                    val isNew = synchronized(collectedLock) {
-                                        collected.putIfAbsent(m.url, m) == null
-                                    }
-                                    if (isNew) {
-                                        val score = LinkScore.prelimScore(m)
-                                        try { onLink?.invoke(m, score) } catch (_: Exception) {}
-                                        emittedCount.incrementAndGet()
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    BLog.v("anikage $pid/$lang failed: ${e.message}")
+            bundle.sources.forEach { s ->
+                if (!s.isM3U8) return@forEach
+                val m = ScrapedMirror(
+                    quality = s.quality,
+                    mirror = "$pid · ${lang.uppercase()} · ${s.quality}",
+                    url = AnikageApi.hlsUrl(s.slug),
+                    source = "ANIKAGE",
+                    headers = mapOf(
+                        "Referer" to AnikageApi.referer(),
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                            "Mobile Safari/537.36"
+                    ),
+                    captions = emptyList()
+                )
+                val isNew = synchronized(collectedLock) {
+                    collected.putIfAbsent(m.url, m) == null
+                }
+                if (isNew) {
+                    val score = LinkScore.prelimScore(m)
+                    try { onLink?.invoke(m, score) } catch (_: Exception) {}
+                    emittedCount.incrementAndGet()
                 }
             }
+
+            if (pid in SUB_PROVIDERS && onSub != null) {
+                bundle.subs
+                    .filter { BingeAnimeSettings.subLangMatches(it.label) }
+                    .forEach { s ->
+                        val proxyUrl = AnikageApi.subUrl(s.file)
+                        val local = fetchSubLocal(proxyUrl)
+                        val emitUrl = local ?: "$proxyUrl.vtt"
+                        BLog.d("sub emit: ${if (local != null) "local" else "raw"} $emitUrl [${s.label}]")
+                        try { onSub.invoke(emitUrl, s.label) } catch (_: Exception) {}
+                    }
+            }
+
+            if (bundle.sources.isEmpty() && bundle.embeds.isNotEmpty()) {
+                bundle.embeds.forEach { eo ->
+                    val extracted = megaplayExtract(
+                        eo.url,
+                        "${eo.label} · ${lang.uppercase()}"
+                    )
+                    extracted.forEach { m ->
+                        val isNew = synchronized(collectedLock) {
+                            collected.putIfAbsent(m.url, m) == null
+                        }
+                        if (isNew) {
+                            val score = LinkScore.prelimScore(m)
+                            try { onLink?.invoke(m, score) } catch (_: Exception) {}
+                            emittedCount.incrementAndGet()
+                        }
+                    }
+                }
+            }
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.v("anikage $pid/$lang failed: ${e.message}")
+    }
+}
+
+coroutineScope {
+    primaryPairs.map { (pid, lang) ->
+        async { handleOne(pid, lang) }
+    }.awaitAll()
+}
+
+if (collected.isEmpty() && kiwiPairs.isNotEmpty()) {
+    BLog.d("anikage: primary servers returned 0 mirrors — engaging kiwi fallback")
+    coroutineScope {
+        kiwiPairs.map { (pid, lang) ->
+            async { handleOne(pid, lang) }
         }.awaitAll()
     }
+}
 
     val result = synchronized(collectedLock) { collected.values.toList() }
     BLog.d("anikage: ${result.size} mirrors (${emittedCount.get()} emitted live)")
