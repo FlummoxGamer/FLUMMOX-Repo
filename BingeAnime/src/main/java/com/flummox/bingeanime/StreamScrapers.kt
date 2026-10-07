@@ -148,7 +148,7 @@ private suspend fun fetchSubLocal(remoteUrl: String): String? {
     val f = File(dir, "${md5(remoteUrl)}.vtt")
     if (f.exists() && f.length() > 0) {
         BLog.v("sub dl: cache hit ${f.length()}b")
-        return "file://${f.absolutePath}"
+        return SubServer.urlFor(f.name)
     }
     return try {
         val res = app.get(
@@ -176,7 +176,7 @@ private suspend fun fetchSubLocal(remoteUrl: String): String? {
         if (body.length < 20 || !hasVtt) return null
         f.writeText(body)
         BLog.d("sub dl: wrote ${f.length()}b → ${f.absolutePath}")
-        "file://${f.absolutePath}"
+        SubServer.urlFor(f.name)
     } catch (e: Exception) {
         BLog.e("sub dl: exception ${e.message}")
         null
