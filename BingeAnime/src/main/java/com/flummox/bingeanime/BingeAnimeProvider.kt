@@ -243,7 +243,10 @@ class BingeAnimeProvider : MainAPI() {
         val cached = BCCache.getMirrors(key)
         if (cached != null && cached.isNotEmpty()) {
             BLog.d("loadLinks: emitting from prefetch cache (${cached.size})")
-            for (m in cached) emitMirror(m, callback, emittedCount)
+            val ordered = if (BingeAnimeSettings.isPrefilterEnabled()) {
+                cached.sortedByDescending { LinkScore.prelimScore(it) }
+            } else cached
+            for (m in ordered) emitMirror(m, callback, emittedCount)
             cached.flatMap { it.captions }
                 .forEach { (label, url) ->
                     if (subSeen.add(url)) {
@@ -306,21 +309,27 @@ private suspend fun emitMirrorScored(
     callback: (ExtractorLink) -> Unit,
     count: AtomicInteger
 ) {
-        val emoji = LinkScore.emoji(score)
-        val linkType = when {
-            m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
-                ExtractorLinkType.DASH
-            m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
-                ExtractorLinkType.M3U8
-            else -> ExtractorLinkType.VIDEO
-        }
-        try {
-            callback.invoke(newExtractorLink(
-                source = "BingeAnime",
-                name = "$emoji ${m.source} • ${m.mirror}",
-                url = m.url,
-                type = linkType
-            ) {
+    // Smart links ON  → emoji + source label + mirror descriptor
+    // Smart links OFF → raw URL as display name
+    val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
+    val displayName = if (cosmetic) {
+        "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
+    } else m.url
+
+    val linkType = when {
+        m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+            ExtractorLinkType.DASH
+        m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+            ExtractorLinkType.M3U8
+        else -> ExtractorLinkType.VIDEO
+    }
+    try {
+        callback.invoke(newExtractorLink(
+            source = "BingeAnime",
+            name = displayName,
+            url = m.url,
+            type = linkType
+        ) {
                 this.referer = AnikageApi.referer()
                 val clean = m.headers
                     ?.filterKeys { it.lowercase() != "referer" }
