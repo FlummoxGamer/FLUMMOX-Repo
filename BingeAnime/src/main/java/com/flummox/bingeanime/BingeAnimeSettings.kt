@@ -57,8 +57,7 @@ object BingeAnimeSettings {
     const val K_SRC_ANIKOTO = "bingeanime_src_anikoto"
     const val K_SRC_ANIZONE = "bingeanime_src_anizone"
     const val K_SRC_OTAKUTSU = "bingeanime_src_otakutsu"
-    const val K_SRC_ANIKAGE = "bingeanime_src_aniktrue
-    
+    const val K_SRC_ANIKAGE = "bingeanime_src_anikage"
     const val K_SEARCH_SOURCE = "bingeanime_search_source"
     const val K_ROW_ORDER = "bingeanime_row_order"
     const val K_ROW_PREFIX = "bingeanime_row_"
