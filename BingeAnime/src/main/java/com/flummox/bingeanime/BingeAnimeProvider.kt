@@ -196,8 +196,6 @@ class BingeAnimeProvider : MainAPI() {
 
         if (isMovie) {
             val q = StreamQuery(name, yearInt?.toString() ?: "", "movie", url)
-            PrefetchEngine.beginSession(q.animeKey())
-            PrefetchEngine.warmOnLoad(q) { scrapeAllSources(it) }
             return newMovieLoadResponse(name, url, TvType.Movie, encodeQuery(q)) {
                 this.posterUrl = entry.coverImage
                 this.backgroundPosterUrl = entry.bannerUrl
@@ -218,11 +216,6 @@ class BingeAnimeProvider : MainAPI() {
                 this.posterUrl = entry.coverImage
             }
         }
-
-        val ep1 = StreamQuery(name, yearInt?.toString() ?: "", "series", url,
-            season = 1, episode = 1, totalEpisodes = totalEps)
-        PrefetchEngine.beginSession(ep1.animeKey())
-        PrefetchEngine.warmOnLoad(ep1) { scrapeAllSources(it) }
 
         return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
             this.posterUrl = entry.coverImage
@@ -265,8 +258,6 @@ class BingeAnimeProvider : MainAPI() {
                 emitSubsOnly(q, subtitleCallback, subSeen)
             } catch (_: Exception) {}
             BLog.d("loadLinks (cache): emitted=${emittedCount.get()} subs=${subSeen.size}")
-            PrefetchEngine.recordPlay(q)
-            PrefetchEngine.warmAfterPlay(q) { scrapeAllSources(it) }
             return emittedCount.get() > 0
         }
 
@@ -297,11 +288,6 @@ class BingeAnimeProvider : MainAPI() {
         if (result.isNotEmpty()) BCCache.putMirrors(key, result)
 
         BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
-
-        if (emittedCount.get() > 0) {
-            PrefetchEngine.recordPlay(q)
-            PrefetchEngine.warmAfterPlay(q) { scrapeAllSources(it) }
-        }
 
         return emittedCount.get() > 0
     }
