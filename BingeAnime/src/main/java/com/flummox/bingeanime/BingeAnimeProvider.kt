@@ -226,72 +226,82 @@ class BingeAnimeProvider : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val q = decodeQuery(data) ?: return false
-        BLog.section("loadLinks: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
+override suspend fun loadLinks(
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    val q = decodeQuery(data) ?: return false
+    BLog.section("loadLinks: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
 
-        val key = q.cacheKey()
-        val emittedCount = AtomicInteger(0)
-        val subSeen = ConcurrentHashMap.newKeySet<String>()
+    val key = q.cacheKey()
+    val emittedCount = AtomicInteger(0)
+    val subSeen = ConcurrentHashMap.newKeySet<String>()
 
-        // ── fast path: prefetch cache hit ──
-        val cached = BCCache.getMirrors(key)
-        if (cached != null && cached.isNotEmpty()) {
-            BLog.d("loadLinks: emitting from prefetch cache (${cached.size})")
-            val ordered = if (BingeAnimeSettings.isPrefilterEnabled()) {
-                cached.sortedByDescending { LinkScore.prelimScore(it) }
-            } else cached
-            for (m in ordered) emitMirror(m, callback, emittedCount)
-            cached.flatMap { it.captions }
-                .forEach { (label, url) ->
-                    if (subSeen.add(url)) {
-                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
-                    }
-                }
-            // cache doesn't hold subs separately in this design;
-            // they were emitted alongside mirrors during the scrape.
-            // For subs we re-run koto only, cheap.
-            try {
-                emitSubsOnly(q, subtitleCallback, subSeen)
-            } catch (_: Exception) {}
-            BLog.d("loadLinks (cache): emitted=${emittedCount.get()} subs=${subSeen.size}")
-            return emittedCount.get() > 0
-        }
+    // ── fast path: bundle cache hit ──
+    val cached = BCCache.getBundle(key)
+    if (cached != null && cached.mirrors.isNotEmpty()) {
+        BLog.d("loadLinks: emitting from bundle cache (${cached.mirrors.size} mirrors, ${cached.subSources.size} subs)")
+        val ordered = if (BingeAnimeSettings.isPrefilterEnabled()) {
+            cached.mirrors.sortedByDescending { LinkScore.prelimScore(it) }
+        } else cached.mirrors
+        for (m in ordered) emitMirror(m, callback, emittedCount)
 
-// ── live path: progressive emit inside each source coroutine ──
-// Concurrency cap lives inside anikageExtractRaw now (hardcoded
-// ANIKAGE_CONCURRENCY = 4 to stay under AniKage's 15/min
-// /sources rate limit).
-val result = try {
-    anikageExtractRaw(
-        q,
-        onLink = { m, score ->
-            emitMirrorScored(m, score, callback, emittedCount)
-        },
-        onSub = { url, label ->
+        // Per-mirror captions (MegaPlayEmbed fallback attaches them)
+        cached.mirrors.flatMap { it.captions }.forEach { (label, url) ->
             if (subSeen.add(url)) {
                 try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
             }
         }
-    )
-} catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("anikageExtractRaw threw: ${e.message}")
-            emptyList()
+
+        // AniKage subs — re-derive SubServer URL from cached remote proxy URL
+        for ((label, proxyUrl) in cached.subSources) {
+            val local = try { fetchSubLocal(proxyUrl) } catch (_: Exception) { null }
+            val emitUrl = local ?: "$proxyUrl.vtt"
+            if (subSeen.add(emitUrl)) {
+                try { subtitleCallback(SubtitleFile(label, emitUrl)) } catch (_: Exception) {}
+            }
         }
 
-        if (result.isNotEmpty()) BCCache.putMirrors(key, result)
-
-        BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
-
+        BLog.d("loadLinks (cache): emitted=${emittedCount.get()} subs=${subSeen.size}")
         return emittedCount.get() > 0
     }
+
+    // ── live path: progressive emit inside each source coroutine ──
+    val scrape = try {
+        anikageExtractRaw(
+            q,
+            onLink = { m, score ->
+                emitMirrorScored(m, score, callback, emittedCount)
+            },
+            onSub = { url, label ->
+                if (subSeen.add(url)) {
+                    try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                }
+            }
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        BLog.e("anikageExtractRaw threw: ${e.message}")
+        AniKageScrape(emptyList(), emptyList())
+    }
+
+    // Per-mirror captions (MegaPlayEmbed fallback)
+    scrape.mirrors.flatMap { it.captions }.forEach { (label, url) ->
+        if (subSeen.add(url)) {
+            try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+        }
+    }
+
+    if (scrape.mirrors.isNotEmpty()) {
+        BCCache.putBundle(key, MirrorBundle(scrape.mirrors, scrape.subs))
+    }
+
+    BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
+    return emittedCount.get() > 0
+}
 
 // ── emit helpers ──
 private suspend fun emitMirror(
@@ -349,17 +359,6 @@ val displayName = if (cosmetic) {
         }
     }
 
-    // Used only on the cache-hit path — the cache doesn't retain subs,
-    // so we re-fetch subs from koto (cheap, ~200ms).
-    private suspend fun emitSubsOnly(
-        q: StreamQuery,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        subSeen: MutableSet<String>
-    ) {
-        // We don't have the slug here cheaply — skip. Subs come from
-        // the live path; the cache-hit path emits mirrors without subs.
-        // Users tapping on a cached title can refresh to get subs.
-    }
 
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
