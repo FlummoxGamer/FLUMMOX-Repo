@@ -2,13 +2,18 @@ package com.flummox.bingeanime
 
 import android.util.LruCache
 
+data class MirrorBundle(
+    val mirrors: List<ScrapedMirror>,
+    val subSources: List<Pair<String, String>>   // (label, remoteProxyUrl)
+)
+
 object BCCache {
 
     private data class Entry(val ts: Long, val body: String)
-    private data class MirrorEntry(val ts: Long, val mirrors: List<ScrapedMirror>)
+    private data class BundleEntry(val ts: Long, val bundle: MirrorBundle)
 
     private val map = LruCache<String, Entry>(512)
-    private val mirrorMap = LruCache<String, MirrorEntry>(16)
+    private val bundleMap = LruCache<String, BundleEntry>(16)
     private val lock = Any()
 
     fun get(key: String, ttlMs: Long = 5 * 60 * 1000L): String? = synchronized(lock) {
@@ -24,25 +29,34 @@ object BCCache {
         synchronized(lock) { map.put(key, Entry(System.currentTimeMillis(), body)) }
     }
 
-    // ── mirror cache: 30 min, 16 entries ──
-    fun getMirrors(key: String, ttlMs: Long = 30 * 60 * 1000L): List<ScrapedMirror>? =
+    // ── mirror bundle: 30 min, 16 entries ──
+    fun getBundle(key: String, ttlMs: Long = 30 * 60 * 1000L): MirrorBundle? =
         synchronized(lock) {
-            val e = mirrorMap.get(key) ?: return null
+            val e = bundleMap.get(key) ?: return null
             if (System.currentTimeMillis() - e.ts > ttlMs) {
-                mirrorMap.remove(key)
+                bundleMap.remove(key)
                 return null
             }
-            e.mirrors
+            e.bundle
         }
 
-    fun putMirrors(key: String, mirrors: List<ScrapedMirror>) {
-        synchronized(lock) { mirrorMap.put(key, MirrorEntry(System.currentTimeMillis(), mirrors)) }
+    fun putBundle(key: String, bundle: MirrorBundle) {
+        synchronized(lock) {
+            bundleMap.put(key, BundleEntry(System.currentTimeMillis(), bundle))
+        }
     }
+
+    // Thin wrappers — keep existing PrefetchEngine callers working unchanged
+    fun getMirrors(key: String, ttlMs: Long = 30 * 60 * 1000L): List<ScrapedMirror>? =
+        getBundle(key, ttlMs)?.mirrors
+
+    fun putMirrors(key: String, mirrors: List<ScrapedMirror>) =
+        putBundle(key, MirrorBundle(mirrors, emptyList()))
 
     fun clear() {
         synchronized(lock) {
             map.evictAll()
-            mirrorMap.evictAll()
+            bundleMap.evictAll()
         }
     }
 }
