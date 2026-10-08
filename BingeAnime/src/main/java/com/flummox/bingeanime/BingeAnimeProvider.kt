@@ -139,7 +139,6 @@ class BingeAnimeProvider : MainAPI() {
         val shikiMatch = Regex("""shikimori:(\d+)""").find(url)
         val animapperMatch = Regex("""animapper:(\d+)""").find(url)
         val aniMatch = Regex("""anilist:(\d+)""").find(url)
-        val malMatch = Regex("""mal:(\d+)""").find(url)
         val aschedMatch = Regex("""animeschedule:(.+)""").find(url)
 
         val entry = when {
@@ -162,11 +161,6 @@ class BingeAnimeProvider : MainAPI() {
                 val id = aniMatch.groupValues[1].toIntOrNull() ?: return null
                 BLog.section("load AniList: $id")
                 AniListApi.getEntry(id)
-            }
-            malMatch != null -> {
-                val id = malMatch.groupValues[1].toIntOrNull() ?: return null
-                BLog.section("load MAL: $id")
-                JikanApi.detail(id)
             }
             else -> return null
         } ?: return null
@@ -226,122 +220,122 @@ class BingeAnimeProvider : MainAPI() {
         }
     }
 
-override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-    val q = decodeQuery(data) ?: return false
-    BLog.section("loadLinks: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val q = decodeQuery(data) ?: return false
+        BLog.section("loadLinks: ${q.title} (${q.year}) ${q.type} S${q.season}E${q.episode}")
 
-    val key = q.cacheKey()
-    val emittedCount = AtomicInteger(0)
-    val subSeen = ConcurrentHashMap.newKeySet<String>()
+        val key = q.cacheKey()
+        val emittedCount = AtomicInteger(0)
+        val subSeen = ConcurrentHashMap.newKeySet<String>()
 
-    // ── fast path: bundle cache hit ──
-    val cached = BCCache.getBundle(key)
-    if (cached != null && cached.mirrors.isNotEmpty()) {
-        BLog.d("loadLinks: emitting from bundle cache (${cached.mirrors.size} mirrors, ${cached.subSources.size} subs)")
-        val ordered = if (BingeAnimeSettings.isPrefilterEnabled()) {
-            cached.mirrors.sortedByDescending { LinkScore.prelimScore(it) }
-        } else cached.mirrors
-        for (m in ordered) emitMirror(m, callback, emittedCount)
+        // ── fast path: bundle cache hit ──
+        val cached = BCCache.getBundle(key)
+        if (cached != null && cached.mirrors.isNotEmpty()) {
+            BLog.d("loadLinks: emitting from bundle cache (${cached.mirrors.size} mirrors, ${cached.subSources.size} subs)")
+            val ordered = if (BingeAnimeSettings.isPrefilterEnabled()) {
+                cached.mirrors.sortedByDescending { LinkScore.prelimScore(it) }
+            } else cached.mirrors
+            for (m in ordered) emitMirror(m, callback, emittedCount)
 
-        // Per-mirror captions (MegaPlayEmbed fallback attaches them)
-        cached.mirrors.flatMap { it.captions }.forEach { (label, url) ->
+            // Per-mirror captions (MegaPlayEmbed fallback attaches them)
+            cached.mirrors.flatMap { it.captions }.forEach { (label, url) ->
+                if (subSeen.add(url)) {
+                    try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                }
+            }
+
+            // AniKage subs — re-derive SubServer URL from cached remote proxy URL
+            for ((label, proxyUrl) in cached.subSources) {
+                val local = try { fetchSubLocal(proxyUrl) } catch (_: Exception) { null }
+                val emitUrl = local ?: "$proxyUrl.vtt"
+                if (subSeen.add(emitUrl)) {
+                    try { subtitleCallback(SubtitleFile(label, emitUrl)) } catch (_: Exception) {}
+                }
+            }
+
+            BLog.d("loadLinks (cache): emitted=${emittedCount.get()} subs=${subSeen.size}")
+            return emittedCount.get() > 0
+        }
+
+        // ── live path: progressive emit inside each source coroutine ──
+        val scrape = try {
+            anikageExtractRaw(
+                q,
+                onLink = { m, score ->
+                    emitMirrorScored(m, score, callback, emittedCount)
+                },
+                onSub = { url, label ->
+                    if (subSeen.add(url)) {
+                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                    }
+                }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("anikageExtractRaw threw: ${e.message}")
+            AniKageScrape(emptyList(), emptyList())
+        }
+
+        // Per-mirror captions (MegaPlayEmbed fallback)
+        scrape.mirrors.flatMap { it.captions }.forEach { (label, url) ->
             if (subSeen.add(url)) {
                 try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
             }
         }
 
-        // AniKage subs — re-derive SubServer URL from cached remote proxy URL
-        for ((label, proxyUrl) in cached.subSources) {
-            val local = try { fetchSubLocal(proxyUrl) } catch (_: Exception) { null }
-            val emitUrl = local ?: "$proxyUrl.vtt"
-            if (subSeen.add(emitUrl)) {
-                try { subtitleCallback(SubtitleFile(label, emitUrl)) } catch (_: Exception) {}
-            }
+        if (scrape.mirrors.isNotEmpty()) {
+            BCCache.putBundle(key, MirrorBundle(scrape.mirrors, scrape.subs))
         }
 
-        BLog.d("loadLinks (cache): emitted=${emittedCount.get()} subs=${subSeen.size}")
+        BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
         return emittedCount.get() > 0
     }
 
-    // ── live path: progressive emit inside each source coroutine ──
-    val scrape = try {
-        anikageExtractRaw(
-            q,
-            onLink = { m, score ->
-                emitMirrorScored(m, score, callback, emittedCount)
-            },
-            onSub = { url, label ->
-                if (subSeen.add(url)) {
-                    try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
-                }
-            }
-        )
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        BLog.e("anikageExtractRaw threw: ${e.message}")
-        AniKageScrape(emptyList(), emptyList())
+    // ── emit helpers ──
+    private suspend fun emitMirror(
+        m: ScrapedMirror,
+        callback: (ExtractorLink) -> Unit,
+        count: AtomicInteger
+    ) {
+        val score = LinkScore.prelimScore(m)
+        emitMirrorScored(m, score, callback, count)
     }
 
-    // Per-mirror captions (MegaPlayEmbed fallback)
-    scrape.mirrors.flatMap { it.captions }.forEach { (label, url) ->
-        if (subSeen.add(url)) {
-            try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+    private suspend fun emitMirrorScored(
+        m: ScrapedMirror,
+        score: Int,
+        callback: (ExtractorLink) -> Unit,
+        count: AtomicInteger
+    ) {
+        // Smart links ON  → emoji + source label + mirror descriptor
+        // Smart links OFF → same label, no emoji, arrival order
+        val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
+        val displayName = if (cosmetic) {
+            "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
+        } else {
+            "${m.source} · ${m.mirror}"
         }
-    }
 
-    if (scrape.mirrors.isNotEmpty()) {
-        BCCache.putBundle(key, MirrorBundle(scrape.mirrors, scrape.subs))
-    }
-
-    BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
-    return emittedCount.get() > 0
-}
-
-// ── emit helpers ──
-private suspend fun emitMirror(
-    m: ScrapedMirror,
-    callback: (ExtractorLink) -> Unit,
-    count: AtomicInteger
-) {
-    val score = LinkScore.prelimScore(m)
-    emitMirrorScored(m, score, callback, count)
-}
-
-private suspend fun emitMirrorScored(
-    m: ScrapedMirror,
-    score: Int,
-    callback: (ExtractorLink) -> Unit,
-    count: AtomicInteger
-) {
-// Smart links ON  → emoji + source label + mirror descriptor
-// Smart links OFF → same label, no emoji, arrival order
-val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
-val displayName = if (cosmetic) {
-    "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
-} else {
-    "${m.source} · ${m.mirror}"
-}
-
-    val linkType = when {
-        m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
-            ExtractorLinkType.DASH
-        m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
-            ExtractorLinkType.M3U8
-        else -> ExtractorLinkType.VIDEO
-    }
-    try {
-        callback.invoke(newExtractorLink(
-            source = "BingeAnime",
-            name = displayName,
-            url = m.url,
-            type = linkType
-        ) {
+        val linkType = when {
+            m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+                ExtractorLinkType.DASH
+            m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+                ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
+        }
+        try {
+            callback.invoke(newExtractorLink(
+                source = "BingeAnime",
+                name = displayName,
+                url = m.url,
+                type = linkType
+            ) {
                 this.referer = AnikageApi.referer()
                 val clean = m.headers
                     ?.filterKeys { it.lowercase() != "referer" }
@@ -358,7 +352,6 @@ val displayName = if (cosmetic) {
             BLog.e("emit failed: ${m.mirror}: ${e.message}")
         }
     }
-
 
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
