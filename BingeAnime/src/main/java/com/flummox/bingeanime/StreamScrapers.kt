@@ -22,6 +22,11 @@ data class ScrapedMirror(
     val captions: List<Pair<String, String>> = emptyList()
 )
 
+data class AniKageScrape(
+    val mirrors: List<ScrapedMirror>,
+    val subs: List<Pair<String, String>>   // (label, remoteProxyUrl)
+)
+
 private const val PER_SOURCE_TIMEOUT_MS = 8000L
 
 // AniKage hard-caps /sources at 15 req/min. Firing all servers in
@@ -140,7 +145,7 @@ private fun md5(s: String): String =
 //   force the proxy to send us the identity encoding — if the server
 //   ignores that, we fall back to emitting the raw URL so ExoPlayer
 //   can try it with text/vtt mime inference (see emit path).
-private suspend fun fetchSubLocal(remoteUrl: String): String? {
+internal suspend fun fetchSubLocal(remoteUrl: String): String? {
     val ctx = BingeAnimeCtx.context ?: run {
         BLog.e("sub dl: no context"); return null
     }
@@ -190,7 +195,7 @@ suspend fun anikageExtractRaw(
     q: StreamQuery,
     onLink: (suspend (ScrapedMirror, Int) -> Unit)? = null,
     onSub: (suspend (String, String) -> Unit)? = null
-): List<ScrapedMirror> {
+): AniKageScrape {
     val yr = q.year.toIntOrNull()
     BLog.d("anikage: searching '${q.title}' (${q.year})")
 
@@ -250,9 +255,10 @@ val kiwiPairs = pairs.filter { it.first == "kiwi" }
 
 val sem = Semaphore(ANIKAGE_CONCURRENCY)
     val collected = ConcurrentHashMap<String, ScrapedMirror>()
+    val collectedSubs = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String>>())
     val collectedLock = Any()
     val emittedCount = AtomicInteger(0)
-
+    
 suspend fun handleOne(pid: String, lang: String) {
     try {
         withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) {
@@ -287,14 +293,15 @@ suspend fun handleOne(pid: String, lang: String) {
 
             if (pid in SUB_PROVIDERS && onSub != null) {
                 bundle.subs
-                    .filter { BingeAnimeSettings.subLangMatches(it.label) }
-                    .forEach { s ->
-                        val proxyUrl = AnikageApi.subUrl(s.file)
-                        val local = fetchSubLocal(proxyUrl)
-                        val emitUrl = local ?: "$proxyUrl.vtt"
-                        BLog.d("sub emit: ${if (local != null) "local" else "raw"} $emitUrl [${s.label}]")
-                        try { onSub.invoke(emitUrl, s.label) } catch (_: Exception) {}
-                    }
+                .filter { BingeAnimeSettings.subLangMatches(it.label) }
+                .forEach { s ->
+            val proxyUrl = AnikageApi.subUrl(s.file)
+            val local = fetchSubLocal(proxyUrl)
+            val emitUrl = local ?: "$proxyUrl.vtt"
+            BLog.d("sub emit: ${if (local != null) "local" else "raw"} $emitUrl [${s.label}]")
+            try { onSub.invoke(emitUrl, s.label) } catch (_: Exception) {}
+            collectedSubs.add(s.label to proxyUrl)
+        }
             }
 
             if (bundle.sources.isEmpty() && bundle.embeds.isNotEmpty()) {
@@ -339,12 +346,13 @@ if (collected.isEmpty() && kiwiPairs.isNotEmpty()) {
 }
 
     val result = synchronized(collectedLock) { collected.values.toList() }
-    BLog.d("anikage: ${result.size} mirrors (${emittedCount.get()} emitted live)")
-    return result
+    val subs = synchronized(collectedSubs) { collectedSubs.toList() }
+    BLog.d("anikage: ${result.size} mirrors (${emittedCount.get()} emitted live), ${subs.size} subs")
+    return AniKageScrape(result, subs)
 }
 
 // Background variant — no emit. Used by tap-through-dedup path.
-suspend fun anikageExtractRaw(q: StreamQuery): List<ScrapedMirror> =
+suspend fun anikageExtractRaw(q: StreamQuery): AniKageScrape =
     anikageExtractRaw(q, onLink = null, onSub = null)
 
 // ═══════════════════════════════════════════════════════════════
@@ -357,7 +365,7 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
 
         if (BingeAnimeSettings.isSrcAnikage()) jobs.add(async {
             withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS * 3) {
-                try { anikageExtractRaw(q) }
+                try { anikageExtractRaw(q).mirrors }
                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (e: Exception) { BLog.e("anikage: ${e.message}"); emptyList() }
             } ?: run { BLog.e("anikage: timeout"); emptyList() }
