@@ -31,7 +31,7 @@ object AniwavesExt {
         }
     }
 
-    // ── echovideo — MSE blob, best-effort HTML regex ──
+    // ── echovideo — JW Player, MSE blob, best-effort regex only. Expected to fail. ──
     private suspend fun extractEchovideo(embedUrl: String): Extracted? {
         val html = try {
             app.get(embedUrl, headers = mapOf(
@@ -48,7 +48,7 @@ object AniwavesExt {
             return Extracted(it.groupValues[1].replace("\\/", "/"),
                 mapOf("Referer" to "https://play.echovideo.ru/"))
         }
-        BLog.d("aniwaves echo: no m3u8 in ${html.length}b html")
+        BLog.d("aniwaves echo: no m3u8 in ${html.length}b html (JW Player / MSE blob)")
         return null
     }
 
@@ -65,11 +65,50 @@ object AniwavesExt {
             "X-Embed-Parent" to embedUrl
         )
 
-        // 1. captcha
+        // 0. access challenge + attest (required before captcha)
+        var viewerToken: String? = null
+        try {
+            val chResp = app.post("$apiBase/api/videos/access/challenge",
+                requestBody = "{}".toRequestBody(JSON_MEDIA),
+                headers = embedHeaders + mapOf("Content-Type" to "application/json"))
+            val chJson = JSONObject(chResp.text)
+            val challengeId = chJson.optString("challenge_id")
+            val nonce = chJson.optString("nonce")
+            val viewerHint = chJson.optString("viewer_hint")
+            BLog.d("aniwaves mfw: challenge id=${challengeId.take(8)}")
+
+            val attestBodies = listOf(
+                JSONObject().apply {
+                    put("challenge_id", challengeId)
+                    put("nonce", nonce)
+                    put("viewer_hint", viewerHint)
+                }.toString(),
+                JSONObject().apply {
+                    put("challenge_id", challengeId); put("nonce", nonce)
+                }.toString(),
+                JSONObject().apply { put("viewer_hint", viewerHint) }.toString()
+            )
+            for (body in attestBodies) {
+                try {
+                    val atResp = app.post("$apiBase/api/videos/access/attest",
+                        requestBody = body.toRequestBody(JSON_MEDIA),
+                        headers = embedHeaders + mapOf("Content-Type" to "application/json"))
+                    val atJson = JSONObject(atResp.text)
+                    val tok = atJson.optString("token").takeIf { it.isNotBlank() }
+                    if (tok != null) { viewerToken = tok; BLog.d("aniwaves mfw: attest OK"); break }
+                    BLog.d("aniwaves mfw: attest miss: ${atResp.text.take(120)}")
+                } catch (e: Exception) { BLog.d("aniwaves mfw: attest err: ${e.message}") }
+            }
+        } catch (e: Exception) { BLog.d("aniwaves mfw: challenge: ${e.message}") }
+
+        val authedHeaders = if (viewerToken != null)
+            embedHeaders + mapOf("Authorization" to "Bearer $viewerToken") else embedHeaders
+
+        // 1. captcha (= PoW challenge generator; no user interaction)
         val captchaResp = try {
             app.post("$apiBase/api/videos/$code/embed/captcha",
                 requestBody = "{}".toRequestBody(JSON_MEDIA),
-                headers = embedHeaders + mapOf("Content-Type" to "application/json"))
+                headers = authedHeaders + mapOf("Content-Type" to "application/json"))
         } catch (e: Exception) { BLog.d("aniwaves mfw captcha: ${e.message}"); return null }
 
         val captchaJson = try { JSONObject(captchaResp.text) }
@@ -100,7 +139,7 @@ object AniwavesExt {
             try {
                 val r = app.post("$apiBase/api/videos/$code/embed/captcha/verify",
                     requestBody = body.toRequestBody(JSON_MEDIA),
-                    headers = embedHeaders + mapOf("Content-Type" to "application/json"))
+                    headers = authedHeaders + mapOf("Content-Type" to "application/json"))
                 val j = try { JSONObject(r.text) } catch (_: Exception) { null }
                 val tok = j?.optString("token")?.takeIf { it.isNotBlank() }
                 if (tok != null) { captchaToken = tok; break }
@@ -113,7 +152,7 @@ object AniwavesExt {
         val pbResp = try {
             app.post("$apiBase/api/videos/$code/embed/playback",
                 requestBody = "{}".toRequestBody(JSON_MEDIA),
-                headers = embedHeaders + mapOf(
+                headers = authedHeaders + mapOf(
                     "Content-Type" to "application/json",
                     "X-Captcha-Token" to token))
         } catch (e: Exception) { BLog.d("aniwaves mfw playback: ${e.message}"); return null }
@@ -171,12 +210,36 @@ object AniwavesExt {
     private fun solvePow(nonce: String, difficulty: Int): Long? {
         val md = MessageDigest.getInstance("SHA-256")
         val nb = nonce.toByteArray(Charsets.UTF_8)
-        var counter = 0L
-        while (counter < 50_000_000L) {
-            md.reset(); md.update(nb)
-            md.update(counter.toString().toByteArray(Charsets.UTF_8))
-            if (leadingZeroBits(md.digest()) >= difficulty) return counter
-            counter++
+        val nonceHex: ByteArray? = try {
+            if (nonce.length % 2 == 0 && nonce.all { it in "0123456789abcdefABCDEF" }) {
+                ByteArray(nonce.length / 2) {
+                    ((Character.digit(nonce[it * 2], 16) shl 4) or
+                     Character.digit(nonce[it * 2 + 1], 16)).toByte()
+                }
+            } else null
+        } catch (_: Exception) { null }
+
+        val ctrUtf8 = { c: Long -> c.toString().toByteArray(Charsets.UTF_8) }
+        val ctrBe = { c: Long -> byteArrayOf(
+            (c ushr 24).toByte(), (c ushr 16).toByte(), (c ushr 8).toByte(), c.toByte()) }
+
+        val strategies: List<(Long) -> ByteArray> = listOf(
+            { c -> nb + ctrUtf8(c) },
+            { c -> ctrUtf8(c) + nb },
+            { c -> (nonceHex ?: nb) + ctrBe(c) },
+            { c -> (nonceHex ?: nb) + ctrUtf8(c) }
+        )
+
+        for ((i, strat) in strategies.withIndex()) {
+            var counter = 0L
+            while (counter < 5_000_000L) {
+                md.reset(); md.update(strat(counter))
+                if (leadingZeroBits(md.digest()) >= difficulty) {
+                    BLog.d("aniwaves mfw: pow strategy $i won")
+                    return counter
+                }
+                counter++
+            }
         }
         return null
     }
