@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 object ShikimoriApi {
     private const val BASE = "https://shikimori.one/api"
@@ -42,9 +43,9 @@ private suspend fun <T> throttled(block: suspend () -> T): T {
     }
 }
 
-    private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    @Volatile private var lastPrefetchMs = 0L
-    @Volatile private var prefetchRunning = false
+private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+@Volatile private var lastPrefetchMs = 0L
+private val prefetchRunning = AtomicBoolean(false)
 
     private val inFlightRows =
         ConcurrentHashMap<String, CompletableDeferred<List<AniListApi.Entry>>>()
@@ -369,34 +370,33 @@ private fun persistCoverOverrides() {
     }
 
     // ── prefetch: enabled rows only, priority first ──
-    fun warmPrefetch() {
-        val now = System.currentTimeMillis()
-        if (now - lastPrefetchMs < ROW_TTL) return
-        if (prefetchRunning) return
-        prefetchRunning = true
-        prefetchScope.launch {
-            try {
-                ensureGenreMap()
-   // Only prefetch rows 1-8. Rows 9+ stay cold until
-   // CloudStream calls getMainPage for them on scroll —
-   // our fetchForRow handles the on-demand network call.
-   //
-   // Keeps cold-start burst under 8 requests. Stays well
-   // inside Shikimori's 5/sec burst limiter.
-   val enabledRows = ROW_QUERY.keys.filter {
-       BingeAnimeSettings.isRowEnabled(it)
-   }.take(8)
-   BLog.d("shikimori prefetch: ${enabledRows.size} top rows (lazy for rest)")
-   for (row in enabledRows) fetchRawForRow(row, 50)
-                lastPrefetchMs = System.currentTimeMillis()
-                BLog.d("shikimori prefetch done")
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                BLog.v("prefetch cancelled")
-            } finally {
-                prefetchRunning = false
-            }
-        }
-    }
+ fun warmPrefetch() {
+     val now = System.currentTimeMillis()
+     if (now - lastPrefetchMs < ROW_TTL) return
+     if (!prefetchRunning.compareAndSet(false, true)) return
+     prefetchScope.launch {
+         try {
+             ensureGenreMap()
+// Only prefetch rows 1-8. Rows 9+ stay cold until
+// CloudStream calls getMainPage for them on scroll —
+// our fetchForRow handles the on-demand network call.
+//
+// Keeps cold-start burst under 8 requests. Stays well
+// inside Shikimori's 5/sec burst limiter.
+val enabledRows = ROW_QUERY.keys.filter {
+    BingeAnimeSettings.isRowEnabled(it)
+}.take(8)
+BLog.d("shikimori prefetch: ${enabledRows.size} top rows (lazy for rest)")
+for (row in enabledRows) fetchRawForRow(row, 50)
+             lastPrefetchMs = System.currentTimeMillis()
+             BLog.d("shikimori prefetch done")
+         } catch (e: kotlinx.coroutines.CancellationException) {
+             BLog.v("prefetch cancelled")
+         } finally {
+             prefetchRunning.set(false)
+         }
+     }
+ }
 
     // Called by the Clear cache button. Wipes in-memory state so the
 // next home load refetches everything from network. Disk folder
@@ -406,7 +406,7 @@ fun resetForClearCache() {
     exclusions = emptyMap()
     synchronized(coverOverrides) { coverOverrides = mutableMapOf() }
     lastPrefetchMs = 0L
-    prefetchRunning = false
+    prefetchRunning.set(false)
     BLog.d("shikimori state reset")
 }
 
