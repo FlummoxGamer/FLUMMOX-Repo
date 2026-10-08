@@ -173,7 +173,7 @@ private val prefetchRunning = AtomicBoolean(false)
     // states produce different orders within the same hour so the
     // user sees a visual change when toggling year filter on/off.
     val hourSeed = System.currentTimeMillis() / (60 * 60 * 1000L)
-    val seed = hourSeed + (yearFloor?.toLong() ?: 0L)
+    val seed = hourSeed + yearFloor.toLong()
     val shuffled = withYear.shuffled(java.util.Random(seed))
 
     // Apply cached cover overrides first (free — no API call).
