@@ -3,6 +3,8 @@ package com.flummox.bingeanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -262,25 +264,58 @@ class BingeAnimeProvider : MainAPI() {
             return emittedCount.get() > 0
         }
 
-        // ── live path: progressive emit inside each source coroutine ──
-        val scrape = try {
-            anikageExtractRaw(
-                q,
-                onLink = { m, score ->
-                    emitMirrorScored(m, score, callback, emittedCount)
-                },
-                onSub = { url, label ->
-                    if (subSeen.add(url)) {
-                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+// ── live path: parallel source fan-out with progressive emit ──
+val scrape = try {
+    coroutineScope {
+        val kageDeferred = async {
+            try {
+                anikageExtractRaw(
+                    q,
+                    onLink = { m, score -> emitMirrorScored(m, score, callback, emittedCount) },
+                    onSub = { url, label ->
+                        if (subSeen.add(url)) {
+                            try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                        }
                     }
-                }
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("anikageExtractRaw threw: ${e.message}")
-            AniKageScrape(emptyList(), emptyList())
+                )
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                BLog.e("anikageExtractRaw threw: ${e.message}")
+                AniKageScrape(emptyList(), emptyList())
+            }
         }
+        val wavesDeferred = async {
+            if (!BingeAnimeSettings.isSrcAniwaves())
+                AniKageScrape(emptyList(), emptyList())
+            else try {
+                aniwavesExtractRaw(
+                    q,
+                    onLink = { m, score -> emitMirrorScored(m, score, callback, emittedCount) },
+                    onSub = { url, label ->
+                        if (subSeen.add(url)) {
+                            try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                        }
+                    }
+                )
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                BLog.e("aniwavesExtractRaw threw: ${e.message}")
+                AniKageScrape(emptyList(), emptyList())
+            }
+        }
+        val k = kageDeferred.await()
+        val w = wavesDeferred.await()
+        AniKageScrape(
+            mirrors = (k.mirrors + w.mirrors).distinctBy { it.url },
+            subs = (k.subs + w.subs).distinct()
+        )
+    }
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    BLog.e("loadLinks scrape failed: ${e.message}")
+    AniKageScrape(emptyList(), emptyList())
+}
 
         // Per-mirror captions (MegaPlayEmbed fallback)
         scrape.mirrors.flatMap { it.captions }.forEach { (label, url) ->
