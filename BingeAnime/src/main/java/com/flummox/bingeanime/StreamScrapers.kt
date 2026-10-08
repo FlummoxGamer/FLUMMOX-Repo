@@ -229,14 +229,14 @@ suspend fun anikageExtractRaw(
         }
     }
 
-    if (slug == null) { BLog.d("anikage: no title match"); return emptyList() }
+    if (slug == null) { BLog.d("anikage: no title match"); return AniKageScrape(emptyList(), emptyList()) }
 
     val ep = if (q.type == "movie") 1 else q.episode.takeIf { it > 0 } ?: 1
     BLog.d("anikage: using slug=$slug ('$matchedTitle') ep=$ep")
 
     val servers = AnikageApi.servers(slug, ep)
         .filter { it.id !in DROPPED_SERVERS }
-    if (servers.isEmpty()) { BLog.d("anikage: no servers"); return emptyList() }
+    if (servers.isEmpty()) { BLog.d("anikage: no servers"); return AniKageScrape(emptyList(), emptyList()) }
 
     // Order servers by priority — koto/suge first so their responses
     // land first under the concurrency cap.
