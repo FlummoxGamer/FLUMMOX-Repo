@@ -258,7 +258,11 @@ object AniListApi {
     }
 
     suspend fun getEntry(id: Int): Entry? {
-        val ck = "anilist:e:$id"
+    if (System.currentTimeMillis() < blockedUntil) {
+        BLog.d("AniList getEntry skipped (cooling down)")
+        return null
+    }
+    val ck = "anilist:e:$id"
         BCCache.get(ck, CACHE_TTL)?.let { cached ->
             return try { parseEntry(JSONObject(cached).optJSONObject("data")?.optJSONObject("Media")) } catch (_: Exception) { null }
         }
@@ -273,13 +277,18 @@ object AniListApi {
             val body = JSONObject().apply {
                 put("query", q); put("variables", JSONObject().put("id", id))
             }.toString()
-            val res = app.post(ENDPOINT,
-                requestBody = body.toRequestBody(JSON_MEDIA),
-                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
-            val root = JSONObject(res.text)
-            val entry = parseEntry(root.optJSONObject("data")?.optJSONObject("Media"))
-            if (entry != null) BCCache.put(ck, root.toString())
-            entry
+    val res = app.post(ENDPOINT,
+    requestBody = body.toRequestBody(JSON_MEDIA),
+    headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"))
+if (res.code == 429) {
+    blockedUntil = System.currentTimeMillis() + 5 * 60 * 1000L
+    BLog.e("AniList getEntry 429 — cooling down 5 min")
+    return null
+}
+val root = JSONObject(res.text)
+val entry = parseEntry(root.optJSONObject("data")?.optJSONObject("Media"))
+if (entry != null) BCCache.put(ck, root.toString())
+entry
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
