@@ -370,7 +370,14 @@ suspend fun scrapeAllSources(q: StreamQuery): List<ScrapedMirror> {
                 catch (e: Exception) { BLog.e("anikage: ${e.message}"); emptyList() }
             } ?: run { BLog.e("anikage: timeout"); emptyList() }
         })
-
+        if (BingeAnimeSettings.isSrcAniwaves()) jobs.add(async {
+            withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS * 3) {
+                try { aniwavesExtractRaw(q).mirrors }
+                catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) { BLog.e("aniwaves: ${e.message}"); emptyList() }
+            } ?: run { BLog.e("aniwaves: timeout"); emptyList() }
+        })
+        
         if (jobs.isEmpty()) return@coroutineScope emptyList()
         val all = jobs.awaitAll().flatten()
         val perSource = all.groupingBy { it.source }.eachCount()
