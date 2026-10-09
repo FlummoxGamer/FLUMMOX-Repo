@@ -66,25 +66,25 @@ suspend fun aniwavesExtractRaw(
                     sem.withPermit {
                         val embed = AniwavesApi.resolveLink(srv.linkId, referer) ?: return@withPermit
                         BLog.v("aniwaves ${srv.subType}/${srv.label}: $embed")
-                        val ext = AniwavesExt.extract(embed) ?: return@withPermit
+                        // Only emit mfw09.org embeds — ByseExtractor handles them.
+                        // play.echovideo.ru embeds are JW Player + MSE blob, not
+                        // extractable without running their JS; skip them for now.
+                        if (!embed.contains("mfw09.org")) {
+                            BLog.v("aniwaves: skip non-byse embed ${embed.take(80)}")
+                            return@withPermit
+                        }
                         val m = ScrapedMirror(
                             quality = "Auto",
                             mirror = "${srv.label} · ${srv.subType.uppercase()}",
-                            url = ext.url,
+                            url = embed,
                             source = "ANIWAVES",
-                            headers = ext.headers,
+                            headers = null,
                             captions = emptyList()
                         )
                         if (synchronized(collected) { collected.putIfAbsent(m.url, m) == null }) {
                             val score = LinkScore.prelimScore(m)
                             try { onLink?.invoke(m, score) } catch (_: Exception) {}
                             emitted.incrementAndGet()
-                        }
-                        for ((l, u) in ext.subtitles) {
-                            if (subs.none { it.first == l }) {
-                                subs.add(l to u)
-                                try { onSub?.invoke(u, l) } catch (_: Exception) {}
-                            }
                         }
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e
