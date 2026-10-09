@@ -242,7 +242,7 @@ class BingeAnimeProvider : MainAPI() {
             val ordered = if (BingeAnimeSettings.isPrefilterEnabled()) {
                 cached.mirrors.sortedByDescending { LinkScore.prelimScore(it) }
             } else cached.mirrors
-            for (m in ordered) emitMirror(m, subtitleCallback, callback, emittedCount)
+            for (m in ordered) emitMirror(m, callback, emittedCount)
 
             // Per-mirror captions (MegaPlayEmbed fallback attaches them)
             cached.mirrors.flatMap { it.captions }.forEach { (label, url) ->
@@ -264,58 +264,66 @@ class BingeAnimeProvider : MainAPI() {
             return emittedCount.get() > 0
         }
 
-// ── live path: parallel source fan-out with progressive emit ──
-val scrape = try {
-    coroutineScope {
-        val kageDeferred = async {
-            try {
-                anikageExtractRaw(
-                    q,
-                    onLink = { m, score -> emitMirrorScored(m, score, subtitleCallback, callback, emittedCount) },
-                    onSub = { url, label ->
-                        if (subSeen.add(url)) {
-                            try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+        // ── live path: parallel source fan-out with progressive emit ──
+        val scrape = try {
+            coroutineScope {
+                val kageDeferred = async {
+                    try {
+                        anikageExtractRaw(
+                            q,
+                            onLink = { m, score ->
+                                emitMirrorScored(m, score, callback, emittedCount)
+                            },
+                            onSub = { url, label ->
+                                if (subSeen.add(url)) {
+                                    try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                                }
+                            }
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        BLog.e("anikageExtractRaw threw: ${e.message}")
+                        AniKageScrape(emptyList(), emptyList())
+                    }
+                }
+                val wavesDeferred = async {
+                    if (!BingeAnimeSettings.isSrcAniwaves()) {
+                        AniKageScrape(emptyList(), emptyList())
+                    } else {
+                        try {
+                            aniwavesExtractRaw(
+                                q,
+                                onLink = { m, score ->
+                                    emitMirrorScored(m, score, callback, emittedCount)
+                                },
+                                onSub = { url, label ->
+                                    if (subSeen.add(url)) {
+                                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                                    }
+                                }
+                            )
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            BLog.e("aniwavesExtractRaw threw: ${e.message}")
+                            AniKageScrape(emptyList(), emptyList())
                         }
                     }
+                }
+                val k = kageDeferred.await()
+                val w = wavesDeferred.await()
+                AniKageScrape(
+                    mirrors = (k.mirrors + w.mirrors).distinctBy { it.url },
+                    subs = (k.subs + w.subs).distinct()
                 )
-            } catch (e: CancellationException) { throw e
-            } catch (e: Exception) {
-                BLog.e("anikageExtractRaw threw: ${e.message}")
-                AniKageScrape(emptyList(), emptyList())
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("loadLinks scrape failed: ${e.message}")
+            AniKageScrape(emptyList(), emptyList())
         }
-        val wavesDeferred = async {
-            if (!BingeAnimeSettings.isSrcAniwaves())
-                AniKageScrape(emptyList(), emptyList())
-            else try {
-                aniwavesExtractRaw(
-                    q,
-                    onLink = { m, score -> emitMirrorScored(m, score, subtitleCallback, callback, emittedCount) },
-                    onSub = { url, label ->
-                        if (subSeen.add(url)) {
-                            try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
-                        }
-                    }
-                )
-            } catch (e: CancellationException) { throw e
-            } catch (e: Exception) {
-                BLog.e("aniwavesExtractRaw threw: ${e.message}")
-                AniKageScrape(emptyList(), emptyList())
-            }
-        }
-        val k = kageDeferred.await()
-        val w = wavesDeferred.await()
-        AniKageScrape(
-            mirrors = (k.mirrors + w.mirrors).distinctBy { it.url },
-            subs = (k.subs + w.subs).distinct()
-        )
-    }
-} catch (e: CancellationException) {
-    throw e
-} catch (e: Exception) {
-    BLog.e("loadLinks scrape failed: ${e.message}")
-    AniKageScrape(emptyList(), emptyList())
-}
 
         // Per-mirror captions (MegaPlayEmbed fallback)
         scrape.mirrors.flatMap { it.captions }.forEach { (label, url) ->
@@ -332,101 +340,62 @@ val scrape = try {
         return emittedCount.get() > 0
     }
 
-// ── emit helpers ──
-private suspend fun emitMirror(
-    m: ScrapedMirror,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit,
-    count: AtomicInteger
-) {
-    val score = LinkScore.prelimScore(m)
-    emitMirrorScored(m, score, subtitleCallback, callback, count)
-}
-
-private suspend fun emitMirrorScored(
-    m: ScrapedMirror,
-    score: Int,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit,
-    count: AtomicInteger
-) {
-    val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
-    val displayName = if (cosmetic) {
-        "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
-    } else {
-        "${m.source} · ${m.mirror}"
+    // ── emit helpers ──
+    private suspend fun emitMirror(
+        m: ScrapedMirror,
+        callback: (ExtractorLink) -> Unit,
+        count: AtomicInteger
+    ) {
+        val score = LinkScore.prelimScore(m)
+        emitMirrorScored(m, score, callback, count)
     }
 
-    val host = try { java.net.URI(m.url).host?.lowercase() ?: "" }
-        catch (_: Exception) { "" }
-
-    // AniWaves embed hosts need their ExtractorApi invoked directly.
-    // Emitting the raw embed URL to ExoPlayer just errors out.
-    if (host == "mfw09.org" || host == "play.echovideo.ru") {
-        BLog.d("route $host → extractor")
-        try {
-            val ex: ExtractorApi =
-                if (host == "mfw09.org") ByseExtractor() else EchovideoExtractor()
-            val collected = mutableListOf<ExtractorLink>()
-            val subCb: (SubtitleFile) -> Unit = { sf ->
-                try { subtitleCallback(sf) } catch (_: Exception) {}
-            }
-            val linkCb: (ExtractorLink) -> Unit = { l -> collected.add(l) }
-            ex.getUrl(m.url, "https://aniwaves.ru/", subCb, linkCb)
-            for (l in collected) {
-                try {
-                    val renamed = newExtractorLink(
-                        source = l.source,
-                        name = "$displayName · ${l.name}",
-                        url = l.url,
-                        type = l.type
-                    ) {
-                        this.referer = l.referer
-                        this.headers = l.headers
-                        this.quality = l.quality
-                    }
-                    callback.invoke(renamed)
-                    count.incrementAndGet()
-                } catch (e: Exception) {
-                    BLog.e("emit failed: ${m.mirror}: ${e.message}")
-                }
-            }
-        } catch (e: Exception) {
-            BLog.e("extractor route failed: ${m.mirror}: ${e.message}")
+    private suspend fun emitMirrorScored(
+        m: ScrapedMirror,
+        score: Int,
+        callback: (ExtractorLink) -> Unit,
+        count: AtomicInteger
+    ) {
+        // Smart links ON  → emoji + source label + mirror descriptor
+        // Smart links OFF → same label, no emoji, arrival order
+        val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
+        val displayName = if (cosmetic) {
+            "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
+        } else {
+            "${m.source} · ${m.mirror}"
         }
-        return
+
+        val linkType = when {
+            m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+                ExtractorLinkType.DASH
+            m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+                ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
+        }
+        try {
+            callback.invoke(newExtractorLink(
+                source = "BingeAnime",
+                name = displayName,
+                url = m.url,
+                type = linkType
+            ) {
+                this.referer = AnikageApi.referer()
+                val clean = m.headers
+                    ?.filterKeys { it.lowercase() != "referer" }
+                    ?.toMutableMap() ?: mutableMapOf()
+                if (clean.keys.none { it.equals("user-agent", true) }) {
+                    clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                        "Mobile Safari/537.36"
+                }
+                this.headers = clean
+            })
+            count.incrementAndGet()
+        } catch (e: Exception) {
+            BLog.e("emit failed: ${m.mirror}: ${e.message}")
+        }
     }
 
-    val linkType = when {
-        m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
-            ExtractorLinkType.DASH
-        m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
-            ExtractorLinkType.M3U8
-        else -> ExtractorLinkType.VIDEO
-    }
-    try {
-        callback.invoke(newExtractorLink(
-            source = "BingeAnime",
-            name = displayName,
-            url = m.url,
-            type = linkType
-        ) {
-            this.referer = AnikageApi.referer()
-            val clean = m.headers
-                ?.filterKeys { it.lowercase() != "referer" }
-                ?.toMutableMap() ?: mutableMapOf()
-            if (clean.keys.none { it.equals("user-agent", true) }) {
-                clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                    "Mobile Safari/537.36"
-            }
-            this.headers = clean
-        })
-        count.incrementAndGet()
-    } catch (e: Exception) {
-        BLog.e("emit failed: ${m.mirror}: ${e.message}")
-    }
-}
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
         val displayName = AniListApi.convertRomanSeasons(AniListApi.stripCourBranding(raw))
