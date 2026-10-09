@@ -46,10 +46,11 @@ object AniwavesApi {
         }
         val url = "$BASE/ajax/anime/search?keyword=${URLEncoder.encode(query, "UTF-8")}"
         return try {
-            val res = app.get(url, headers = ajaxHeaders("$BASE/"))
+            val res = app.get("$BASE/watch/$slug/ep-$ep", headers = baseHeaders())
+            BLog.d("aniwaves: servers HTTP ${res.code} len=${res.text.length}")
             if (res.code !in 200..299) return emptyList()
             BCCache.put(ck, res.text)
-            parseSearch(JSONObject(res.text))
+            parseServers(res.text)
         } catch (e: Exception) {
             BLog.e("aniwaves search: ${e.message}"); emptyList()
         }
@@ -59,7 +60,8 @@ object AniwavesApi {
         val html = root.optJSONObject("result")?.optString("html")
             ?.takeIf { it.isNotBlank() } ?: return emptyList()
         val doc = Jsoup.parse(html)
-        val out = mutableListOf<Hit>()
+        BLog.d("aniwaves: srv typeDivs=${doc.select("#w-servers div.type[data-type]").size} liLinkIds=${doc.select("li[data-link-id]").size}")
+        val out = mutableListOf<Srv>()
         for (item in doc.select("a.item[href^=/watch/]")) {
             val slug = item.attr("href").removePrefix("/watch/")
                 .substringBefore("/").takeIf { it.isNotBlank() } ?: continue
@@ -97,6 +99,7 @@ object AniwavesApi {
 
     private fun parseDetail(html: String, slug: String): Detail? {
         val doc = Jsoup.parse(html, "$BASE/watch/$slug")
+        BLog.d("aniwaves: detail html=${html.length}b watchMain=${doc.select("#watch-main").size} epRanges=${doc.select("ul.ep-range").size} epLinks=${doc.select("ul.ep-range a[data-num]").size}")
         val main = doc.selectFirst("#watch-main") ?: return null
         val id = main.attr("data-id").takeIf { it.isNotBlank() } ?: return null
 
