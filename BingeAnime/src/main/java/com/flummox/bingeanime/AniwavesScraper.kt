@@ -10,10 +10,9 @@ import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-private const val ANIWAVES_CONCURRENCY = 2
+private const val ANIWAVES_CONCURRENCY = 4
 
-// Only Vidplay (sv-id 4) resolves reliably. Others time out in the
-// WebView resolver without issuing a media request.
+// Only Vidplay (sv-id 4) resolves reliably.
 private val ALLOWED_SV_IDS = setOf("4")
 
 private fun pickBest(
@@ -97,7 +96,7 @@ private suspend fun resolveEmbed(
         additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
         script = ANIWAVES_CLICK_SCRIPT,
         useOkhttp = false,
-        timeout = 12_000L
+        timeout = 6_000L
     )
     return try {
         val r = app.get(embedUrl, referer = "https://aniwaves.ru/", interceptor = resolver)
@@ -138,13 +137,8 @@ suspend fun aniwavesExtractRaw(
     }
     BLog.d("aniwaves: hit '${hit.title}' slug=${hit.slug}")
 
-    val detail = AniwavesApi.detail(hit.slug) ?: run {
-        BLog.d("aniwaves: detail failed")
-        return AniKageScrape(emptyList(), emptyList())
-    }
-
     val ep = if (q.type == "movie") 1 else q.episode.takeIf { it > 0 } ?: 1
-    val servers = AniwavesApi.servers(hit.slug, ep, detail.id)
+    val servers = AniwavesApi.servers(hit.slug, ep)
         .filter { it.serverId in ALLOWED_SV_IDS }
     if (servers.isEmpty()) {
         BLog.d("aniwaves: no servers E$ep")
