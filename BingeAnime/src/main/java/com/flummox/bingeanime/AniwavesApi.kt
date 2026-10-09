@@ -25,19 +25,43 @@ object AniwavesApi {
         "Referer" to referer
     )
 
-    data class Hit(val slug: String, val title: String, val jpTitle: String?,
-                   val poster: String?, val year: Int?, val type: String?)
+    data class Hit(
+        val slug: String,
+        val title: String,
+        val jpTitle: String?,
+        val poster: String?,
+        val year: Int?,
+        val type: String?
+    )
 
-    data class Ep(val number: Int, val title: String?, val aired: String?,
-                  val filler: Boolean, val hasSub: Boolean, val hasDub: Boolean)
+    data class Ep(
+        val number: Int,
+        val title: String?,
+        val aired: String?,
+        val filler: Boolean,
+        val hasSub: Boolean,
+        val hasDub: Boolean
+    )
 
-    data class Srv(val label: String, val subType: String,
-                   val serverId: String, val linkId: String)
+    data class Srv(
+        val label: String,
+        val subType: String,
+        val serverId: String,
+        val linkId: String
+    )
 
-    data class Detail(val id: String, val title: String, val poster: String?,
-                      val description: String?, val year: Int?, val genres: List<String>,
-                      val isMovie: Boolean, val episodes: List<Ep>,
-                      val totalSub: Int, val totalDub: Int)
+    data class Detail(
+        val id: String,
+        val title: String,
+        val poster: String?,
+        val description: String?,
+        val year: Int?,
+        val genres: List<String>,
+        val isMovie: Boolean,
+        val episodes: List<Ep>,
+        val totalSub: Int,
+        val totalDub: Int
+    )
 
     suspend fun search(query: String): List<Hit> {
         val ck = "aniwaves:s:${query.lowercase()}"
@@ -46,11 +70,10 @@ object AniwavesApi {
         }
         val url = "$BASE/ajax/anime/search?keyword=${URLEncoder.encode(query, "UTF-8")}"
         return try {
-            val res = app.get("$BASE/watch/$slug/ep-$ep", headers = baseHeaders())
-            BLog.d("aniwaves: servers HTTP ${res.code} len=${res.text.length}")
+            val res = app.get(url, headers = ajaxHeaders("$BASE/"))
             if (res.code !in 200..299) return emptyList()
             BCCache.put(ck, res.text)
-            parseServers(res.text)
+            parseSearch(JSONObject(res.text))
         } catch (e: Exception) {
             BLog.e("aniwaves search: ${e.message}"); emptyList()
         }
@@ -60,8 +83,7 @@ object AniwavesApi {
         val html = root.optJSONObject("result")?.optString("html")
             ?.takeIf { it.isNotBlank() } ?: return emptyList()
         val doc = Jsoup.parse(html)
-        BLog.d("aniwaves: srv typeDivs=${doc.select("#w-servers div.type[data-type]").size} liLinkIds=${doc.select("li[data-link-id]").size}")
-        val out = mutableListOf<Srv>()
+        val out = mutableListOf<Hit>()
         for (item in doc.select("a.item[href^=/watch/]")) {
             val slug = item.attr("href").removePrefix("/watch/")
                 .substringBefore("/").takeIf { it.isNotBlank() } ?: continue
@@ -89,6 +111,7 @@ object AniwavesApi {
         }
         return try {
             val res = app.get("$BASE/watch/$slug", headers = baseHeaders())
+            BLog.d("aniwaves: detail HTTP ${res.code} len=${res.text.length}")
             if (res.code !in 200..299) return null
             BCCache.put(ck, res.text)
             parseDetail(res.text, slug)
@@ -100,8 +123,14 @@ object AniwavesApi {
     private fun parseDetail(html: String, slug: String): Detail? {
         val doc = Jsoup.parse(html, "$BASE/watch/$slug")
         BLog.d("aniwaves: detail html=${html.length}b watchMain=${doc.select("#watch-main").size} epRanges=${doc.select("ul.ep-range").size} epLinks=${doc.select("ul.ep-range a[data-num]").size}")
-        val main = doc.selectFirst("#watch-main") ?: return null
-        val id = main.attr("data-id").takeIf { it.isNotBlank() } ?: return null
+        val main = doc.selectFirst("#watch-main") ?: run {
+            BLog.d("aniwaves: no #watch-main in detail html")
+            return null
+        }
+        val id = main.attr("data-id").takeIf { it.isNotBlank() } ?: run {
+            BLog.d("aniwaves: no data-id in #watch-main")
+            return null
+        }
 
         var title: String? = null; var desc: String? = null; var poster: String? = null
         var year: Int? = null; var genres = emptyList<String>()
@@ -162,6 +191,7 @@ object AniwavesApi {
         }
         return try {
             val res = app.get("$BASE/watch/$slug/ep-$ep", headers = baseHeaders())
+            BLog.d("aniwaves: servers HTTP ${res.code} len=${res.text.length}")
             if (res.code !in 200..299) return emptyList()
             BCCache.put(ck, res.text)
             parseServers(res.text)
@@ -172,6 +202,7 @@ object AniwavesApi {
 
     private fun parseServers(html: String): List<Srv> {
         val doc = Jsoup.parse(html)
+        BLog.d("aniwaves: srv typeDivs=${doc.select("#w-servers div.type[data-type]").size} liLinkIds=${doc.select("li[data-link-id]").size}")
         val out = mutableListOf<Srv>()
         for (typeDiv in doc.select("#w-servers div.type[data-type]")) {
             val subType = typeDiv.attr("data-type")
@@ -186,7 +217,9 @@ object AniwavesApi {
     suspend fun resolveLink(linkId: String, referer: String): String? {
         val ck = "aniwaves:solve:$linkId"
         BCCache.get(ck, TTL_SOURCES)?.let { cached ->
-            return try { JSONObject(cached).optString("url").takeIf { it.isNotBlank() } } catch (_: Exception) { null }
+            return try {
+                JSONObject(cached).optString("url").takeIf { it.isNotBlank() }
+            } catch (_: Exception) { null }
         }
         val url = "$BASE/ajax/sources?id=${android.net.Uri.encode(linkId)}&asi=0&autoPlay=0"
         return try {
