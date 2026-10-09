@@ -81,7 +81,7 @@ private val ANIWAVES_CLICK_SCRIPT = """
                     if (p && p.catch) p.catch(function(){});
                 }
             } catch (e) {}
-            if (n < 14) setTimeout(function(){ tick(n + 1); }, 500);
+            if (n < 20) setTimeout(function(){ tick(n + 1); }, 500);
         } catch (e) {}
     })(0);
 """.trimIndent()
@@ -96,7 +96,7 @@ private suspend fun resolveEmbed(
         additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
         script = ANIWAVES_CLICK_SCRIPT,
         useOkhttp = false,
-        timeout = 6_000L
+        timeout = 10_000L
     )
     return try {
         val r = app.get(embedUrl, referer = "https://aniwaves.ru/", interceptor = resolver)
