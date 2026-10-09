@@ -185,32 +185,44 @@ object AniwavesApi {
     }
 
 suspend fun servers(slug: String, ep: Int): List<Srv> {
-    val ck = "aniwaves:srv:$slug:$ep"
+    // Slug always ends with -{animeId}. Extract it here so we skip
+    // the detail() roundtrip entirely.
+    val animeId = Regex("""-(\d+)$""").find(slug)?.groupValues?.get(1) ?: run {
+        BLog.e("aniwaves: no animeId in slug '$slug'")
+        return emptyList()
+    }
+    val ck = "aniwaves:srv:$animeId:$ep"
     BCCache.get(ck, TTL_DETAIL)?.let { cached ->
-        return try { parseServers(cached) } catch (_: Exception) { emptyList() }
+        return try { parseServers(JSONObject(cached)) } catch (_: Exception) { emptyList() }
     }
     return try {
-        val res = app.get("$BASE/watch/$slug/ep-$ep", headers = baseHeaders())
-        BLog.d("aniwaves: srv page HTTP ${res.code} len=${res.text.length}")
+        val url = "$BASE/ajax/server/list?servers=$animeId&eps=$ep"
+        val res = app.get(url, headers = ajaxHeaders("$BASE/watch/$slug/ep-$ep"))
+        BLog.d("aniwaves: servers HTTP ${res.code} len=${res.text.length}")
         if (res.code !in 200..299) return emptyList()
         BCCache.put(ck, res.text)
-        parseServers(res.text)
+        parseServers(JSONObject(res.text))
     } catch (e: Exception) {
         BLog.e("aniwaves servers: ${e.message}"); emptyList()
     }
 }
 
-private fun parseServers(html: String): List<Srv> {
+private fun parseServers(root: JSONObject): List<Srv> {
+    if (root.optInt("status") != 200) {
+        BLog.d("aniwaves: srv status=${root.optInt("status")}")
+        return emptyList()
+    }
+    val html = root.optString("result").takeIf { it.isNotBlank() } ?: return emptyList()
     val doc = Jsoup.parse(html)
     val out = mutableListOf<Srv>()
-    for (typeDiv in doc.select("#w-servers div.type[data-type]")) {
+    for (typeDiv in doc.select("div.type[data-type]")) {
         val subType = typeDiv.attr("data-type")
         for (li in typeDiv.select("ul > li[data-link-id]")) {
             val label = li.text().trim().takeIf { it.isNotBlank() } ?: continue
             out.add(Srv(label, subType, li.attr("data-sv-id"), li.attr("data-link-id")))
         }
     }
-    BLog.d("aniwaves: srv typeDivs=${doc.select("#w-servers div.type[data-type]").size} srv=${out.size}")
+    BLog.d("aniwaves: srv typeDivs=${doc.select("div.type[data-type]").size} srv=${out.size}")
     return out
 }
 
