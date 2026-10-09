@@ -46,7 +46,7 @@ suspend fun aniwavesExtractRaw(
     BLog.d("aniwaves: '${detail.title}' eps=${detail.episodes.size} movie=${detail.isMovie}")
 
     val ep = if (q.type == "movie") 1 else q.episode.takeIf { it > 0 } ?: 1
-    val servers = AniwavesApi.servers(hit.slug, ep)
+    val servers = AniwavesApi.servers(hit.slug, ep, detail.id)
     if (servers.isEmpty()) {
         BLog.d("aniwaves: no servers E$ep")
         return AniKageScrape(emptyList(), emptyList())
