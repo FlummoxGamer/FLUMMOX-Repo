@@ -135,17 +135,15 @@ open class ByseExtractor : ExtractorApi() {
         })
     }
 }
-
 // ═══════════════════════════════════════════════════════════════
-// Echovideo (play.echovideo.ru) — JW Player MSE blob. WebView loads
-// the embed, JW Player requests manifests, we intercept.
+// Echovideo (play.echovideo.ru) — plain HTTP extractor.
+// GET the embed page, regex the m3u8 out of the inline JW Player
+// config. No WebView. No worker. Just HTML parsing.
 // ═══════════════════════════════════════════════════════════════
 open class EchovideoExtractor : ExtractorApi() {
     override val name = "Echovideo"
     override val mainUrl = "https://play.echovideo.ru"
     override val requiresReferer = false
-
-    private val lock = Mutex()
 
     override suspend fun getUrl(
         url: String,
@@ -153,22 +151,90 @@ open class EchovideoExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        BLog.d("echovideo: getUrl $url")
-        val m3u8 = lock.withLock {
-            aniwavesRunWebView("echovideo", url, listOf(
-                "echovideo.to", "sprintcdn", "dpopdrop"
-            ))
-        } ?: run {
-            BLog.e("echovideo: no m3u8 from $url"); return
+        BLog.d("echovideo: getUrl ${url.take(120)}")
+
+        val html = try {
+            com.lagradost.cloudstream3.app.get(
+                url,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                        "Mobile Safari/537.36",
+                    "Referer" to "https://aniwaves.ru/"
+                )
+            ).text
+        } catch (e: Exception) {
+            BLog.e("echovideo: page fetch failed: ${e.message}")
+            return
         }
-        BLog.d("echovideo: captured ${m3u8.take(120)}")
+
+        BLog.d("echovideo: html len=${html.length}")
+
+        // Ordered probes — most specific to least specific.
+        val patterns = listOf(
+            // JW Player sources array: {"file": "https://...m3u8..."}
+            Regex("""["']file["']\s*:\s*["']([^"']*\.m3u8[^"']*)["']"""),
+            // JW Player src field
+            Regex("""["']src["']\s*:\s*["']([^"']*\.m3u8[^"']*)["']"""),
+            // Direct source tag: <source src="...m3u8...">
+            Regex("""<source[^>]+src=["']([^"']*\.m3u8[^"']*)["']"""),
+            // Any URL ending in .m3u8 with or without query
+            Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*"""),
+            // echovideo cdn pattern: /cdn/{hash}?t.m3u8
+            Regex("""https?://[^"'\s<>]+/cdn/[a-f0-9]+\?t\.m3u8[^"'\s<>]*"""),
+            // sprintcdn pattern
+            Regex("""https?://[^"'\s<>]+/hls2/\d+/\d+/[^"'\s<>]+/master\.m3u8[^"'\s<>]*""")
+        )
+
+        var hit: String? = null
+        var hitWhich = -1
+        for ((i, rx) in patterns.withIndex()) {
+            val m = rx.find(html) ?: continue
+            val candidate = (if (m.groupValues.size > 1) m.groupValues[1] else m.value)
+                .replace("\\/", "/")
+                .trim()
+            if (candidate.startsWith("http")) {
+                hit = candidate
+                hitWhich = i
+                break
+            }
+        }
+
+        if (hit == null) {
+            BLog.e("echovideo: no m3u8 in html (len=${html.length})")
+            // Dump a small chunk around 'jwplayer' or 'sources' to help
+            // us see what the config actually looks like.
+            val idx = listOf(
+                html.indexOf("jwplayer", ignoreCase = true),
+                html.indexOf("sources", ignoreCase = true),
+                html.indexOf("file", ignoreCase = true)
+            ).filter { it >= 0 }.minOrNull()
+            if (idx != null) {
+                val start = (idx - 80).coerceAtLeast(0)
+                val end = (idx + 200).coerceAtMost(html.length)
+                BLog.d("echovideo: ctx '${html.substring(start, end).replace("\n", " ")}'")
+            } else {
+                BLog.d("echovideo: head='${html.take(200).replace("\n", " ")}'")
+            }
+            return
+        }
+
+        BLog.d("echovideo: pattern $hitWhich matched → ${hit.take(140)}")
+
         callback.invoke(newExtractorLink(
             source = name,
             name = "Echovideo",
-            url = m3u8,
+            url = hit,
             type = ExtractorLinkType.M3U8
         ) {
             this.referer = "https://play.echovideo.ru/"
+            this.headers = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                    "Mobile Safari/537.36",
+                "Referer" to "https://play.echovideo.ru/"
+            )
         })
+        BLog.d("echovideo: emitted")
     }
 }
