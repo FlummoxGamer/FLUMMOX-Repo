@@ -357,35 +357,39 @@ private suspend fun emitMirrorScored(
         "${m.source} · ${m.mirror}"
     }
 
-    // AniWaves embed hosts need their registered ExtractorApi invoked
-    // directly. Emitting the raw embed URL to ExoPlayer just shows a
-    // blank error — the extractor runs the embed in a WebView and
-    // returns the real m3u8.
     val host = try { java.net.URI(m.url).host?.lowercase() ?: "" }
         catch (_: Exception) { "" }
 
-    val directExtractor: ExtractorApi? = when (host) {
-        "mfw09.org" -> ByseExtractor()
-        "play.echovideo.ru" -> EchovideoExtractor()
-        else -> null
-    }
-
-    if (directExtractor != null) {
-        BLog.d("route $host → ${directExtractor.name}")
+    // AniWaves embed hosts need their ExtractorApi invoked directly.
+    // Emitting the raw embed URL to ExoPlayer just errors out.
+    if (host == "mfw09.org" || host == "play.echovideo.ru") {
+        BLog.d("route $host → extractor")
         try {
-            directExtractor.getUrl(m.url, "https://aniwaves.ru/", subtitleCallback) { link ->
-                val renamed = newExtractorLink(
-                    source = link.source,
-                    name = "$displayName · ${link.name}",
-                    url = link.url,
-                    type = link.type
-                ) {
-                    this.referer = link.referer
-                    this.headers = link.headers
-                    this.quality = link.quality
+            val ex: ExtractorApi =
+                if (host == "mfw09.org") ByseExtractor() else EchovideoExtractor()
+            val collected = mutableListOf<ExtractorLink>()
+            val subCb: (SubtitleFile) -> Unit = { sf ->
+                try { subtitleCallback(sf) } catch (_: Exception) {}
+            }
+            val linkCb: (ExtractorLink) -> Unit = { l -> collected.add(l) }
+            ex.getUrl(m.url, "https://aniwaves.ru/", subCb, linkCb)
+            for (l in collected) {
+                try {
+                    val renamed = newExtractorLink(
+                        source = l.source,
+                        name = "$displayName · ${l.name}",
+                        url = l.url,
+                        type = l.type
+                    ) {
+                        this.referer = l.referer
+                        this.headers = l.headers
+                        this.quality = l.quality
+                    }
+                    callback.invoke(renamed)
+                    count.incrementAndGet()
+                } catch (e: Exception) {
+                    BLog.e("emit failed: ${m.mirror}: ${e.message}")
                 }
-                callback.invoke(renamed)
-                count.incrementAndGet()
             }
         } catch (e: Exception) {
             BLog.e("extractor route failed: ${m.mirror}: ${e.message}")
