@@ -12,12 +12,9 @@ import java.util.concurrent.atomic.AtomicInteger
 
 private const val ANIWAVES_CONCURRENCY = 2
 
-// Server IDs (data-sv-id) known dead / unplayable.
-//   2 = DGHG  → redirects to playmogo.com, dead on site too.
-private val DROPPED_SV_IDS = setOf("2")
-
-// Embed hosts with no working extractor.
-private val DROPPED_EMBED_HOSTS = setOf("playmogo.com")
+// Only Vidplay (sv-id 4) resolves reliably. Others time out in the
+// WebView resolver without issuing a media request.
+private val ALLOWED_SV_IDS = setOf("4")
 
 private fun pickBest(
     hits: List<AniwavesApi.Hit>,
@@ -50,11 +47,6 @@ private fun hostOf(url: String): String = try {
     java.net.URI(url).host?.lowercase() ?: ""
 } catch (_: Exception) { "" }
 
-// Click script. Players build their DOM asynchronously, so retry
-// every 500ms for ~7s. Covers JW Player, video.js, vidstack, and
-// the plain <video> element as a catch-all. Two dispatch paths
-// (element.click() + synthetic MouseEvent) because some players
-// only listen for one.
 private val ANIWAVES_CLICK_SCRIPT = """
     (function tick(n) {
         try {
@@ -95,10 +87,6 @@ private val ANIWAVES_CLICK_SCRIPT = """
     })(0);
 """.trimIndent()
 
-// Load an embed URL in a hidden WebView, inject the click script,
-// and capture the first .m3u8 / .mp4 the player requests.
-// Uses CloudStream's built-in WebViewResolver — handles TLS,
-// cookie jar, and response interception for us.
 private suspend fun resolveEmbed(
     label: String,
     embedUrl: String
@@ -109,14 +97,14 @@ private suspend fun resolveEmbed(
         additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
         script = ANIWAVES_CLICK_SCRIPT,
         useOkhttp = false,
-        timeout = 30_000L
+        timeout = 12_000L
     )
     return try {
         val r = app.get(embedUrl, referer = "https://aniwaves.ru/", interceptor = resolver)
         val u = r.url
         when {
             u.isBlank() -> {
-                BLog.e("aniwaves-wv [$label]: blank url from resolver")
+                BLog.e("aniwaves-wv [$label]: blank url")
                 null
             }
             !u.contains(".m3u8", true) && !u.contains(".mp4", true) -> {
@@ -157,7 +145,7 @@ suspend fun aniwavesExtractRaw(
 
     val ep = if (q.type == "movie") 1 else q.episode.takeIf { it > 0 } ?: 1
     val servers = AniwavesApi.servers(hit.slug, ep, detail.id)
-        .filter { it.serverId !in DROPPED_SV_IDS }
+        .filter { it.serverId in ALLOWED_SV_IDS }
     if (servers.isEmpty()) {
         BLog.d("aniwaves: no servers E$ep")
         return AniKageScrape(emptyList(), emptyList())
@@ -178,10 +166,6 @@ suspend fun aniwavesExtractRaw(
                             ?: return@withPermit
                         val host = hostOf(embed)
                         BLog.v("aniwaves ${srv.subType}/${srv.label} [$host]: ${embed.take(120)}")
-                        if (host in DROPPED_EMBED_HOSTS) {
-                            BLog.d("aniwaves: skip dead host $host (${srv.label})")
-                            return@withPermit
-                        }
 
                         val resolved = resolveEmbed(
                             "${srv.label}·${srv.subType.uppercase()}",
