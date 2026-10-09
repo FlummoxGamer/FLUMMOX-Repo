@@ -242,7 +242,7 @@ class BingeAnimeProvider : MainAPI() {
             val ordered = if (BingeAnimeSettings.isPrefilterEnabled()) {
                 cached.mirrors.sortedByDescending { LinkScore.prelimScore(it) }
             } else cached.mirrors
-            for (m in ordered) emitMirror(m, callback, emittedCount)
+            for (m in ordered) emitMirror(m, subtitleCallback, callback, emittedCount)
 
             // Per-mirror captions (MegaPlayEmbed fallback attaches them)
             cached.mirrors.flatMap { it.captions }.forEach { (label, url) ->
@@ -271,7 +271,7 @@ val scrape = try {
             try {
                 anikageExtractRaw(
                     q,
-                    onLink = { m, score -> emitMirrorScored(m, score, callback, emittedCount) },
+                    onLink = { m, score -> emitMirrorScored(m, score, subtitleCallback, callback, emittedCount) },
                     onSub = { url, label ->
                         if (subSeen.add(url)) {
                             try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
@@ -290,7 +290,7 @@ val scrape = try {
             else try {
                 aniwavesExtractRaw(
                     q,
-                    onLink = { m, score -> emitMirrorScored(m, score, callback, emittedCount) },
+                    onLink = { m, score -> emitMirrorScored(m, score, subtitleCallback, callback, emittedCount) },
                     onSub = { url, label ->
                         if (subSeen.add(url)) {
                             try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
@@ -332,61 +332,93 @@ val scrape = try {
         return emittedCount.get() > 0
     }
 
-    // ── emit helpers ──
-    private suspend fun emitMirror(
-        m: ScrapedMirror,
-        callback: (ExtractorLink) -> Unit,
-        count: AtomicInteger
-    ) {
-        val score = LinkScore.prelimScore(m)
-        emitMirrorScored(m, score, callback, count)
+// ── emit helpers ──
+private suspend fun emitMirror(
+    m: ScrapedMirror,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit,
+    count: AtomicInteger
+) {
+    val score = LinkScore.prelimScore(m)
+    emitMirrorScored(m, score, subtitleCallback, callback, count)
+}
+
+private suspend fun emitMirrorScored(
+    m: ScrapedMirror,
+    score: Int,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit,
+    count: AtomicInteger
+) {
+    val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
+    val displayName = if (cosmetic) {
+        "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
+    } else {
+        "${m.source} · ${m.mirror}"
     }
 
-    private suspend fun emitMirrorScored(
-        m: ScrapedMirror,
-        score: Int,
-        callback: (ExtractorLink) -> Unit,
-        count: AtomicInteger
-    ) {
-        // Smart links ON  → emoji + source label + mirror descriptor
-        // Smart links OFF → same label, no emoji, arrival order
-        val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
-        val displayName = if (cosmetic) {
-            "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
-        } else {
-            "${m.source} · ${m.mirror}"
-        }
+    // Embed hosts must go through their registered ExtractorApi.
+    // CloudStream does NOT auto-route emitted extractor links — the
+    // scraper has to call loadExtractor() explicitly, then forward
+    // the resolved link to the callback.
+    val host = try { java.net.URI(m.url).host?.lowercase() ?: "" }
+        catch (_: Exception) { "" }
+    val isEmbed = host == "mfw09.org" || host == "play.echovideo.ru"
 
-        val linkType = when {
-            m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
-                ExtractorLinkType.DASH
-            m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
-                ExtractorLinkType.M3U8
-            else -> ExtractorLinkType.VIDEO
-        }
+    if (isEmbed) {
+        BLog.d("route $host → extractor")
         try {
-            callback.invoke(newExtractorLink(
-                source = "BingeAnime",
-                name = displayName,
-                url = m.url,
-                type = linkType
-            ) {
-                this.referer = AnikageApi.referer()
-                val clean = m.headers
-                    ?.filterKeys { it.lowercase() != "referer" }
-                    ?.toMutableMap() ?: mutableMapOf()
-                if (clean.keys.none { it.equals("user-agent", true) }) {
-                    clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                        "Mobile Safari/537.36"
+            loadExtractor(m.url, "https://aniwaves.ru/", subtitleCallback) { link ->
+                val renamed = newExtractorLink(
+                    source = link.source,
+                    name = "$displayName · ${link.name}",
+                    url = link.url,
+                    type = link.type
+                ) {
+                    this.referer = link.referer
+                    this.headers = link.headers
+                    this.quality = link.quality
+                    this.audio = link.audio
                 }
-                this.headers = clean
-            })
-            count.incrementAndGet()
+                callback.invoke(renamed)
+                count.incrementAndGet()
+            }
         } catch (e: Exception) {
-            BLog.e("emit failed: ${m.mirror}: ${e.message}")
+            BLog.e("extractor route failed: ${m.mirror}: ${e.message}")
         }
+        return
     }
+
+    val linkType = when {
+        m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+            ExtractorLinkType.DASH
+        m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+            ExtractorLinkType.M3U8
+        else -> ExtractorLinkType.VIDEO
+    }
+    try {
+        callback.invoke(newExtractorLink(
+            source = "BingeAnime",
+            name = displayName,
+            url = m.url,
+            type = linkType
+        ) {
+            this.referer = AnikageApi.referer()
+            val clean = m.headers
+                ?.filterKeys { it.lowercase() != "referer" }
+                ?.toMutableMap() ?: mutableMapOf()
+            if (clean.keys.none { it.equals("user-agent", true) }) {
+                clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                    "Mobile Safari/537.36"
+            }
+            this.headers = clean
+        })
+        count.incrementAndGet()
+    } catch (e: Exception) {
+        BLog.e("emit failed: ${m.mirror}: ${e.message}")
+    }
+}
 
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
