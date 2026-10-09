@@ -66,13 +66,9 @@ suspend fun aniwavesExtractRaw(
                     sem.withPermit {
                         val embed = AniwavesApi.resolveLink(srv.linkId, referer) ?: return@withPermit
                         BLog.v("aniwaves ${srv.subType}/${srv.label}: $embed")
-                        // Only emit mfw09.org embeds — ByseExtractor handles them.
-                        // play.echovideo.ru embeds are JW Player + MSE blob, not
-                        // extractable without running their JS; skip them for now.
-                        if (!embed.contains("mfw09.org")) {
-                            BLog.v("aniwaves: skip non-byse embed ${embed.take(80)}")
-                            return@withPermit
-                        }
+                        // Emit both mfw09.org (Byse) and play.echovideo.ru embeds.
+                        // Each has its own ExtractorApi that runs them in WebView
+                        // and intercepts the resulting m3u8.
                         val m = ScrapedMirror(
                             quality = "Auto",
                             mirror = "${srv.label} · ${srv.subType.uppercase()}",
