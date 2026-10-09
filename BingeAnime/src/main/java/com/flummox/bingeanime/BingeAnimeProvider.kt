@@ -357,18 +357,23 @@ private suspend fun emitMirrorScored(
         "${m.source} · ${m.mirror}"
     }
 
-    // Embed hosts must go through their registered ExtractorApi.
-    // CloudStream does NOT auto-route emitted extractor links — the
-    // scraper has to call loadExtractor() explicitly, then forward
-    // the resolved link to the callback.
+    // AniWaves embed hosts need their registered ExtractorApi invoked
+    // directly. Emitting the raw embed URL to ExoPlayer just shows a
+    // blank error — the extractor runs the embed in a WebView and
+    // returns the real m3u8.
     val host = try { java.net.URI(m.url).host?.lowercase() ?: "" }
         catch (_: Exception) { "" }
-    val isEmbed = host == "mfw09.org" || host == "play.echovideo.ru"
 
-    if (isEmbed) {
-        BLog.d("route $host → extractor")
+    val directExtractor: ExtractorApi? = when (host) {
+        "mfw09.org" -> ByseExtractor()
+        "play.echovideo.ru" -> EchovideoExtractor()
+        else -> null
+    }
+
+    if (directExtractor != null) {
+        BLog.d("route $host → ${directExtractor.name}")
         try {
-            loadExtractor(m.url, "https://aniwaves.ru/", subtitleCallback) { link ->
+            directExtractor.getUrl(m.url, "https://aniwaves.ru/", subtitleCallback) { link ->
                 val renamed = newExtractorLink(
                     source = link.source,
                     name = "$displayName · ${link.name}",
@@ -378,7 +383,6 @@ private suspend fun emitMirrorScored(
                     this.referer = link.referer
                     this.headers = link.headers
                     this.quality = link.quality
-                    this.audio = link.audio
                 }
                 callback.invoke(renamed)
                 count.incrementAndGet()
@@ -419,7 +423,6 @@ private suspend fun emitMirrorScored(
         BLog.e("emit failed: ${m.mirror}: ${e.message}")
     }
 }
-
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
         val raw = title.english ?: title.romaji ?: title.native ?: return null
         val displayName = AniListApi.convertRomanSeasons(AniListApi.stripCourBranding(raw))
