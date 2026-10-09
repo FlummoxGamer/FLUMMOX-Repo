@@ -13,8 +13,6 @@ class BingeAnimePlugin : Plugin() {
         BLog.setVerbose(BingeAnimeSettings.isVerbose())
         BLog.d("BingeAnime boot v${BuildConfig.PLUGIN_VERSION}")
         registerMainAPI(BingeAnimeProvider())
-        registerExtractorAPI(ByseExtractor())
-        registerExtractorAPI(EchovideoExtractor())
         this.openSettings = { ctx ->
             BingeAnimeSettings.show(ctx)
         }
