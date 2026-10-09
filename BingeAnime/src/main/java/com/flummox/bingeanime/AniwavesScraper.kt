@@ -12,7 +12,7 @@ private const val ANIWAVES_CONCURRENCY = 4
 
 // Server IDs (data-sv-id) known dead / unplayable.
 //   2 = DGHG → redirects to playmogo.com, dead on site too.
-private val DROPPED_SV_IDS = setOf("2")
+private val DROPPED_SV_IDS = setOf("1", "2")
 
 // Hosts that resolve but have no extractor.
 private val DROPPED_EMBED_HOSTS = setOf("playmogo.com")
