@@ -24,10 +24,6 @@ object ReanimeWasm {
     private const val TTL_SEARCH = 30L * 60 * 1000
     private const val TTL_SERVERS = 6L * 60 * 60 * 1000
 
-    // SHA-256 output is 64 hex chars. The site partitions it into eight
-    // 8-char segments and uses specific segments as field tags in the
-    // embed HTML. Everything below reads via segment indexes, not raw
-    // character offsets.
     private const val HEX_SEG = 8
     private const val KEY_BYTES = 32
 
@@ -137,10 +133,6 @@ object ReanimeWasm {
         }.maxByOrNull { it.second }?.first
     }
 
-    // ── hex segmentation helpers ────────────────────────────────────
-    // SHA-256 hex is treated as eight fixed-length segments so call
-    // sites describe intent ("segment 3") rather than raw offsets.
-
     private fun hexSeg(hex: String, idx: Int): String {
         val from = idx * HEX_SEG
         val to = from + HEX_SEG
@@ -153,23 +145,15 @@ object ReanimeWasm {
         return sb.toString()
     }
 
-    // Field-name builder: given the segment-carrying hex and a base
-    // identifier, produce the key the site's embed HTML uses to expose
-    // a payload. Two flavours exist — a direct segment tag and a
-    // composite two-segment tag.
     private fun fieldKey(hex: String, vararg idx: Int): String =
-        if (idx.size == 1) "${fieldPrefix(hex, idx[0])}" else
-            "${hexSeg(hex, idx[0])}_${hexSeg(hex, idx[1])}"
+        if (idx.size == 1) hexSeg(hex, idx[0])
+        else "${hexSeg(hex, idx[0])}_${hexSeg(hex, idx[1])}"
 
-    private fun fieldPrefix(hex: String, idx: Int): String =
-        "${fieldNameFor(hex, idx)}"
-
+    private fun fieldPrefix(hex: String, idx: Int): String = hexSeg(hex, idx)
     private fun fieldNameFor(hex: String, idx: Int): String = hexSeg(hex, idx)
 
     private fun findField(region: String, name: String): String? =
         Regex(""""?${Regex.escape(name)}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-
-    // ── resolution ──────────────────────────────────────────────────
 
     suspend fun resolve(embedUrl: String): Resolved? = try {
         doResolve(embedUrl)
@@ -187,7 +171,6 @@ object ReanimeWasm {
         val wasmB64 = Regex("""w_payload\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
         if (seed == null || wasmB64 == null) { BLog.e("reanime: no seed/wasm"); return null }
 
-        // Two SHA-256 chains feed two independent field-name namespaces.
         val chainA = deriveChain(seed)
         val chainB = deriveChain(chainA)
 
@@ -243,10 +226,6 @@ object ReanimeWasm {
         return Resolved(masterUrl, masterBody, pk, extractSubs(region))
     }
 
-    // WASM is executed twice — once for the audio-key derivation (whose
-    // output is consumed downstream) and once for the playlist key
-    // material (whose side-effect payload we read). The runtime is
-    // cheap enough to instantiate twice.
     private fun runWasm(
         wasmB64: String, seedInt: Int,
         fragA: ByteArray, fragB: ByteArray, keyBytes: ByteArray
@@ -279,17 +258,9 @@ object ReanimeWasm {
     private data class Layout(val a: Int, val b: Int, val c: Int, val out: Int)
 
     private fun memoryLayout(chunk: Int): Layout {
-        // Arena is 256 KiB. Slot stride is fixed at 4× chunk rounded up
-        // to a power-friendly boundary so chunk sizes up to 64 bytes
-        // never collide regardless of the WASM's internal addressing.
         val stride = if (chunk * 4 < 256) 256 else chunk * 4
         val base = 0x2000
-        return Layout(
-            a = base,
-            b = base + stride,
-            c = base + 2 * stride,
-            out = base + 3 * stride
-        )
+        return Layout(base, base + stride, base + 2 * stride, base + 3 * stride)
     }
 
     private fun tokenDerivedTag(token: String, tag: String): String =
@@ -327,16 +298,11 @@ object ReanimeWasm {
         }
     } catch (_: Exception) { null }
 
-    // The WASM's data section carries the key schedule as two adjacent
-    // 32-byte runs. The playlist key is the byte-wise mix of the two
-    // halves.
     private fun derivePlaylistKey(payload: ByteArray): ByteArray? {
         if (payload.size < KEY_BYTES * 2) return null
         val head = payload.copyOfRange(0, KEY_BYTES)
         val tail = payload.copyOfRange(KEY_BYTES, KEY_BYTES * 2)
-        return ByteArray(KEY_BYTES) { i ->
-            (head[i].toInt() xor tail[i].toInt()).toByte()
-        }
+        return ByteArray(KEY_BYTES) { i -> (head[i].toInt() xor tail[i].toInt()).toByte() }
     }
 
     private fun pbkdf2Sha256(pw: ByteArray, salt: ByteArray, iter: Int, len: Int): ByteArray {
@@ -398,9 +364,6 @@ object ReanimeWasm {
     }
 }
 
-// Minimal WebAssembly executor. Branch destinations are resolved during
-// parsing and stored as flat arrays indexed by program counter, so the
-// interpreter never walks a frame stack at run time.
 private class Vm(raw: ByteArray) {
 
     private class Routine(
@@ -411,6 +374,8 @@ private class Vm(raw: ByteArray) {
         val ifEnd: IntArray,
         val elseEnd: IntArray
     )
+
+    private class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
     private val arena = ByteArray(1 shl 18)
     private val globals = IntArray(16)
@@ -568,8 +533,6 @@ private class Vm(raw: ByteArray) {
         return Quad(brDest, ifElse, ifEnd, elseEnd)
     }
 
-    private class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
-
     private fun execute(r: Routine, args: IntArray) {
         val code = r.code
         val brDest = r.brDest
@@ -587,7 +550,7 @@ private class Vm(raw: ByteArray) {
         fun peek(): Int = if (sp > 0) operand[sp - 1] else 0
 
         while (pc < code.size) {
-            when (val op = code[pc].toInt() and 0xFF) {
+            when (code[pc].toInt() and 0xFF) {
                 0x00 -> return
                 0x01 -> pc++
                 0x02, 0x03 -> pc += 2
