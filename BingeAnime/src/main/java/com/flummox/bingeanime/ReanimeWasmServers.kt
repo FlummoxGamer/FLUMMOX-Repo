@@ -29,10 +29,10 @@ object ReanimeWasmServer {
     private const val HLS = "application/vnd.apple.mpegurl"
     private const val TS = "video/mp2t"
 
-    private val XOR_KEY = intArrayOf(
-        157, 42, 241, 71, 179, 142, 92, 112,
-        166, 25, 228, 59, 216, 98, 15, 197
-    ).map { it.toByte() }.toByteArray()
+    private val XOR_KEY: ByteArray =
+        "9d2af147b38e5c70a619e43bd8620fc5".chunked(2)
+            .map { it.toInt(16).toByte() }
+            .toByteArray()
 
     private const val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
