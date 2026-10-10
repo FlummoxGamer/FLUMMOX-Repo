@@ -81,7 +81,7 @@ private val ANIWAVES_CLICK_SCRIPT = """
                     if (p && p.catch) p.catch(function(){});
                 }
             } catch (e) {}
-            if (n < 20) setTimeout(function(){ tick(n + 1); }, 500);
+            if (n < 14) setTimeout(function(){ tick(n + 1); }, 500);
         } catch (e) {}
     })(0);
 """.trimIndent()
@@ -96,7 +96,7 @@ private suspend fun resolveEmbed(
         additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
         script = ANIWAVES_CLICK_SCRIPT,
         useOkhttp = false,
-        timeout = 10_000L
+        timeout = 30_000L
     )
     return try {
         val r = app.get(embedUrl, referer = "https://aniwaves.ru/", interceptor = resolver)
@@ -137,9 +137,14 @@ suspend fun aniwavesExtractRaw(
     }
     BLog.d("aniwaves: hit '${hit.title}' slug=${hit.slug}")
 
-    val ep = if (q.type == "movie") 1 else q.episode.takeIf { it > 0 } ?: 1
-    val servers = AniwavesApi.servers(hit.slug, ep)
-        .filter { it.serverId in ALLOWED_SV_IDS }
+val detail = AniwavesApi.detail(hit.slug) ?: run {
+    BLog.d("aniwaves: detail failed")
+    return AniKageScrape(emptyList(), emptyList())
+}
+
+val ep = if (q.type == "movie") 1 else q.episode.takeIf { it > 0 } ?: 1
+val servers = AniwavesApi.servers(hit.slug, ep, detail.id)
+    .filter { it.serverId in ALLOWED_SV_IDS }
     if (servers.isEmpty()) {
         BLog.d("aniwaves: no servers E$ep")
         return AniKageScrape(emptyList(), emptyList())
