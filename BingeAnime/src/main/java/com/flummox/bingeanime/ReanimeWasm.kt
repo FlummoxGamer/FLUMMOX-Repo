@@ -24,6 +24,13 @@ object ReanimeWasm {
     private const val TTL_SEARCH = 30L * 60 * 1000
     private const val TTL_SERVERS = 6L * 60 * 60 * 1000
 
+    // SHA-256 output is 64 hex chars. The site partitions it into eight
+    // 8-char segments and uses specific segments as field tags in the
+    // embed HTML. Everything below reads via segment indexes, not raw
+    // character offsets.
+    private const val HEX_SEG = 8
+    private const val KEY_BYTES = 32
+
     data class Hit(
         val slug: String, val anilistId: Int, val title: String,
         val altTitles: List<String>, val year: Int?, val poster: String?
@@ -130,110 +137,185 @@ object ReanimeWasm {
         }.maxByOrNull { it.second }?.first
     }
 
-    suspend fun resolve(embedUrl: String): Resolved? {
-    return try {
+    // ── hex segmentation helpers ────────────────────────────────────
+    // SHA-256 hex is treated as eight fixed-length segments so call
+    // sites describe intent ("segment 3") rather than raw offsets.
+
+    private fun hexSeg(hex: String, idx: Int): String {
+        val from = idx * HEX_SEG
+        val to = from + HEX_SEG
+        return if (to <= hex.length) hex.substring(from, to) else ""
+    }
+
+    private fun hexConcat(hex: String, vararg idx: Int): String {
+        val sb = StringBuilder()
+        for (i in idx) sb.append(hexSeg(hex, i))
+        return sb.toString()
+    }
+
+    // Field-name builder: given the segment-carrying hex and a base
+    // identifier, produce the key the site's embed HTML uses to expose
+    // a payload. Two flavours exist — a direct segment tag and a
+    // composite two-segment tag.
+    private fun fieldKey(hex: String, vararg idx: Int): String =
+        if (idx.size == 1) "${fieldPrefix(hex, idx[0])}" else
+            "${hexSeg(hex, idx[0])}_${hexSeg(hex, idx[1])}"
+
+    private fun fieldPrefix(hex: String, idx: Int): String =
+        "${fieldNameFor(hex, idx)}"
+
+    private fun fieldNameFor(hex: String, idx: Int): String = hexSeg(hex, idx)
+
+    private fun findField(region: String, name: String): String? =
+        Regex(""""?${Regex.escape(name)}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+
+    // ── resolution ──────────────────────────────────────────────────
+
+    suspend fun resolve(embedUrl: String): Resolved? = try {
         doResolve(embedUrl)
     } catch (e: Exception) {
         BLog.e("reanime resolve: ${e.message}")
         null
     }
-}
 
-private suspend fun doResolve(embedUrl: String): Resolved? {
-    val page = app.get(embedUrl, headers = embedHeaders()).text
-    val region = page.substringAfter("node_ids", "")
-    if (region.isBlank()) {
-        BLog.e("reanime resolve: no node_ids")
-        return null
+    private suspend fun doResolve(embedUrl: String): Resolved? {
+        val page = app.get(embedUrl, headers = embedHeaders()).text
+        val region = page.substringAfter("node_ids", "")
+        if (region.isBlank()) { BLog.e("reanime: no node_ids"); return null }
+
+        val seed = Regex("""obfuscation_seed\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+        val wasmB64 = Regex("""w_payload\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+        if (seed == null || wasmB64 == null) { BLog.e("reanime: no seed/wasm"); return null }
+
+        // Two SHA-256 chains feed two independent field-name namespaces.
+        val chainA = deriveChain(seed)
+        val chainB = deriveChain(chainA)
+
+        val fragATag = "kf_${hexSeg(chainA, 1)}"
+        val ivTag = "ivf_${hexSeg(chainA, 2)}"
+        val tokenTag = hexConcat(chainA, 6, 7) + "_" + hexSeg(chainA, 7)
+        val fragBTag = hexConcat(chainB, 0, 1) + "_" + hexSeg(chainB, 2)
+
+        val fragAB64 = findField(region, fragATag)
+        val ivB64 = findField(region, ivTag)
+        val token = findField(region, tokenTag)
+        val fragBB64 = findField(region, fragBTag)
+
+        if (fragAB64 == null || ivB64 == null || token == null || fragBB64 == null) {
+            BLog.e("reanime: missing fields"); return null
+        }
+
+        val tokenResp = app.get("$EMBED/api/m3u8/$token", headers = embedHeaders()).text
+        val videoTag = tokenDerivedTag(token, "vid")
+        val keyTag = tokenDerivedTag(token, "key")
+
+        val encVideo = Regex(""""$videoTag"\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
+        val encKey = Regex(""""?$keyTag"?\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
+        if (encVideo == null || encKey == null) { BLog.e("reanime: no video/key"); return null }
+
+        val seedInt = seed.take(8).toLongOrNull(16)?.toInt()
+            ?: run { BLog.e("reanime: bad seed int"); return null }
+
+        val fragA = b64d(fragAB64)
+        val fragB = b64d(fragBB64)
+        val keyBytes = b64d(encKey)
+        if (fragA.isEmpty() || fragB.size != fragA.size || keyBytes.size != fragA.size) {
+            BLog.e("reanime: frag size mismatch"); return null
+        }
+
+        val derived = runWasm(wasmB64, seedInt, fragA, fragB, keyBytes)
+            ?: run { BLog.e("reanime: wasm derive failed"); return null }
+
+        val aesKey = finaliseKey(derived, seed)
+        val iv = b64d(ivB64)
+        if (iv.size != 16) { BLog.e("reanime: bad iv"); return null }
+
+        val masterUrl = decryptUrl(encVideo, aesKey, iv)
+            ?: run { BLog.e("reanime: url decrypt failed"); return null }
+
+        val pk = derivePlaylistKey(wasmPayload(wasmB64, seedInt, fragA, fragB, keyBytes))
+            ?: run { BLog.e("reanime: pk derive failed"); return null }
+
+        val masterRaw = app.get(masterUrl, headers = cdnHeaders()).text.trim()
+        val masterBody = decryptPlaylist(masterRaw, pk)
+            ?: run { BLog.e("reanime: playlist decrypt failed"); return null }
+
+        return Resolved(masterUrl, masterBody, pk, extractSubs(region))
     }
 
-    val seed = Regex("""obfuscation_seed\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-    val wasmB64 = Regex("""w_payload\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-    if (seed == null || wasmB64 == null) {
-        BLog.e("reanime: no seed/wasm")
-        return null
+    // WASM is executed twice — once for the audio-key derivation (whose
+    // output is consumed downstream) and once for the playlist key
+    // material (whose side-effect payload we read). The runtime is
+    // cheap enough to instantiate twice.
+    private fun runWasm(
+        wasmB64: String, seedInt: Int,
+        fragA: ByteArray, fragB: ByteArray, keyBytes: ByteArray
+    ): ByteArray? {
+        val vm = Vm(Base64.decode(wasmB64, Base64.DEFAULT))
+        val layout = memoryLayout(fragA.size)
+        vm.load(layout.a, fragA)
+        vm.load(layout.b, fragB)
+        vm.load(layout.c, keyBytes)
+        vm.call("_s", seedInt)
+        vm.call("_r", layout.a, layout.b, layout.c, layout.out, fragA.size)
+        val derived = vm.dump(layout.out, fragA.size)
+        return if (derived.all { it == 0.toByte() }) null else derived
     }
 
-    val e = shaChain(seed)
-    val s2 = shaChain(e)
-    val kfB64 = Regex(""""?kf_${Regex.escape(e.substring(8, 16))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-    val ivfB64 = Regex(""""?ivf_${Regex.escape(e.substring(16, 24))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-    val token = Regex(""""?${Regex.escape(e.substring(48, 64))}_${Regex.escape(e.substring(56, 64))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-    val keyFrag2B64 = Regex(""""?${Regex.escape(s2.substring(0, 16))}_${Regex.escape(s2.substring(16, 24))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-    if (kfB64 == null || ivfB64 == null || token == null || keyFrag2B64 == null) {
-        BLog.e("reanime: missing fields")
-        return null
+    private fun wasmPayload(
+        wasmB64: String, seedInt: Int,
+        fragA: ByteArray, fragB: ByteArray, keyBytes: ByteArray
+    ): ByteArray {
+        val vm = Vm(Base64.decode(wasmB64, Base64.DEFAULT))
+        val layout = memoryLayout(fragA.size)
+        vm.load(layout.a, fragA)
+        vm.load(layout.b, fragB)
+        vm.load(layout.c, keyBytes)
+        vm.call("_s", seedInt)
+        vm.call("_r", layout.a, layout.b, layout.c, layout.out, fragA.size)
+        return vm.payload()
     }
 
-    val tokenResp = app.get("$EMBED/api/m3u8/$token", headers = embedHeaders()).text
-    val vidField = shaHex(token + "vid").substring(0, 10)
-    val keyField = shaHex(token + "key").substring(0, 10)
-    val encVideo = Regex(""""$vidField"\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
-    val encKey = Regex(""""?$keyField"?\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
-    if (encVideo == null || encKey == null) {
-        BLog.e("reanime: no video/key")
-        return null
+    private data class Layout(val a: Int, val b: Int, val c: Int, val out: Int)
+
+    private fun memoryLayout(chunk: Int): Layout {
+        // Arena is 256 KiB. Slot stride is fixed at 4× chunk rounded up
+        // to a power-friendly boundary so chunk sizes up to 64 bytes
+        // never collide regardless of the WASM's internal addressing.
+        val stride = if (chunk * 4 < 256) 256 else chunk * 4
+        val base = 0x2000
+        return Layout(
+            a = base,
+            b = base + stride,
+            c = base + 2 * stride,
+            out = base + 3 * stride
+        )
     }
 
-    val f1 = b64d(kfB64)
-    val f2 = b64d(keyFrag2B64)
-    val f3 = b64d(encKey)
-    val seedInt = seed.take(8).toLongOrNull(16)?.toInt()
-    if (seedInt == null || f1.isEmpty() || f2.size != f1.size || f3.size != f1.size) {
-        BLog.e("reanime: frag mismatch")
-        return null
+    private fun tokenDerivedTag(token: String, tag: String): String =
+        shaHex(token + tag).take(10)
+
+    private fun finaliseKey(seedBytesFromVm: ByteArray, seed: String): ByteArray {
+        val seedUtf8 = seed.toByteArray(Charsets.UTF_8)
+        val stretched = pbkdf2Sha256(seedBytesFromVm, seedUtf8, 1000, KEY_BYTES)
+        val mix = ByteArray(KEY_BYTES) { i ->
+            (stretched[i].toInt() xor seedUtf8[i % seedUtf8.size].toInt()).toByte()
+        }
+        return MessageDigest.getInstance("SHA-256").digest(mix)
     }
 
-    val vm = Vm(Base64.decode(wasmB64, Base64.DEFAULT))
-    val k = f1.size
-    val slot = 1000
-    vm.load(slot, f1)
-    vm.load(slot + k, f2)
-    vm.load(slot + 2 * k, f3)
-    vm.call("_s", seedInt)
-    vm.call("_r", slot, slot + k, slot + 2 * k, slot + 3 * k, k)
-    val keySeed = vm.dump(slot + 3 * k, k)
-    if (keySeed.all { it == 0.toByte() }) {
-        BLog.e("reanime: vm empty")
-        return null
+    private fun decryptUrl(encB64: String, aesKey: ByteArray, iv: ByteArray): String? {
+        return try {
+            val cipher = Cipher.getInstance("AES/CBC/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), IvParameterSpec(iv))
+            val padded = cipher.doFinal(b64d(encB64))
+            val pad = padded.last().toInt() and 0xFF
+            val cut = if (pad in 1..16 && padded.size > pad) padded.size - pad else padded.size
+            val text = String(padded.copyOfRange(0, cut), Charsets.UTF_8).trim()
+            if (text.startsWith("http")) text else null
+        } catch (_: Exception) { null }
     }
 
-    val seedBytes = seed.toByteArray(Charsets.UTF_8)
-    val pbkdf2 = pbkdf2Sha256(keySeed, seedBytes, 1000, 32)
-    val xored = ByteArray(32) { (pbkdf2[it].toInt() xor seedBytes[it % seedBytes.size].toInt()).toByte() }
-    val aesKey = MessageDigest.getInstance("SHA-256").digest(xored)
-    val iv = b64d(ivfB64)
-    if (iv.size != 16) {
-        BLog.e("reanime: bad iv")
-        return null
-    }
-
-    val cipher = Cipher.getInstance("AES/CBC/NoPadding")
-    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), IvParameterSpec(iv))
-    val padded = cipher.doFinal(b64d(encVideo))
-    val pad = padded.last().toInt() and 0xFF
-    val cut = if (pad in 1..16 && padded.size > pad) padded.size - pad else padded.size
-    val masterUrl = String(padded.copyOfRange(0, cut), Charsets.UTF_8).trim()
-    if (!masterUrl.startsWith("http")) {
-        BLog.e("reanime: bad url")
-        return null
-    }
-
-    val pk = derivePk(vm.payload())
-    if (pk == null) {
-        BLog.e("reanime: bad pk")
-        return null
-    }
-
-    val masterRaw = app.get(masterUrl, headers = cdnHeaders()).text.trim()
-    val masterBody = decryptPlaylist(masterRaw, pk)
-    if (masterBody == null) {
-        BLog.e("reanime: master decrypt")
-        return null
-    }
-
-    return Resolved(masterUrl, masterBody, pk, extractSubs(region))
-    }
     fun decryptPlaylist(body: String, pk: ByteArray): String? = try {
         val trimmed = body.trim()
         if (trimmed.startsWith("#EXTM3U")) trimmed else {
@@ -245,9 +327,16 @@ private suspend fun doResolve(embedUrl: String): Resolved? {
         }
     } catch (_: Exception) { null }
 
-    private fun derivePk(d: ByteArray): ByteArray? {
-        if (d.size < 64) return null
-        return ByteArray(32) { (d[it].toInt() xor d[it + 32].toInt()).toByte() }
+    // The WASM's data section carries the key schedule as two adjacent
+    // 32-byte runs. The playlist key is the byte-wise mix of the two
+    // halves.
+    private fun derivePlaylistKey(payload: ByteArray): ByteArray? {
+        if (payload.size < KEY_BYTES * 2) return null
+        val head = payload.copyOfRange(0, KEY_BYTES)
+        val tail = payload.copyOfRange(KEY_BYTES, KEY_BYTES * 2)
+        return ByteArray(KEY_BYTES) { i ->
+            (head[i].toInt() xor tail[i].toInt()).toByte()
+        }
     }
 
     private fun pbkdf2Sha256(pw: ByteArray, salt: ByteArray, iter: Int, len: Int): ByteArray {
@@ -271,10 +360,10 @@ private suspend fun doResolve(embedUrl: String): Resolved? {
         return out.copyOf(len)
     }
 
-    private fun shaChain(seed: String): String {
-        var e = seed
-        for (i in 0 until 3) e = shaHex(e + i)
-        return e
+    private fun deriveChain(seed: String): String {
+        var acc = seed
+        repeat(3) { i -> acc = shaHex(acc + i) }
+        return acc
     }
 
     private fun shaHex(s: String): String = MessageDigest.getInstance("SHA-256")
@@ -309,9 +398,9 @@ private suspend fun doResolve(embedUrl: String): Resolved? {
     }
 }
 
-// Minimal WebAssembly executor for the key-derivation module used by
-// the embed player. Branch targets are resolved once at parse time so
-// execute() runs without a frame stack.
+// Minimal WebAssembly executor. Branch destinations are resolved during
+// parsing and stored as flat arrays indexed by program counter, so the
+// interpreter never walks a frame stack at run time.
 private class Vm(raw: ByteArray) {
 
     private class Routine(
@@ -323,15 +412,8 @@ private class Vm(raw: ByteArray) {
         val elseEnd: IntArray
     )
 
-    private class Control(
-        val brDest: IntArray,
-        val ifElse: IntArray,
-        val ifEnd: IntArray,
-        val elseEnd: IntArray
-    )
-
     private val arena = ByteArray(1 shl 18)
-    private val registers = IntArray(16)
+    private val globals = IntArray(16)
     private val routines = ArrayList<Routine>()
     private val exportMap = HashMap<String, Int>()
     private val operand = IntArray(4096)
@@ -409,7 +491,7 @@ private class Vm(raw: ByteArray) {
             }
             val code = b.copyOfRange(p, bodyEnd)
             val ctrl = buildControl(code)
-            routines.add(Routine(totalSlots, code, ctrl.brDest, ctrl.ifElse, ctrl.ifEnd, ctrl.elseEnd))
+            routines.add(Routine(totalSlots, code, ctrl.first, ctrl.second, ctrl.third, ctrl.fourth))
             at = bodyEnd
         }
     }
@@ -434,7 +516,7 @@ private class Vm(raw: ByteArray) {
         }
     }
 
-    private fun buildControl(code: ByteArray): Control {
+    private fun buildControl(code: ByteArray): Quad<IntArray, IntArray, IntArray, IntArray> {
         val n = code.size
         val brDest = IntArray(n) { -1 }
         val ifElse = IntArray(n) { -1 }
@@ -450,20 +532,11 @@ private class Vm(raw: ByteArray) {
         var pc = 0
         while (pc < n) {
             when (val op = code[pc].toInt() and 0xFF) {
-                0x02, 0x03 -> {
-                    scopes.add(Scope(pc, op == 0x03, false))
-                    pc += 2
-                }
-                0x04 -> {
-                    scopes.add(Scope(pc, false, true))
-                    pc += 2
-                }
+                0x02, 0x03 -> { scopes.add(Scope(pc, op == 0x03, false)); pc += 2 }
+                0x04 -> { scopes.add(Scope(pc, false, true)); pc += 2 }
                 0x05 -> {
                     val top = scopes.lastOrNull()
-                    if (top != null && top.isIf) {
-                        top.elsePc = pc
-                        ifElse[top.pc] = pc
-                    }
+                    if (top != null && top.isIf) { top.elsePc = pc; ifElse[top.pc] = pc }
                     pc++
                 }
                 0x0b -> {
@@ -492,8 +565,10 @@ private class Vm(raw: ByteArray) {
                 else -> pc++
             }
         }
-        return Control(brDest, ifElse, ifEnd, elseEnd)
+        return Quad(brDest, ifElse, ifEnd, elseEnd)
     }
+
+    private class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
     private fun execute(r: Routine, args: IntArray) {
         val code = r.code
@@ -519,7 +594,7 @@ private class Vm(raw: ByteArray) {
                 0x04 -> {
                     val cond = pop()
                     val entry = pc + 2
-                    if (cond != 0) { pc = entry }
+                    if (cond != 0) pc = entry
                     else {
                         val alt = ifElse[pc]
                         pc = if (alt >= 0) alt + 1 else ifEnd[pc] + 1
@@ -543,8 +618,8 @@ private class Vm(raw: ByteArray) {
                 0x20 -> { val (i, j) = uleb(code, pc + 1); pc = j; push(locals.getOrElse(i) { 0 }) }
                 0x21 -> { val (i, j) = uleb(code, pc + 1); pc = j; if (i < locals.size) locals[i] = pop() }
                 0x22 -> { val (i, j) = uleb(code, pc + 1); pc = j; if (i < locals.size) locals[i] = peek() }
-                0x23 -> { val (i, j) = uleb(code, pc + 1); pc = j; push(registers.getOrElse(i) { 0 }) }
-                0x24 -> { val (i, j) = uleb(code, pc + 1); pc = j; if (i < registers.size) registers[i] = pop() }
+                0x23 -> { val (i, j) = uleb(code, pc + 1); pc = j; push(globals.getOrElse(i) { 0 }) }
+                0x24 -> { val (i, j) = uleb(code, pc + 1); pc = j; if (i < globals.size) globals[i] = pop() }
                 0x2d -> {
                     val (_, j1) = uleb(code, pc + 1); val (off, j2) = uleb(code, j1); pc = j2
                     val addr = pop() + off
