@@ -316,7 +316,7 @@ val reanimeDeferred = async {
         AniKageScrape(emptyList(), emptyList())
     } else {
         try {
-            reanimeExtractRaw(
+            reanimeWasmExtract(
                 q,
                 onLink = { m, score ->
                     emitMirrorScored(m, score, callback, emittedCount)
