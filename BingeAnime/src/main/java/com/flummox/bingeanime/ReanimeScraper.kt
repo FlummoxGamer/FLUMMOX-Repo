@@ -3,19 +3,21 @@ package com.flummox.bingeanime
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.network.WebViewResolver
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 private const val REANIME_TIMEOUT_MS = 8_000L
 
-// Preference order for flixcloud edges. HD-1 (v=1) first, HD-2 (v=2) only
-// as fallback if v=1 fails.
-private val EDGE_ORDER = listOf("v=1", "v=2")
+private const val REANIME_UA =
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
-// Flixcloud player is a custom HTML5 player (not JW, not video.js).
-// Script is a defensive broad-click loop, shorter than AniWaves' since
-// the capture shows flixcloud auto-plays.
+// Flixcloud player is a custom HTML5 player. Script is defensive —
+// clicks video, generic play buttons, dispatches synthetic events.
+// Capture shows auto-play works, but the clicks cover edge cases.
 private val REANIME_CLICK_SCRIPT = """
     (function tick(n) {
         try {
@@ -24,7 +26,6 @@ private val REANIME_CLICK_SCRIPT = """
                 'button[aria-label*="play" i]',
                 'button[title*="play" i]',
                 '.play-button',
-                '.vjs-big-play-button',
                 '[class*="play"]'
             ];
             for (var i = 0; i < sels.length; i++) {
@@ -58,11 +59,18 @@ private fun extractUuid(masterUrl: String): String? =
         RegexOption.IGNORE_CASE)
         .find(masterUrl)?.groupValues?.get(1)
 
+// Fallen CDN serves the subtitle tree. SRT is plain; the four .ass
+// variants carry different styling (signs, songs, dialogue).
+// UUID in the path matches the master m3u8's UUID.
 private fun buildSubUrls(masterUrl: String): List<Pair<String, String>> {
     val uuid = extractUuid(masterUrl) ?: return emptyList()
     val base = "https://vault-95.fallencdn.top/subtitles/$uuid"
     return listOf(
-        "English" to "$base/$uuid.srt"
+        "English (SRT)"           to "$base/$uuid.srt",
+        "English (Signs + Songs)" to "$base/${uuid}_eng_4.ass",
+        "English (Alt)"           to "$base/${uuid}_eng_6.ass",
+        "English (Signs)"         to "$base/${uuid}_eng_3.ass",
+        "English (Signs 2)"       to "$base/${uuid}_eng_5.ass"
     )
 }
 
@@ -118,10 +126,11 @@ suspend fun reanimeExtractRaw(
         return AniKageScrape(emptyList(), emptyList())
     }
 
-    // Dedup by dataLink. Each unique flixcloud embed = one WebView.
-    // sub + dub share the same URL, so one resolve covers both.
+    // Group by dataLink — HD-1 and HD-2 use different `?v=` params,
+    // so they stay distinct and both fire in parallel. sub/dub share
+    // the same URL, so one WebView resolves both.
     data class Edge(val url: String, val names: String, val types: String)
-    val byUrl: List<Edge> = servers
+    val edges: List<Edge> = servers
         .groupBy { it.url }
         .map { (url, list) ->
             Edge(
@@ -130,63 +139,60 @@ suspend fun reanimeExtractRaw(
                 types = list.map { it.dataType }.distinct().joinToString("+")
             )
         }
-        .sortedBy { e ->
-            EDGE_ORDER.indexOfFirst { e.url.contains(it) }
-                .let { if (it < 0) 999 else it }
-        }
 
-    BLog.d("reanime: ${servers.size} server entries → ${byUrl.size} unique edges E$ep")
+    BLog.d("reanime: ${servers.size} server entries → ${edges.size} edges E$ep")
 
     val collected = ConcurrentHashMap<String, ScrapedMirror>()
     val collectedSubs =
         java.util.Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+    val subSeen = ConcurrentHashMap.newKeySet<String>()
     val emitted = AtomicInteger(0)
 
     coroutineScope {
-        for (edge in byUrl) {
-            if (collected.isNotEmpty()) break  // first success is enough
+        edges.map { edge ->
+            async {
+                val full = if (edge.url.contains("?"))
+                    "${edge.url}&autoPlay=true&a=1"
+                else "${edge.url}?autoPlay=true&a=1"
 
-            val full = if (edge.url.contains("?"))
-                "${edge.url}&autoPlay=true&a=1"
-            else "${edge.url}?autoPlay=true&a=1"
+                val label = "${edge.names} (${edge.types.uppercase()})"
+                val resolved = resolveEmbed(label, full) ?: return@async
 
-            val label = "${edge.names} (${edge.types.uppercase()})"
-            val resolved = resolveEmbed(label, full) ?: continue
+                val mirror = ScrapedMirror(
+                    quality = "Auto",
+                    mirror = edge.names,
+                    url = resolved,
+                    source = "REANIME",
+                    headers = mapOf(
+                        "Referer" to "https://reanime.to/",
+                        "User-Agent" to REANIME_UA
+                    ),
+                    captions = emptyList()
+                )
 
-            val mirror = ScrapedMirror(
-                quality = "Auto",
-                mirror = edge.names,
-                url = resolved,
-                source = "REANIME",
-                headers = mapOf(
-                    "Referer" to "https://reanime.to/",
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                        "Chrome/122.0.0.0 Mobile Safari/537.36"
-                ),
-                captions = emptyList()
-            )
+                val isNew = synchronized(collected) {
+                    collected.putIfAbsent(resolved, mirror) == null
+                }
+                if (!isNew) return@async
 
-            val isNew = synchronized(collected) {
-                collected.putIfAbsent(resolved, mirror) == null
-            }
-            if (!isNew) continue
+                val score = LinkScore.prelimScore(mirror)
+                try { onLink?.invoke(mirror, score) } catch (_: Exception) {}
+                emitted.incrementAndGet()
 
-            val score = LinkScore.prelimScore(mirror)
-            try { onLink?.invoke(mirror, score) } catch (_: Exception) {}
-            emitted.incrementAndGet()
-
-            if (onSub != null) {
-                buildSubUrls(resolved).forEach { (subLabel, subUrl) ->
-                    try { onSub.invoke(subUrl, subLabel) } catch (_: Exception) {}
-                    collectedSubs.add(subLabel to subUrl)
+                if (onSub != null) {
+                    for ((subLabel, subUrl) in buildSubUrls(resolved)) {
+                        if (subSeen.add(subUrl)) {
+                            try { onSub.invoke(subUrl, subLabel) } catch (_: Exception) {}
+                            collectedSubs.add(subLabel to subUrl)
+                        }
+                    }
                 }
             }
-        }
+        }.awaitAll()
     }
 
     val mirrors = synchronized(collected) { collected.values.toList() }
     val subs = synchronized(collectedSubs) { collectedSubs.toList() }
-    BLog.d("reanime: ${mirrors.size} mirrors emitted, ${subs.size} subs")
+    BLog.d("reanime: ${mirrors.size} mirrors, ${subs.size} subs")
     return AniKageScrape(mirrors, subs)
 }
