@@ -117,7 +117,9 @@ private fun warm(
         key: String,
         work: suspend () -> AniKageScrape
     ): AniKageScrape? {
-        BCCache.getBundle(key)?.let { return it }
+        BCCache.getBundle(key)?.let {
+          return AniKageScrape(it.mirrors, it.subSources)
+        }
         inFlight[key]?.let {
             BLog.v("prefetch: join in-flight $key")
             return it.await()
