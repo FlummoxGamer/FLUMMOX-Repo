@@ -70,7 +70,10 @@ object ReanimeWasmServer {
             server = s; port = s.localPort; running = true
             Thread {
                 while (running) {
-                    try { pool.execute { handle(s.accept()) } } catch (_: Exception) {}
+                    try {
+                        val conn = s.accept()
+                        pool.execute { handle(conn) }
+                    } catch (_: Exception) {}
                 }
             }.apply { isDaemon = true; name = "ReWasmSrv" }.start()
             port
