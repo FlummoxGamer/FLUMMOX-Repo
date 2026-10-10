@@ -1,5 +1,6 @@
 package com.flummox.bingeanime
 
+import android.webkit.CookieManager
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.network.WebViewResolver
 import kotlinx.coroutines.CancellationException
@@ -15,9 +16,12 @@ private const val REANIME_UA =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
-// Flixcloud player is a custom HTML5 player. Script is defensive —
-// clicks video, generic play buttons, dispatches synthetic events.
-// Capture shows auto-play works, but the clicks cover edge cases.
+// Referer must match what the WebView player page emits to the CDN.
+// The embed lives at flixcloud.cc, so all sub-requests carry that
+// referer. Using reanime.to here caused 403 on fetch8/9.flixcloud.cc.
+private const val FLIXCLOUD_REFERER = "https://flixcloud.cc/"
+private const val FLIXCLOUD_ORIGIN = "https://flixcloud.cc"
+
 private val REANIME_CLICK_SCRIPT = """
     (function tick(n) {
         try {
@@ -59,9 +63,6 @@ private fun extractUuid(masterUrl: String): String? =
         RegexOption.IGNORE_CASE)
         .find(masterUrl)?.groupValues?.get(1)
 
-// Fallen CDN serves the subtitle tree. SRT is plain; the four .ass
-// variants carry different styling (signs, songs, dialogue).
-// UUID in the path matches the master m3u8's UUID.
 private fun buildSubUrls(masterUrl: String): List<Pair<String, String>> {
     val uuid = extractUuid(masterUrl) ?: return emptyList()
     val base = "https://vault-95.fallencdn.top/subtitles/$uuid"
@@ -72,6 +73,38 @@ private fun buildSubUrls(masterUrl: String): List<Pair<String, String>> {
         "English (Signs)"         to "$base/${uuid}_eng_3.ass",
         "English (Signs 2)"       to "$base/${uuid}_eng_5.ass"
     )
+}
+
+// Pull every cookie the WebView picked up during the embed resolve.
+// The master m3u8 URL carries a JWT, but the variant playlists
+// (video.m3u8 / audio/*.m3u8) are fetched without a token and rely
+// on the flixcloud session cookie being present.
+private fun grabFlixcloudCookies(): String? {
+    val cm = try { CookieManager.getInstance() } catch (_: Exception) { return null }
+    val hosts = listOf(
+        "https://flixcloud.cc",
+        "https://fetch8.flixcloud.cc",
+        "https://fetch9.flixcloud.cc"
+    )
+    val seen = linkedSetOf<String>()
+    for (h in hosts) {
+        val c = try { cm.getCookie(h) } catch (_: Exception) { null } ?: continue
+        c.split(";").map { it.trim() }.filter { it.isNotBlank() }.forEach { seen.add(it) }
+    }
+    return if (seen.isEmpty()) null else seen.joinToString("; ")
+}
+
+private suspend fun probeMaster(url: String, headers: Map<String, String>): Boolean {
+    return try {
+        val res = app.get(url, headers = headers, timeout = 5_000L)
+        val ct = res.headers["Content-Type"].orEmpty()
+        val head = res.text.take(60).replace("\n", "\\n")
+        BLog.d("reanime probe: code=${res.code} ct=$ct head='$head'")
+        res.code in 200..299 && res.text.contains("#EXTM3U")
+    } catch (e: Exception) {
+        BLog.e("reanime probe: ${e.message}")
+        false
+    }
 }
 
 private suspend fun resolveEmbed(label: String, embedUrl: String): String? {
@@ -126,9 +159,6 @@ suspend fun reanimeExtractRaw(
         return AniKageScrape(emptyList(), emptyList())
     }
 
-    // Group by dataLink — HD-1 and HD-2 use different `?v=` params,
-    // so they stay distinct and both fire in parallel. sub/dub share
-    // the same URL, so one WebView resolves both.
     data class Edge(val url: String, val names: String, val types: String)
     val edges: List<Edge> = servers
         .groupBy { it.url }
@@ -158,15 +188,29 @@ suspend fun reanimeExtractRaw(
                 val label = "${edge.names} (${edge.types.uppercase()})"
                 val resolved = resolveEmbed(label, full) ?: return@async
 
+                // Cookies + proper referer — this is the fix.
+                val cookies = grabFlixcloudCookies()
+                val headers = mutableMapOf(
+                    "Referer" to FLIXCLOUD_REFERER,
+                    "Origin" to FLIXCLOUD_ORIGIN,
+                    "User-Agent" to REANIME_UA,
+                    "Accept" to "*/*"
+                )
+                if (!cookies.isNullOrBlank()) headers["Cookie"] = cookies
+
+                // Probe first. If ExoPlayer would 403, log it now instead
+                // of throwing a user-visible error at playback time.
+                if (!probeMaster(resolved, headers)) {
+                    BLog.e("reanime [$label]: master probe failed — not emitting")
+                    return@async
+                }
+
                 val mirror = ScrapedMirror(
                     quality = "Auto",
                     mirror = edge.names,
                     url = resolved,
                     source = "REANIME",
-                    headers = mapOf(
-                        "Referer" to "https://reanime.to/",
-                        "User-Agent" to REANIME_UA
-                    ),
+                    headers = headers,
                     captions = emptyList()
                 )
 
