@@ -38,8 +38,14 @@ object ReanimeWasmServer {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
     private const val CDN_REFERER = "https://flixcloud.cc/"
 
-    private class Entry(val id: String, val masterUrl: String,
-                        val masterBody: String, val pk: ByteArray) {
+    data class Registered(val url: String, val hasDub: Boolean)
+
+    private class Entry(
+        val id: String,
+        val masterUrl: String,
+        val masterBody: String,
+        val pk: ByteArray
+    ) {
         val segments = ConcurrentHashMap<String, List<String>>()
         val playlists = ConcurrentHashMap<String, String>()
     }
@@ -67,7 +73,9 @@ object ReanimeWasmServer {
         if (running && port > 0) return port
         return try {
             val s = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
-            server = s; port = s.localPort; running = true
+            server = s
+            port = s.localPort
+            running = true
             Thread {
                 while (running) {
                     try {
@@ -81,7 +89,7 @@ object ReanimeWasmServer {
     }
 
     @Synchronized
-    fun register(masterUrl: String, masterBody: String, pk: ByteArray): String? {
+    fun register(masterUrl: String, masterBody: String, pk: ByteArray): Registered? {
         val p = ensureServer(); if (p == 0) return null
         val id = MessageDigest.getInstance("MD5").digest(masterUrl.toByteArray())
             .joinToString("") { "%02x".format(it) }.take(12)
@@ -90,7 +98,19 @@ object ReanimeWasmServer {
             while (order.size > MAX_STREAMS) order.removeFirstOrNull()?.let { streams.remove(it) }
         }
         streams[id] = Entry(id, masterUrl, masterBody, pk)
-        return "http://127.0.0.1:$p/$id/master.m3u8"
+        return Registered("http://127.0.0.1:$p/$id/master.m3u8", detectDub(masterBody))
+    }
+
+    private fun detectDub(master: String): Boolean {
+        for (line in master.lineSequence()) {
+            if (!line.startsWith("#EXT-X-MEDIA")) continue
+            if (!line.contains("TYPE=AUDIO")) continue
+            val lang = Regex("""LANGUAGE="([^"]*)"""").find(line)?.groupValues?.get(1).orEmpty()
+            val name = Regex("""NAME="([^"]*)"""").find(line)?.groupValues?.get(1).orEmpty()
+            if (lang.startsWith("en", ignoreCase = true) ||
+                name.contains("english", ignoreCase = true)) return true
+        }
+        return false
     }
 
     private fun handle(conn: Socket) {
@@ -133,9 +153,9 @@ object ReanimeWasmServer {
         val keep = mutableSetOf<Int>()
         if (audioIdx.isNotEmpty()) {
             val english = audioIdx.filter { i ->
-                val l = Regex("""LANGUAGE="([^"]*)"""").find(lines[i])?.groupValues?.get(1) ?: ""
-                val n = Regex("""NAME="([^"]*)"""").find(lines[i])?.groupValues?.get(1) ?: ""
-                l.startsWith("en") || n.contains("English", true)
+                val l = Regex("""LANGUAGE="([^"]*)"""").find(lines[i])?.groupValues?.get(1).orEmpty()
+                val n = Regex("""NAME="([^"]*)"""").find(lines[i])?.groupValues?.get(1).orEmpty()
+                l.startsWith("en", true) || n.contains("English", true)
             }
             val want = if (lang == "dub") english else audioIdx.filter { it !in english }
             keep.addAll(if (want.isEmpty()) audioIdx else want)
@@ -155,7 +175,8 @@ object ReanimeWasmServer {
                 line.startsWith("#EXT-X-STREAM-INF") -> { pendingVariant = true; out.append(line).append('\n') }
                 pendingVariant && !line.startsWith("#") -> {
                     val abs = resolve(line, baseUri) ?: return null
-                    out.append(pathFor(entry, abs, "p")).append('\n'); pendingVariant = false
+                    out.append(pathFor(entry, abs, "p")).append('\n')
+                    pendingVariant = false
                 }
                 else -> out.append(line).append('\n')
             }
@@ -263,13 +284,15 @@ object ReanimeWasmServer {
 
     private fun imgHeader(d: ByteArray): Int {
         if (d.size >= 12 &&
-            d[0] == 0x52.toByte() && d[1] == 0x49.toByte() && d[2] == 0x46.toByte() && d[3] == 0x46.toByte() &&
-            d[8] == 0x57.toByte() && d[9] == 0x45.toByte() && d[10] == 0x42.toByte() && d[11] == 0x50.toByte()
-        ) return 12
+            d[0] == 0x52.toByte() && d[1] == 0x49.toByte() &&
+            d[2] == 0x46.toByte() && d[3] == 0x46.toByte() &&
+            d[8] == 0x57.toByte() && d[9] == 0x45.toByte() &&
+            d[10] == 0x42.toByte() && d[11] == 0x50.toByte()) return 12
         if (d.size >= 8 &&
-            d[0] == 0x89.toByte() && d[1] == 0x50.toByte() && d[2] == 0x4e.toByte() && d[3] == 0x47.toByte() &&
-            d[4] == 0x0d.toByte() && d[5] == 0x0a.toByte() && d[6] == 0x1a.toByte() && d[7] == 0x0a.toByte()
-        ) return 8
+            d[0] == 0x89.toByte() && d[1] == 0x50.toByte() &&
+            d[2] == 0x4e.toByte() && d[3] == 0x47.toByte() &&
+            d[4] == 0x0d.toByte() && d[5] == 0x0a.toByte() &&
+            d[6] == 0x1a.toByte() && d[7] == 0x0a.toByte()) return 8
         return 0
     }
 
@@ -336,8 +359,11 @@ object ReanimeWasmServer {
     private fun pathFor(entry: Entry, abs: String, route: String): String =
         "/${entry.id}/$route/${URLEncoder.encode(abs, "UTF-8")}"
 
-    private fun resolve(ref: String, base: URI): String? = try { base.resolve(ref).toString() } catch (_: Exception) { null }
-    private fun dec(s: String): String = try { URLDecoder.decode(s, "UTF-8") } catch (_: Exception) { s }
+    private fun resolve(ref: String, base: URI): String? =
+        try { base.resolve(ref).toString() } catch (_: Exception) { null }
+
+    private fun dec(s: String): String =
+        try { URLDecoder.decode(s, "UTF-8") } catch (_: Exception) { s }
 
     private fun req(url: String): Request = Request.Builder()
         .url(url)
