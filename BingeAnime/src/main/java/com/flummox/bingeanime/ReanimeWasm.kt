@@ -6,7 +6,6 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
@@ -71,11 +70,9 @@ object ReanimeWasm {
             val primary = en ?: ro ?: na ?: continue
             val cover = o.optJSONObject("cover_image")
                 ?.optString("large")?.takeIf { it.startsWith("http") }
-            out.add(Hit(
-                slug, alId, primary,
+            out.add(Hit(slug, alId, primary,
                 listOfNotNull(en, ro, na).distinct(),
-                o.optInt("season_year", 0).takeIf { it > 0 }, cover
-            ))
+                o.optInt("season_year", 0).takeIf { it > 0 }, cover))
         }
         return out
     }
@@ -159,22 +156,22 @@ object ReanimeWasm {
         val encKey = Regex(""""?$keyField"?\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
         if (encVideo == null || encKey == null) { BLog.e("reanime: no video/key"); null } else {
 
-        val wasm = MiniVm(Base64.decode(wasmB64, Base64.DEFAULT))
         val f1 = b64d(kfB64); val f2 = b64d(keyFrag2B64); val f3 = b64d(encKey)
-        val k = f1.size
-        if (k == 0 || f2.size != k || f3.size != k) { BLog.e("reanime: frag mismatch"); null } else {
-
-        val base = 1000
-        wasm.writeMem(base, f1)
-        wasm.writeMem(base + k, f2)
-        wasm.writeMem(base + 2 * k, f3)
         val seedInt = seed.take(8).toLongOrNull(16)?.toInt()
-        if (seedInt == null) { BLog.e("reanime: seed parse"); null } else {
+        if (seedInt == null || f1.isEmpty() || f2.size != f1.size || f3.size != f1.size) {
+            BLog.e("reanime: frag mismatch"); null
+        } else {
 
-        wasm.invoke("_s", seedInt)
-        wasm.invoke("_r", base, base + k, base + 2 * k, base + 3 * k, k)
-        val keySeed = wasm.readMem(base + 3 * k, k)
-        if (keySeed.all { it == 0.toByte() }) { BLog.e("reanime: wasm empty"); null } else {
+        val vm = Vm(Base64.decode(wasmB64, Base64.DEFAULT))
+        val k = f1.size
+        val slot = 1000
+        vm.load(slot, f1)
+        vm.load(slot + k, f2)
+        vm.load(slot + 2 * k, f3)
+        vm.call("_s", seedInt)
+        vm.call("_r", slot, slot + k, slot + 2 * k, slot + 3 * k, k)
+        val keySeed = vm.dump(slot + 3 * k, k)
+        if (keySeed.all { it == 0.toByte() }) { BLog.e("reanime: vm empty"); null } else {
 
         val seedBytes = seed.toByteArray(Charsets.UTF_8)
         val pbkdf2 = pbkdf2Sha256(keySeed, seedBytes, 1000, 32)
@@ -191,7 +188,7 @@ object ReanimeWasm {
         val masterUrl = String(padded.copyOfRange(0, cut), Charsets.UTF_8).trim()
         if (!masterUrl.startsWith("http")) { BLog.e("reanime: bad url"); null } else {
 
-        val pk = derivePk(wasm.dataSection)
+        val pk = derivePk(vm.payload())
         if (pk == null) { BLog.e("reanime: bad pk"); null } else {
 
         val masterRaw = app.get(masterUrl, headers = cdnHeaders()).text.trim()
@@ -274,258 +271,306 @@ object ReanimeWasm {
             else -> lang
         }
     }
+}
 
-    // Minimal WASM interpreter for the key-derivation module shipped
-    // with each embed. Handles only the opcode subset that module uses.
-    private class MiniVm(bytes: ByteArray) {
-        private class Fn(val locals: IntArray, val code: ByteArray)
-        private class Lbl(val isLoop: Boolean, val body: Int, val end: Int)
+// Minimal WebAssembly executor for the key-derivation module used by
+// the embed player. Branch targets are resolved once at parse time so
+// execute() runs without a frame stack.
+private class Vm(raw: ByteArray) {
 
-        private val mem = ByteArray(1 shl 18)
-        private val globals = IntArray(16)
-        private val funcs = ArrayList<Fn>()
-        private val exports = HashMap<String, Int>()
-        var dataSection: ByteArray = ByteArray(0); private set
+    private class Routine(
+        val slots: Int,
+        val code: ByteArray,
+        val brDest: IntArray,
+        val ifElse: IntArray,
+        val ifEnd: IntArray,
+        val elseEnd: IntArray
+    )
 
-        init {
-            require(bytes.size >= 8 && bytes[0] == 0x00.toByte() && bytes[1] == 0x61.toByte())
-            var p = 8
-            while (p < bytes.size) {
-                val id = bytes[p].toInt() and 0xFF
-                val (sz, afterLen) = lebU(bytes, p + 1)
-                val end = afterLen + sz
-                if (end > bytes.size) break
-                when (id) {
-                    7 -> parseExports(bytes, afterLen, end)
-                    10 -> parseCode(bytes, afterLen, end)
-                    11 -> parseData(bytes, afterLen, end)
-                }
-                p = end
+    private class Control(
+        val brDest: IntArray,
+        val ifElse: IntArray,
+        val ifEnd: IntArray,
+        val elseEnd: IntArray
+    )
+
+    private val arena = ByteArray(1 shl 18)
+    private val registers = IntArray(16)
+    private val routines = ArrayList<Routine>()
+    private val exportMap = HashMap<String, Int>()
+    private val operand = IntArray(4096)
+    private var payload = ByteArray(0)
+
+    init { parse(raw) }
+
+    fun payload(): ByteArray = payload
+
+    fun load(offset: Int, data: ByteArray) {
+        if (offset < 0 || offset + data.size > arena.size) return
+        System.arraycopy(data, 0, arena, offset, data.size)
+    }
+
+    fun dump(offset: Int, size: Int): ByteArray {
+        if (offset < 0 || offset + size > arena.size) return ByteArray(size)
+        return arena.copyOfRange(offset, offset + size)
+    }
+
+    fun call(name: String, vararg argv: Int) {
+        val idx = exportMap[name] ?: return
+        val routine = routines.getOrNull(idx) ?: return
+        execute(routine, argv)
+    }
+
+    private fun parse(raw: ByteArray) {
+        if (raw.size < 8 || raw[0] != 0x00.toByte() || raw[1] != 0x61.toByte()) return
+        var at = 8
+        while (at < raw.size) {
+            val sid = raw[at].toInt() and 0xFF
+            val (len, after) = uleb(raw, at + 1)
+            val end = after + len
+            if (end > raw.size) break
+            when (sid) {
+                7 -> readExports(raw, after, end)
+                10 -> readCode(raw, after, end)
+                11 -> readData(raw, after, end)
             }
-        }
-
-        fun writeMem(o: Int, d: ByteArray) {
-            if (o < 0 || o + d.size > mem.size) return
-            System.arraycopy(d, 0, mem, o, d.size)
-        }
-        fun readMem(o: Int, l: Int): ByteArray {
-            if (o < 0 || o + l > mem.size) return ByteArray(l)
-            return mem.copyOfRange(o, o + l)
-        }
-        fun invoke(n: String, vararg a: Int) {
-            val fn = funcs.getOrNull(exports[n] ?: return) ?: return
-            run(fn, a)
-        }
-
-        private fun parseExports(b: ByteArray, s: Int, e: Int) {
-            var p = s
-            val (cnt, ac) = lebU(b, p); p = ac
-            repeat(cnt) {
-                if (p >= e) return
-                val nl = b[p].toInt() and 0xFF; p++
-                if (p + nl > e) return
-                val name = String(b, p, nl, Charsets.UTF_8); p += nl
-                if (p >= e) return
-                val kind = b[p].toInt() and 0xFF; p++
-                val (idx, ai) = lebU(b, p); p = ai
-                if (kind == 0) exports[name] = idx
-            }
-        }
-
-        private fun parseCode(b: ByteArray, s: Int, e: Int) {
-            var p = s
-            val (cnt, ac) = lebU(b, p); p = ac
-            repeat(cnt) {
-                if (p >= e) return
-                val (bsz, ab) = lebU(b, p); p = ab
-                val be = p + bsz
-                if (be > e) return
-                var q = p
-                val (ng, ag) = lebU(b, q); q = ag
-                val locals = ArrayList<Int>()
-                repeat(ng) {
-                    if (q >= be) return
-                    val (c, ac2) = lebU(b, q); q = ac2
-                    if (q >= be) return
-                    val ty = b[q].toInt() and 0xFF; q++
-                    repeat(c) { locals.add(ty) }
-                }
-                funcs.add(Fn(locals.toIntArray(), b.copyOfRange(q, be)))
-                p = be
-            }
-        }
-
-        private fun parseData(b: ByteArray, s: Int, e: Int) {
-            var p = s
-            val (cnt, ac) = lebU(b, p); p = ac
-            repeat(cnt) {
-                if (p >= e) return
-                val flag = b[p].toInt() and 0xFF; p++
-                if (flag != 0x00 && flag != 0x02) return@repeat
-                if (p >= e || b[p].toInt() and 0xFF != 0x41) return@repeat
-                val (off, ao) = lebS(b, p + 1); p = ao
-                if (p < e && b[p].toInt() and 0xFF == 0x0b) p++
-                val (sz, asz) = lebU(b, p); p = asz
-                if (p + sz > e) return
-                if (off in 0 until mem.size && off + sz <= mem.size) {
-                    System.arraycopy(b, p, mem, off, sz)
-                }
-                if (sz > dataSection.size) dataSection = b.copyOfRange(p, p + sz)
-                p += sz
-            }
-        }
-
-        private fun run(fn: Fn, args: IntArray) {
-            val code = fn.code
-            val locals = IntArray(args.size + fn.locals.size)
-            for (i in args.indices) locals[i] = args[i]
-
-            val elseOf = HashMap<Int, Int>()
-            val endOf = HashMap<Int, Int>()
-            run {
-                val ctl = ArrayDeque<Int>()
-                var i = 0
-                while (i < code.size) {
-                    when (code[i].toInt() and 0xFF) {
-                        0x02, 0x03, 0x04 -> { ctl.addLast(i); i = lebU(code, i + 1).second }
-                        0x05 -> { ctl.lastOrNull()?.let { elseOf[it] = i }; i++ }
-                        0x0b -> { ctl.removeLastOrNull()?.let { endOf[it] = i }; i++ }
-                        0x41, 0x42 -> i = lebS(code, i + 1).second
-                        0x43 -> i += 5
-                        0x44 -> i += 9
-                        0x0e -> {
-                            val (n, an) = lebU(code, i + 1); i = an
-                            repeat(n + 1) { i = lebU(code, i).second }
-                        }
-                        0x0c, 0x0d, 0x10, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x3f, 0x40 ->
-                            i = lebU(code, i + 1).second
-                        0x11 -> { i = lebU(code, i + 1).second; i = lebU(code, i).second }
-                        in 0x28..0x3e -> { i = lebU(code, i + 1).second; i = lebU(code, i).second }
-                        else -> i++
-                    }
-                }
-            }
-
-            val stack = ArrayDeque<Int>()
-            val labels = ArrayDeque<Lbl>()
-            var p = 0
-
-            fun branch(d: Int) {
-                val idx = labels.size - 1 - d
-                if (idx < 0) { p = code.size; return }
-                val t = labels.elementAt(idx)
-                if (t.isLoop) {
-                    while (labels.size > idx + 1) labels.removeLastOrNull()
-                    p = t.body
-                } else {
-                    while (labels.size > idx) labels.removeLastOrNull()
-                    p = t.end + 1
-                }
-            }
-
-            while (p < code.size) {
-                when (code[p].toInt() and 0xFF) {
-                    0x00 -> return
-                    0x01 -> p++
-                    0x02, 0x03 -> {
-                        val isLoop = (code[p].toInt() and 0xFF) == 0x03
-                        val at = lebU(code, p + 1).second
-                        labels.addLast(Lbl(isLoop, at, endOf[p] ?: (code.size - 1)))
-                        p = at
-                    }
-                    0x04 -> {
-                        val cond = stack.removeLastOrNull() ?: 0
-                        val endIdx = endOf[p] ?: (code.size - 1)
-                        val elseIdx = elseOf[p]
-                        val at = lebU(code, p + 1).second
-                        if (cond != 0) { labels.addLast(Lbl(false, at, endIdx)); p = at }
-                        else if (elseIdx != null) { labels.addLast(Lbl(false, elseIdx + 1, endIdx)); p = elseIdx + 1 }
-                        else p = endIdx + 1
-                    }
-                    0x05 -> { val l = labels.removeLastOrNull(); p = (l?.end ?: (code.size - 1)) + 1 }
-                    0x0b -> { labels.removeLastOrNull(); p++ }
-                    0x0c -> { val (d, a) = lebU(code, p + 1); p = a; branch(d) }
-                    0x0d -> {
-                        val (d, a) = lebU(code, p + 1); p = a
-                        if ((stack.removeLastOrNull() ?: 0) != 0) branch(d)
-                    }
-                    0x0f -> return
-                    0x1a -> { stack.removeLastOrNull(); p++ }
-                    0x1b -> {
-                        p++
-                        val c = stack.removeLastOrNull() ?: 0
-                        val b2 = stack.removeLastOrNull() ?: 0
-                        val a2 = stack.removeLastOrNull() ?: 0
-                        stack.addLast(if (c != 0) a2 else b2)
-                    }
-                    0x20 -> { val (i, j) = lebU(code, p + 1); p = j; stack.addLast(locals.getOrElse(i) { 0 }) }
-                    0x21 -> { val (i, j) = lebU(code, p + 1); p = j; if (i < locals.size) locals[i] = stack.removeLastOrNull() ?: 0 }
-                    0x22 -> { val (i, j) = lebU(code, p + 1); p = j; if (i < locals.size) locals[i] = stack.lastOrNull() ?: 0 }
-                    0x23 -> { val (i, j) = lebU(code, p + 1); p = j; stack.addLast(globals.getOrElse(i) { 0 }) }
-                    0x24 -> { val (i, j) = lebU(code, p + 1); p = j; if (i < globals.size) globals[i] = stack.removeLastOrNull() ?: 0 }
-                    0x2d -> {
-                        val (_, j1) = lebU(code, p + 1); val (off, j2) = lebU(code, j1); p = j2
-                        val addr = (stack.removeLastOrNull() ?: 0) + off
-                        stack.addLast(if (addr in mem.indices) mem[addr].toInt() and 0xFF else 0)
-                    }
-                    0x3a -> {
-                        val (_, j1) = lebU(code, p + 1); val (off, j2) = lebU(code, j1); p = j2
-                        val v = stack.removeLastOrNull() ?: 0
-                        val addr = (stack.removeLastOrNull() ?: 0) + off
-                        if (addr in mem.indices) mem[addr] = (v and 0xFF).toByte()
-                    }
-                    0x41 -> { val (v, j) = lebS(code, p + 1); p = j; stack.addLast(v) }
-                    0x45 -> { p++; stack.addLast(if ((stack.removeLastOrNull() ?: 0) == 0) 1 else 0) }
-                    0x46 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (x == y) 1 else 0) }
-                    0x47 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (x != y) 1 else 0) }
-                    0x48 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (x < y) 1 else 0) }
-                    0x49 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (Integer.compareUnsigned(x, y) < 0) 1 else 0) }
-                    0x4a -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (Integer.compareUnsigned(x, y) > 0) 1 else 0) }
-                    0x4b, 0x4d -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (Integer.compareUnsigned(x, y) <= 0) 1 else 0) }
-                    0x4e -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (x >= y) 1 else 0) }
-                    0x4f -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(if (Integer.compareUnsigned(x, y) >= 0) 1 else 0) }
-                    0x6a -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x + y) }
-                    0x6b -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x - y) }
-                    0x6c -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x * y) }
-                    0x71 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x and y) }
-                    0x72 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x or y) }
-                    0x73 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x xor y) }
-                    0x74 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x shl (y and 31)) }
-                    0x75 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x shr (y and 31)) }
-                    0x76 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x ushr (y and 31)) }
-                    0x77 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; val s = y and 31; stack.addLast(if (s == 0) x else (x shl s) or (x ushr (32 - s))) }
-                    0x78 -> { p++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; val s = y and 31; stack.addLast(if (s == 0) x else (x ushr s) or (x shl (32 - s))) }
-                    else -> return
-                }
-            }
-        }
-
-        private fun lebU(b: ByteArray, off: Int): Pair<Int, Int> {
-            var v = 0; var shift = 0; var j = off
-            while (j < b.size) {
-                val x = b[j].toInt() and 0xFF; j++
-                v = v or ((x and 0x7F) shl shift)
-                shift += 7
-                if (x and 0x80 == 0) break
-                if (shift > 35) break
-            }
-            return v to j
-        }
-
-        private fun lebS(b: ByteArray, off: Int): Pair<Int, Int> {
-            var v = 0; var shift = 0; var j = off; var last = 0
-            while (j < b.size) {
-                val x = b[j].toInt() and 0xFF; j++
-                last = x
-                v = v or ((x and 0x7F) shl shift)
-                shift += 7
-                if (x and 0x80 == 0) break
-                if (shift > 35) break
-            }
-            if (shift < 32 && (last and 0x40) != 0) v = v or (-1 shl shift)
-            return v to j
+            at = end
         }
     }
+
+    private fun readExports(b: ByteArray, from: Int, to: Int) {
+        var at = from
+        val (count, ac) = uleb(b, at); at = ac
+        repeat(count) {
+            if (at >= to) return
+            val nl = b[at].toInt() and 0xFF; at++
+            if (at + nl > to) return
+            val name = String(b, at, nl, Charsets.UTF_8); at += nl
+            if (at >= to) return
+            val kind = b[at].toInt() and 0xFF; at++
+            val (idx, ai) = uleb(b, at); at = ai
+            if (kind == 0) exportMap[name] = idx
+        }
+    }
+
+    private fun readCode(b: ByteArray, from: Int, to: Int) {
+        var at = from
+        val (count, ac) = uleb(b, at); at = ac
+        repeat(count) {
+            if (at >= to) return
+            val (blen, ab) = uleb(b, at); at = ab
+            val bodyEnd = at + blen
+            if (bodyEnd > to) return
+            var p = at
+            val (groups, ag) = uleb(b, p); p = ag
+            var totalSlots = 0
+            repeat(groups) {
+                if (p >= bodyEnd) return
+                val (n, an) = uleb(b, p); p = an
+                if (p >= bodyEnd) return
+                p++
+                totalSlots += n
+            }
+            val code = b.copyOfRange(p, bodyEnd)
+            val ctrl = buildControl(code)
+            routines.add(Routine(totalSlots, code, ctrl.brDest, ctrl.ifElse, ctrl.ifEnd, ctrl.elseEnd))
+            at = bodyEnd
+        }
+    }
+
+    private fun readData(b: ByteArray, from: Int, to: Int) {
+        var at = from
+        val (count, ac) = uleb(b, at); at = ac
+        repeat(count) {
+            if (at >= to) return
+            val flag = b[at].toInt() and 0xFF; at++
+            if (flag != 0x00 && flag != 0x02) return@repeat
+            if (at >= to || b[at].toInt() and 0xFF != 0x41) return@repeat
+            val (offset, ao) = sleb(b, at + 1); at = ao
+            if (at < to && b[at].toInt() and 0xFF == 0x0b) at++
+            val (sz, asz) = uleb(b, at); at = asz
+            if (at + sz > to) return
+            if (offset in 0 until arena.size && offset + sz <= arena.size) {
+                System.arraycopy(b, at, arena, offset, sz)
+            }
+            if (sz > payload.size) payload = b.copyOfRange(at, at + sz)
+            at += sz
+        }
+    }
+
+    private fun buildControl(code: ByteArray): Control {
+        val n = code.size
+        val brDest = IntArray(n) { -1 }
+        val ifElse = IntArray(n) { -1 }
+        val ifEnd = IntArray(n) { -1 }
+        val elseEnd = IntArray(n) { -1 }
+
+        class Scope(val pc: Int, val isLoop: Boolean, val isIf: Boolean) {
+            val pendingBr = ArrayList<Int>()
+            var elsePc = -1
+        }
+
+        val scopes = ArrayList<Scope>()
+        var pc = 0
+        while (pc < n) {
+            when (val op = code[pc].toInt() and 0xFF) {
+                0x02, 0x03 -> {
+                    scopes.add(Scope(pc, op == 0x03, false))
+                    pc += 2
+                }
+                0x04 -> {
+                    scopes.add(Scope(pc, false, true))
+                    pc += 2
+                }
+                0x05 -> {
+                    val top = scopes.lastOrNull()
+                    if (top != null && top.isIf) {
+                        top.elsePc = pc
+                        ifElse[top.pc] = pc
+                    }
+                    pc++
+                }
+                0x0b -> {
+                    val scope = scopes.removeLastOrNull()
+                    if (scope != null) {
+                        val exit = if (scope.isLoop) scope.pc + 2 else pc + 1
+                        for (bp in scope.pendingBr) brDest[bp] = exit
+                        if (scope.isIf) ifEnd[scope.pc] = pc
+                        if (scope.elsePc >= 0) elseEnd[scope.elsePc] = pc
+                    }
+                    pc++
+                }
+                0x0c, 0x0d -> {
+                    val (depth, after) = uleb(code, pc + 1)
+                    val scope = if (depth < scopes.size) scopes[scopes.size - 1 - depth] else null
+                    if (scope != null) scope.pendingBr.add(pc) else brDest[pc] = n
+                    pc = after
+                }
+                0x41, 0x42 -> pc = sleb(code, pc + 1).second
+                0x43 -> pc += 5
+                0x44 -> pc += 9
+                0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x3f, 0x40 -> pc = uleb(code, pc + 1).second
+                0x10 -> pc = uleb(code, pc + 1).second
+                0x11 -> { pc = uleb(code, pc + 1).second; pc = uleb(code, pc).second }
+                in 0x28..0x3e -> { pc = uleb(code, pc + 1).second; pc = uleb(code, pc).second }
+                else -> pc++
+            }
+        }
+        return Control(brDest, ifElse, ifEnd, elseEnd)
+    }
+
+    private fun execute(r: Routine, args: IntArray) {
+        val code = r.code
+        val brDest = r.brDest
+        val ifElse = r.ifElse
+        val ifEnd = r.ifEnd
+        val elseEnd = r.elseEnd
+        val locals = IntArray(args.size + r.slots)
+        System.arraycopy(args, 0, locals, 0, args.size)
+
+        var sp = 0
+        var pc = 0
+
+        fun push(v: Int) { if (sp < operand.size) operand[sp++] = v }
+        fun pop(): Int = if (sp > 0) operand[--sp] else 0
+        fun peek(): Int = if (sp > 0) operand[sp - 1] else 0
+
+        while (pc < code.size) {
+            when (val op = code[pc].toInt() and 0xFF) {
+                0x00 -> return
+                0x01 -> pc++
+                0x02, 0x03 -> pc += 2
+                0x04 -> {
+                    val cond = pop()
+                    val entry = pc + 2
+                    if (cond != 0) { pc = entry }
+                    else {
+                        val alt = ifElse[pc]
+                        pc = if (alt >= 0) alt + 1 else ifEnd[pc] + 1
+                    }
+                }
+                0x05 -> pc = elseEnd[pc] + 1
+                0x0b -> pc++
+                0x0c -> pc = brDest[pc]
+                0x0d -> {
+                    val opPc = pc
+                    pc = uleb(code, pc + 1).second
+                    if (pop() != 0) pc = brDest[opPc]
+                }
+                0x0f -> return
+                0x1a -> { pop(); pc++ }
+                0x1b -> {
+                    pc++
+                    val c = pop(); val b2 = pop(); val a2 = pop()
+                    push(if (c != 0) a2 else b2)
+                }
+                0x20 -> { val (i, j) = uleb(code, pc + 1); pc = j; push(locals.getOrElse(i) { 0 }) }
+                0x21 -> { val (i, j) = uleb(code, pc + 1); pc = j; if (i < locals.size) locals[i] = pop() }
+                0x22 -> { val (i, j) = uleb(code, pc + 1); pc = j; if (i < locals.size) locals[i] = peek() }
+                0x23 -> { val (i, j) = uleb(code, pc + 1); pc = j; push(registers.getOrElse(i) { 0 }) }
+                0x24 -> { val (i, j) = uleb(code, pc + 1); pc = j; if (i < registers.size) registers[i] = pop() }
+                0x2d -> {
+                    val (_, j1) = uleb(code, pc + 1); val (off, j2) = uleb(code, j1); pc = j2
+                    val addr = pop() + off
+                    push(if (addr in arena.indices) arena[addr].toInt() and 0xFF else 0)
+                }
+                0x3a -> {
+                    val (_, j1) = uleb(code, pc + 1); val (off, j2) = uleb(code, j1); pc = j2
+                    val v = pop()
+                    val addr = pop() + off
+                    if (addr in arena.indices) arena[addr] = (v and 0xFF).toByte()
+                }
+                0x41 -> { val (v, j) = sleb(code, pc + 1); pc = j; push(v) }
+                0x45 -> { pc++; push(if (pop() == 0) 1 else 0) }
+                0x46 -> { pc++; val y = pop(); val x = pop(); push(if (x == y) 1 else 0) }
+                0x47 -> { pc++; val y = pop(); val x = pop(); push(if (x != y) 1 else 0) }
+                0x48 -> { pc++; val y = pop(); val x = pop(); push(if (x < y) 1 else 0) }
+                0x49 -> { pc++; val y = pop(); val x = pop(); push(if (x.toUInt() < y.toUInt()) 1 else 0) }
+                0x4a -> { pc++; val y = pop(); val x = pop(); push(if (x.toUInt() > y.toUInt()) 1 else 0) }
+                0x4b, 0x4d -> { pc++; val y = pop(); val x = pop(); push(if (x.toUInt() <= y.toUInt()) 1 else 0) }
+                0x4e -> { pc++; val y = pop(); val x = pop(); push(if (x >= y) 1 else 0) }
+                0x4f -> { pc++; val y = pop(); val x = pop(); push(if (x.toUInt() >= y.toUInt()) 1 else 0) }
+                0x6a -> { pc++; val y = pop(); val x = pop(); push(x + y) }
+                0x6b -> { pc++; val y = pop(); val x = pop(); push(x - y) }
+                0x6c -> { pc++; val y = pop(); val x = pop(); push(x * y) }
+                0x71 -> { pc++; val y = pop(); val x = pop(); push(x and y) }
+                0x72 -> { pc++; val y = pop(); val x = pop(); push(x or y) }
+                0x73 -> { pc++; val y = pop(); val x = pop(); push(x xor y) }
+                0x74 -> { pc++; val y = pop(); val x = pop(); push(x shl (y and 31)) }
+                0x75 -> { pc++; val y = pop(); val x = pop(); push(x shr (y and 31)) }
+                0x76 -> { pc++; val y = pop(); val x = pop(); push(x ushr (y and 31)) }
+                0x77 -> { pc++; val y = pop(); val x = pop(); val s = y and 31
+                    push(if (s == 0) x else (x shl s) or (x ushr (32 - s))) }
+                0x78 -> { pc++; val y = pop(); val x = pop(); val s = y and 31
+                    push(if (s == 0) x else (x ushr s) or (x shl (32 - s))) }
+                else -> return
+            }
+        }
+    }
+}
+
+private fun uleb(b: ByteArray, off: Int): Pair<Int, Int> {
+    var v = 0; var s = 0; var i = off
+    while (i < b.size) {
+        val x = b[i].toInt() and 0xFF; i++
+        v = v or ((x and 0x7F) shl s); s += 7
+        if (x and 0x80 == 0) break
+        if (s > 35) break
+    }
+    return v to i
+}
+
+private fun sleb(b: ByteArray, off: Int): Pair<Int, Int> {
+    var v = 0; var s = 0; var i = off; var last = 0
+    while (i < b.size) {
+        val x = b[i].toInt() and 0xFF; i++
+        last = x
+        v = v or ((x and 0x7F) shl s); s += 7
+        if (x and 0x80 == 0) break
+        if (s > 35) break
+    }
+    if (s < 32 && (last and 0x40) != 0) v = v or (-1 shl s)
+    return v to i
 }
 
 suspend fun reanimeWasmExtract(
@@ -551,35 +596,48 @@ suspend fun reanimeWasmExtract(
 
     val collected = ConcurrentHashMap<String, ScrapedMirror>()
     val subsSeen = ConcurrentHashMap.newKeySet<String>()
-    val emitted = AtomicInteger(0)
 
     coroutineScope {
         edges.map { edge ->
             async {
                 try {
                     val r = ReanimeWasm.resolve(edge.url) ?: return@async
-                    val baseUrl = ReanimeWasmServer.register(r.masterUrl, r.masterBody, r.pk)
+                    val reg = ReanimeWasmServer.register(r.masterUrl, r.masterBody, r.pk)
                         ?: return@async
 
-                    for (lang in listOf("sub", "dub")) {
-                        val url = "$baseUrl?lang=$lang"
-                        val m = ScrapedMirror(
+                    val subUrl = "${reg.url}?lang=sub"
+                    val subMirror = ScrapedMirror(
+                        quality = "Auto",
+                        mirror = "${edge.names} · SUB",
+                        url = subUrl,
+                        source = "REANIME",
+                        headers = emptyMap(),
+                        captions = emptyList()
+                    )
+                    if (collected.putIfAbsent(subUrl, subMirror) == null) {
+                        try { onLink?.invoke(subMirror, LinkScore.prelimScore(subMirror)) } catch (_: Exception) {}
+                    }
+
+                    if (reg.hasDub) {
+                        val dubUrl = "${reg.url}?lang=dub"
+                        val dubMirror = ScrapedMirror(
                             quality = "Auto",
-                            mirror = "${edge.names} · ${lang.uppercase()}",
-                            url = url,
+                            mirror = "${edge.names} · DUB",
+                            url = dubUrl,
                             source = "REANIME",
                             headers = emptyMap(),
                             captions = emptyList()
                         )
-                        if (collected.putIfAbsent(url, m) != null) continue
-                        try { onLink?.invoke(m, LinkScore.prelimScore(m)) } catch (_: Exception) {}
-                        emitted.incrementAndGet()
+                        if (collected.putIfAbsent(dubUrl, dubMirror) == null) {
+                            try { onLink?.invoke(dubMirror, LinkScore.prelimScore(dubMirror)) } catch (_: Exception) {}
+                        }
                     }
 
                     if (onSub != null) {
-                        for ((label, subUrl) in r.subs) {
-                            if (subsSeen.add(subUrl)) {
-                                try { onSub.invoke(subUrl, label) } catch (_: Exception) {}
+                        for ((label, url) in r.subs) {
+                            if (!BingeAnimeSettings.subLangMatches(label)) continue
+                            if (subsSeen.add(url)) {
+                                try { onSub.invoke(url, label) } catch (_: Exception) {}
                             }
                         }
                     }
