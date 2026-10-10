@@ -212,14 +212,22 @@ class BingeAnimeProvider : MainAPI() {
             }
         }
 
-        return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
-            this.posterUrl = entry.coverImage
-            this.backgroundPosterUrl = entry.bannerUrl
-            this.plot = plotWithStatus
-            this.year = yearInt
-            this.tags = entry.genres
-            if (score10 != null) this.score = Score.from10(score10)
-        }
+    if (BingeAnimeSettings.isSrcAniwaves()) {
+        val firstEpQ = StreamQuery(
+            name, yearInt?.toString() ?: "", "series", url,
+            season = 1, episode = 1, totalEpisodes = totalEps
+        )
+        PrefetchEngine.warmOnLoad(firstEpQ) { aniwavesExtractRaw(it) }
+    }
+
+    return newTvSeriesLoadResponse(name, url, TvType.Anime, episodes) {
+        this.posterUrl = entry.coverImage
+        this.backgroundPosterUrl = entry.bannerUrl
+        this.plot = plotWithStatus
+        this.year = yearInt
+        this.tags = entry.genres
+        if (score10 != null) this.score = Score.from10(score10)
+    }
     }
 
     override suspend fun loadLinks(
@@ -264,66 +272,81 @@ class BingeAnimeProvider : MainAPI() {
             return emittedCount.get() > 0
         }
 
-        // ── live path: parallel source fan-out with progressive emit ──
-        val scrape = try {
-            coroutineScope {
-                val kageDeferred = async {
-                    try {
-                        anikageExtractRaw(
-                            q,
-                            onLink = { m, score ->
-                                emitMirrorScored(m, score, callback, emittedCount)
-                            },
-                            onSub = { url, label ->
-                                if (subSeen.add(url)) {
-                                    try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
-                                }
+// ── live path: parallel source fan-out with progressive emit ──
+// AniKage: live-only, own bundle cache, streaming onLink emit.
+// AniWaves: PrefetchEngine-cached, emits after merge (its
+//   scraper is WebView-bound and not progressive).
+val kageKey = "anikage:$key"
+val waveKey = "aniwaves:$key"
+val scrape = try {
+    coroutineScope {
+        val kageDeferred = async {
+            val cachedKage = BCCache.getBundle(kageKey)
+            if (cachedKage != null) {
+                cachedKage
+            } else {
+                try {
+                    anikageExtractRaw(
+                        q,
+                        onLink = { m, score ->
+                            emitMirrorScored(m, score, callback, emittedCount)
+                        },
+                        onSub = { url, label ->
+                            if (subSeen.add(url)) {
+                                try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
                             }
-                        )
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        BLog.e("anikageExtractRaw threw: ${e.message}")
-                        AniKageScrape(emptyList(), emptyList())
-                    }
-                }
-                val wavesDeferred = async {
-                    if (!BingeAnimeSettings.isSrcAniwaves()) {
-                        AniKageScrape(emptyList(), emptyList())
-                    } else {
-                        try {
-                            aniwavesExtractRaw(
-                                q,
-                                onLink = { m, score ->
-                                    emitMirrorScored(m, score, callback, emittedCount)
-                                },
-                                onSub = { url, label ->
-                                    if (subSeen.add(url)) {
-                                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
-                                    }
-                                }
-                            )
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            BLog.e("aniwavesExtractRaw threw: ${e.message}")
-                            AniKageScrape(emptyList(), emptyList())
                         }
+                    ).also {
+                        if (it.mirrors.isNotEmpty()) BCCache.putBundle(kageKey, it)
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    BLog.e("anikageExtractRaw threw: ${e.message}")
+                    AniKageScrape(emptyList(), emptyList())
                 }
-                val k = kageDeferred.await()
-                val w = wavesDeferred.await()
-                AniKageScrape(
-                    mirrors = (k.mirrors + w.mirrors).distinctBy { it.url },
-                    subs = (k.subs + w.subs).distinct()
-                )
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            BLog.e("loadLinks scrape failed: ${e.message}")
-            AniKageScrape(emptyList(), emptyList())
         }
+        val wavesDeferred = async {
+            if (!BingeAnimeSettings.isSrcAniwaves()) {
+                AniKageScrape(emptyList(), emptyList())
+            } else {
+                try {
+                    PrefetchEngine.obtain(waveKey) {
+                        aniwavesExtractRaw(q)
+                    } ?: AniKageScrape(emptyList(), emptyList())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    BLog.e("aniwavesExtractRaw threw: ${e.message}")
+                    AniKageScrape(emptyList(), emptyList())
+                }
+            }
+        }
+        val k = kageDeferred.await()
+        val w = wavesDeferred.await()
+
+        // Emit AniWaves mirrors + subs after the deferred resolves.
+        w.mirrors.forEach { m ->
+            emitMirrorScored(m, LinkScore.prelimScore(m), callback, emittedCount)
+        }
+        w.subs.forEach { (label, url) ->
+            if (subSeen.add(url)) {
+                try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+            }
+        }
+
+        AniKageScrape(
+            mirrors = (k.mirrors + w.mirrors).distinctBy { it.url },
+            subs = (k.subs + w.subs).distinct()
+        )
+    }
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    BLog.e("loadLinks scrape failed: ${e.message}")
+    AniKageScrape(emptyList(), emptyList())
+}
 
         // Per-mirror captions (MegaPlayEmbed fallback)
         scrape.mirrors.flatMap { it.captions }.forEach { (label, url) ->
@@ -332,12 +355,19 @@ class BingeAnimeProvider : MainAPI() {
             }
         }
 
-        if (scrape.mirrors.isNotEmpty()) {
-            BCCache.putBundle(key, MirrorBundle(scrape.mirrors, scrape.subs))
-        }
+    // Merge-bundle for the caller's cache-hit path. Per-source
+    // bundles above are the durable caches; this combined one
+    // only serves a same-episode repeat tap.
+    if (scrape.mirrors.isNotEmpty()) {
+        BCCache.putBundle(key, MirrorBundle(scrape.mirrors, scrape.subs))
+    }
 
-        BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
-        return emittedCount.get() > 0
+    if (q.type == "series" && BingeAnimeSettings.isSrcAniwaves()) {
+        PrefetchEngine.warmAfterPlay(q) { aniwavesExtractRaw(it) }
+    }
+
+    BLog.d("loadLinks: emitted=${emittedCount.get()} subs=${subSeen.size}")
+    return emittedCount.get() > 0
     }
 
     // ── emit helpers ──
@@ -351,49 +381,58 @@ class BingeAnimeProvider : MainAPI() {
     }
 
     private suspend fun emitMirrorScored(
-        m: ScrapedMirror,
-        score: Int,
-        callback: (ExtractorLink) -> Unit,
-        count: AtomicInteger
-    ) {
-        // Smart links ON  → emoji + source label + mirror descriptor
-        // Smart links OFF → same label, no emoji, arrival order
-        val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
-        val displayName = if (cosmetic) {
-            "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
-        } else {
-            "${m.source} · ${m.mirror}"
-        }
+    m: ScrapedMirror,
+    score: Int,
+    callback: (ExtractorLink) -> Unit,
+    count: AtomicInteger
+) {
+    // Smart links ON  → emoji + source label + mirror descriptor
+    // Smart links OFF → same label, no emoji, arrival order
+    val cosmetic = BingeAnimeSettings.isPrefilterEnabled()
+    val displayName = if (cosmetic) {
+        "${LinkScore.emoji(score)} ${m.source} • ${m.mirror}"
+    } else {
+        "${m.source} · ${m.mirror}"
+    }
 
-        val linkType = when {
-            m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
-                ExtractorLinkType.DASH
-            m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
-                ExtractorLinkType.M3U8
-            else -> ExtractorLinkType.VIDEO
-        }
-        try {
-            callback.invoke(newExtractorLink(
-                source = "BingeAnime",
-                name = displayName,
-                url = m.url,
-                type = linkType
-            ) {
-                this.referer = AnikageApi.referer()
-                val clean = m.headers
-                    ?.filterKeys { it.lowercase() != "referer" }
-                    ?.toMutableMap() ?: mutableMapOf()
-                if (clean.keys.none { it.equals("user-agent", true) }) {
-                    clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
-                        "Mobile Safari/537.36"
-                }
-                this.headers = clean
-            })
-            count.incrementAndGet()
-        } catch (e: Exception) {
-            BLog.e("emit failed: ${m.mirror}: ${e.message}")
-        }
+    val linkType = when {
+        m.url.contains(".mpd", true) || m.url.contains("/mpd", true) ->
+            ExtractorLinkType.DASH
+        m.url.contains(".m3u8", true) || m.url.contains("/m3u8", true) ->
+            ExtractorLinkType.M3U8
+        else -> ExtractorLinkType.VIDEO
+    }
+    try {
+        callback.invoke(newExtractorLink(
+            source = "BingeAnime",
+            name = displayName,
+            url = m.url,
+            type = linkType
+        ) {
+            // Per-mirror referer wins (AniWaves sets the embed
+            // host's referer — JW Player CDN enforces it).
+            // Fall back to AniKage's for mirrors that don't set
+            // one (all AniKage mirrors).
+            val hdrs = m.headers.orEmpty()
+            this.referer = hdrs.entries
+                .firstOrNull { it.key.equals("referer", true) }
+                ?.value
+                ?: AnikageApi.referer()
+
+            val clean = hdrs
+                .filterKeys { !it.equals("referer", true) }
+                .toMutableMap()
+            if (clean.keys.none { it.equals("user-agent", true) }) {
+                clean["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 " +
+                    "Mobile Safari/537.36"
+            }
+            this.headers = clean
+        })
+        count.incrementAndGet()
+    } catch (e: Exception) {
+        BLog.e("emit failed: ${m.mirror}: ${e.message}")
+    }
     }
 
     private fun AniListApi.Entry.toSearchResponse(): SearchResponse? {
