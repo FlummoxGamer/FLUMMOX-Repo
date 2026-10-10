@@ -20,7 +20,7 @@ object PrefetchEngine {
 
     private val SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlight =
-        ConcurrentHashMap<String, CompletableDeferred<List<ScrapedMirror>?>>()
+        ConcurrentHashMap<String, CompletableDeferred<AniKageScrape?>>()
     private val lock = Any()
     private val watchHistory = mutableMapOf<String, MutableList<Int>>()
     private var currentAnimeKey: String? = null
@@ -60,21 +60,21 @@ object PrefetchEngine {
         }
     }
 
-    // Warm ep 1 in background when detail opens. Skipped if the user
-    // just landed from home (they won't tap yet) or if prefetch is off.
-    fun warmOnLoad(q: StreamQuery, fetch: suspend (StreamQuery) -> List<ScrapedMirror>) {
-        if (!BingeAnimeSettings.isPrefetchEnabled()) return
-        if (isFromHome()) { BLog.v("prefetch: skipped (home grace)"); return }
-        warm(listOf(q), fetch)
-    }
+// Warm ep 1 in background when detail opens. Skipped if the user
+// just landed from home (they won't tap yet) or if prefetch is off.
+fun warmOnLoad(q: StreamQuery, fetch: suspend (StreamQuery) -> AniKageScrape) {
+    if (!BingeAnimeSettings.isPrefetchEnabled()) return
+    if (isFromHome()) { BLog.v("prefetch: skipped (home grace)"); return }
+    warm(listOf(q), fetch)
+}
 
-    // Warm next episode after current plays.
-    fun warmAfterPlay(q: StreamQuery, fetch: suspend (StreamQuery) -> List<ScrapedMirror>) {
-        if (!BingeAnimeSettings.isPrefetchEnabled()) return
-        val plan = plan(q)
-        if (plan.isEmpty()) return
-        warm(plan, fetch)
-    }
+// Warm next episode after current plays.
+fun warmAfterPlay(q: StreamQuery, fetch: suspend (StreamQuery) -> AniKageScrape) {
+    if (!BingeAnimeSettings.isPrefetchEnabled()) return
+    val plan = plan(q)
+    if (plan.isEmpty()) return
+    warm(plan, fetch)
+}
 
     private fun plan(q: StreamQuery): List<StreamQuery> {
         val hist = synchronized(lock) {
@@ -92,36 +92,37 @@ object PrefetchEngine {
             .map { q.copy(episode = it) }
     }
 
-    private fun warm(
-        queries: List<StreamQuery>,
-        fetch: suspend (StreamQuery) -> List<ScrapedMirror>
-    ) {
-        for (qq in queries) {
-            val key = qq.cacheKey()
-            if (BCCache.getMirrors(key) != null) {
-                BLog.v("prefetch: $key cached")
-                continue
-            }
-            val job = SCOPE.launch {
-                delay(DEBOUNCE_MS)
-                obtain(key) { fetch(qq) }
-            }
-            synchronized(lock) { sessionJobs.add(job) }
+private fun warm(
+    queries: List<StreamQuery>,
+    fetch: suspend (StreamQuery) -> AniKageScrape
+) {
+    for (qq in queries) {
+        val key = "aniwaves:${qq.cacheKey()}"
+        if (BCCache.getBundle(key) != null) {
+            BLog.v("prefetch: $key cached")
+            continue
         }
+        val job = SCOPE.launch {
+            delay(DEBOUNCE_MS)
+            obtain(key) { fetch(qq) }
+        }
+        synchronized(lock) { sessionJobs.add(job) }
     }
+}
 
     // Single entry — loadLinks and prefetch both call this.
-    // In-flight dedup via CompletableDeferred.
+    // In-flight dedup via CompletableDeferred. Works in AniKageScrape
+    // units so mirrors + subs share one atomic cache write.
     suspend fun obtain(
         key: String,
-        work: suspend () -> List<ScrapedMirror>
-    ): List<ScrapedMirror>? {
-        BCCache.getMirrors(key)?.let { return it }
+        work: suspend () -> AniKageScrape
+    ): AniKageScrape? {
+        BCCache.getBundle(key)?.let { return it }
         inFlight[key]?.let {
             BLog.v("prefetch: join in-flight $key")
             return it.await()
         }
-        val def = CompletableDeferred<List<ScrapedMirror>?>()
+        val def = CompletableDeferred<AniKageScrape?>()
         val prior = inFlight.putIfAbsent(key, def)
         if (prior != null) {
             BLog.v("prefetch: join race $key")
@@ -129,7 +130,9 @@ object PrefetchEngine {
         }
         return try {
             val r = work()
-            if (r.isNotEmpty()) BCCache.putMirrors(key, r)
+            if (r.mirrors.isNotEmpty()) {
+                BCCache.putBundle(key, MirrorBundle(r.mirrors, r.subs))
+            }
             def.complete(r)
             r
         } catch (e: Throwable) {
