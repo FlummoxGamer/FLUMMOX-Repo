@@ -283,7 +283,7 @@ val scrape = try {
         val kageDeferred = async {
             val cachedKage = BCCache.getBundle(kageKey)
             if (cachedKage != null) {
-                cachedKage
+                AniKageScrape(cachedKage.mirrors, cachedKage.subSources)
             } else {
                 try {
                     anikageExtractRaw(
@@ -297,7 +297,9 @@ val scrape = try {
                             }
                         }
                     ).also {
-                        if (it.mirrors.isNotEmpty()) BCCache.putBundle(kageKey, it)
+                        if (it.mirrors.isNotEmpty()) {
+                            BCCache.putBundle(kageKey, MirrorBundle(it.mirrors, it.subs))
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
