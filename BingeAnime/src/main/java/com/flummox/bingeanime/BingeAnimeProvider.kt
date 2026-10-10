@@ -287,36 +287,61 @@ class BingeAnimeProvider : MainAPI() {
                         AniKageScrape(emptyList(), emptyList())
                     }
                 }
-                val wavesDeferred = async {
-                    if (!BingeAnimeSettings.isSrcAniwaves()) {
-                        AniKageScrape(emptyList(), emptyList())
-                    } else {
-                        try {
-                            aniwavesExtractRaw(
-                                q,
-                                onLink = { m, score ->
-                                    emitMirrorScored(m, score, callback, emittedCount)
-                                },
-                                onSub = { url, label ->
-                                    if (subSeen.add(url)) {
-                                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
-                                    }
-                                }
-                            )
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            BLog.e("aniwavesExtractRaw threw: ${e.message}")
-                            AniKageScrape(emptyList(), emptyList())
-                        }
+val wavesDeferred = async {
+    if (!BingeAnimeSettings.isSrcAniwaves()) {
+        AniKageScrape(emptyList(), emptyList())
+    } else {
+        try {
+            aniwavesExtractRaw(
+                q,
+                onLink = { m, score ->
+                    emitMirrorScored(m, score, callback, emittedCount)
+                },
+                onSub = { url, label ->
+                    if (subSeen.add(url)) {
+                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
                     }
                 }
-                val k = kageDeferred.await()
-                val w = wavesDeferred.await()
-                AniKageScrape(
-                    mirrors = (k.mirrors + w.mirrors).distinctBy { it.url },
-                    subs = (k.subs + w.subs).distinct()
-                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("aniwavesExtractRaw threw: ${e.message}")
+            AniKageScrape(emptyList(), emptyList())
+        }
+    }
+}
+val reanimeDeferred = async {
+    if (!BingeAnimeSettings.isSrcReanime()) {
+        AniKageScrape(emptyList(), emptyList())
+    } else {
+        try {
+            reanimeExtractRaw(
+                q,
+                onLink = { m, score ->
+                    emitMirrorScored(m, score, callback, emittedCount)
+                },
+                onSub = { url, label ->
+                    if (subSeen.add(url)) {
+                        try { subtitleCallback(SubtitleFile(label, url)) } catch (_: Exception) {}
+                    }
+                }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            BLog.e("reanimeExtractRaw threw: ${e.message}")
+            AniKageScrape(emptyList(), emptyList())
+        }
+    }
+}
+val k = kageDeferred.await()
+val w = wavesDeferred.await()
+val r = reanimeDeferred.await()
+AniKageScrape(
+    mirrors = (k.mirrors + w.mirrors + r.mirrors).distinctBy { it.url },
+    subs = (k.subs + w.subs + r.subs).distinct()
+)
             }
         } catch (e: CancellationException) {
             throw e
