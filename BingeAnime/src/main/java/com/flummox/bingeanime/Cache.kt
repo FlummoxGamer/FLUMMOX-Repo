@@ -50,8 +50,10 @@ object BCCache {
     fun getMirrors(key: String, ttlMs: Long = 30 * 60 * 1000L): List<ScrapedMirror>? =
         getBundle(key, ttlMs)?.mirrors
 
-    fun putMirrors(key: String, mirrors: List<ScrapedMirror>) =
-        putBundle(key, MirrorBundle(mirrors, emptyList()))
+    fun putMirrors(key: String, mirrors: List<ScrapedMirror>) {
+        val existing = getBundle(key)
+        putBundle(key, MirrorBundle(mirrors, existing?.subSources ?: emptyList()))
+    }
 
     fun clear() {
         synchronized(lock) {
