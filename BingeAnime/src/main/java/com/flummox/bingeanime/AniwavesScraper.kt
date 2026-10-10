@@ -10,7 +10,12 @@ import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-private const val ANIWAVES_CONCURRENCY = 4
+// Reads the user's concurrency setting, capped at 6. Each concurrent
+// AniWaves resolve spawns its own WebView; 50 concurrent WebViews
+// OOMs the phone. AniKage stays hardcoded at 4 because of its
+// /sources 15/min rate limit.
+private val ANIWAVES_CONCURRENCY: Int
+    get() = BingeAnimeSettings.getConcurrency().coerceIn(1, 6)
 
 // Only Vidplay (sv-id 4) resolves reliably.
 private val ALLOWED_SV_IDS = setOf("4")
