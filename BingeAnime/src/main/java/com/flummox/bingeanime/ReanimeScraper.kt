@@ -98,9 +98,20 @@ private suspend fun probeMaster(url: String, headers: Map<String, String>): Bool
     return try {
         val res = app.get(url, headers = headers, timeout = 5_000L)
         val ct = res.headers["Content-Type"].orEmpty()
-        val head = res.text.take(60).replace("\n", "\\n")
-        BLog.d("reanime probe: code=${res.code} ct=$ct head='$head'")
-        res.code in 200..299 && res.text.contains("#EXTM3U")
+        val body = res.text
+        val head = body.take(60).replace("\n", "\\n")
+        BLog.d("reanime probe: code=${res.code} ct=$ct len=${body.length} head='$head'")
+
+        // Diagnostic — is the body base64-wrapped plaintext?
+        val decoded = try {
+            val trimmed = body.trim()
+            val normalized = trimmed.replace('-', '+').replace('_', '/')
+            val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+            String(android.util.Base64.decode(padded, android.util.Base64.DEFAULT), Charsets.UTF_8)
+        } catch (_: Exception) { "" }
+        BLog.d("reanime probe decoded: '${decoded.take(80).replace("\n","\\n")}'")
+
+        res.code in 200..299 && body.contains("#EXTM3U")
     } catch (e: Exception) {
         BLog.e("reanime probe: ${e.message}")
         false
