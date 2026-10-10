@@ -375,7 +375,7 @@ object ReanimeWasm {
             }
         }
 
-        private fun run(fn: Fn, args: Array<out Int>) {
+        private fun run(fn: Fn, args: IntArray) {
             val code = fn.code
             val locals = IntArray(args.size + fn.locals.size)
             for (i in args.indices) locals[i] = args[i]
