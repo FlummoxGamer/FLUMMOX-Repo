@@ -60,6 +60,7 @@ object BingeAnimeSettings {
     const val K_SRC_OTAKUTSU = "bingeanime_src_otakutsu"
     const val K_SRC_ANIKAGE = "bingeanime_src_anikage"
     const val K_SRC_ANIWAVES = "bingeanime_src_aniwaves"
+    const val K_SRC_REANIME = "bingeanime_src_reanime"
     const val K_SEARCH_SOURCE = "bingeanime_search_source"
     const val K_ROW_ORDER = "bingeanime_row_order"
     const val K_ROW_PREFIX = "bingeanime_row_"
@@ -119,6 +120,7 @@ internal fun allSubLangs(): List<SubLang> = ALL_SUB_LANGS
     fun isSrcOtakutsu(): Boolean = getKey<Boolean>(K_SRC_OTAKUTSU) ?: true
     fun isSrcAnikage(): Boolean = getKey<Boolean>(K_SRC_ANIKAGE) ?: true
     fun isSrcAniwaves(): Boolean = getKey<Boolean>(K_SRC_ANIWAVES) ?: true
+    fun isSrcReanime(): Boolean = getKey<Boolean>(K_SRC_REANIME) ?: true
     fun isYearFilterEnabled(): Boolean = getKey<Boolean>(K_YEAR_FILTER_ON) ?: false
     fun getYearFloor(): Int = getKey<Int>(K_YEAR_FLOOR) ?: DEFAULT_YEAR_FLOOR
 
@@ -631,6 +633,8 @@ private fun openSubtitles(ctx: Context) {
                 "Sub / Dub", isSrcAnikage()) { setKey(K_SRC_ANIKAGE, it) })
             body.addView(toggleRow(ctx, "AniWaves",
                 "Sub / Dub", isSrcAniwaves()) { setKey(K_SRC_ANIWAVES, it) })
+            body.addView(toggleRow(ctx, "Re:ANIME",
+                "Sub / Dub · 2 edges · subs", isSrcReanime()) { setKey(K_SRC_REANIME, it) })
         }
     }
 
