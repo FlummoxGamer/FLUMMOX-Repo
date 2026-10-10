@@ -184,13 +184,7 @@ object AniwavesApi {
             eps.sortedBy { it.number }, totalSub, totalDub)
     }
 
-suspend fun servers(slug: String, ep: Int): List<Srv> {
-    // Slug always ends with -{animeId}. Extract it here so we skip
-    // the detail() roundtrip entirely.
-    val animeId = Regex("""-(\d+)$""").find(slug)?.groupValues?.get(1) ?: run {
-        BLog.e("aniwaves: no animeId in slug '$slug'")
-        return emptyList()
-    }
+suspend fun servers(slug: String, ep: Int, animeId: String): List<Srv> {
     val ck = "aniwaves:srv:$animeId:$ep"
     BCCache.get(ck, TTL_DETAIL)?.let { cached ->
         return try { parseServers(JSONObject(cached)) } catch (_: Exception) { emptyList() }
@@ -225,7 +219,6 @@ private fun parseServers(root: JSONObject): List<Srv> {
     BLog.d("aniwaves: srv typeDivs=${doc.select("div.type[data-type]").size} srv=${out.size}")
     return out
 }
-
     suspend fun resolveLink(linkId: String, referer: String): String? {
         val ck = "aniwaves:solve:$linkId"
         BCCache.get(ck, TTL_SOURCES)?.let { cached ->
