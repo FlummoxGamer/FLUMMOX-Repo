@@ -344,6 +344,8 @@ object ReanimeWasm {
             val o = om.groupValues[1]
             val url = Regex(""""?url"?\s*:\s*"([^"]+)"""").find(o)?.groupValues?.get(1) ?: continue
             if (!url.startsWith("http")) continue
+            val lower = url.lowercase()
+            if (lower.contains("_eng_3.ass") || lower.contains("_eng_5.ass")) continue
             val lang = Regex(""""?language"?\s*:\s*"([^"]+)"""").find(o)?.groupValues?.get(1) ?: "Subtitle"
             out.add(subLabel(url, lang) to url)
         }
@@ -353,14 +355,12 @@ object ReanimeWasm {
     private fun subLabel(url: String, lang: String): String {
         val l = url.lowercase()
         return when {
-            l.contains("_eng_3.ass") -> "$lang (Signs)"
             l.contains("_eng_4.ass") -> "$lang (Signs + Songs)"
-            l.contains("_eng_5.ass") -> "$lang (Signs Alt)"
             l.contains("_eng_6.ass") -> "$lang (Signs + Songs Alt)"
             l.endsWith(".ass") -> "$lang (ASS)"
             l.endsWith(".srt") -> "$lang (SRT)"
             else -> lang
-        }
+       }
     }
 }
 
