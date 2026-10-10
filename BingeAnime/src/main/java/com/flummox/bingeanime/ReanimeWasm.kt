@@ -130,74 +130,110 @@ object ReanimeWasm {
         }.maxByOrNull { it.second }?.first
     }
 
-    suspend fun resolve(embedUrl: String): Resolved? = try {
-        val page = app.get(embedUrl, headers = embedHeaders()).text
-        val region = page.substringAfter("node_ids", "")
-        if (region.isBlank()) { BLog.e("reanime resolve: no node_ids"); null } else {
+    suspend fun resolve(embedUrl: String): Resolved? {
+    return try {
+        doResolve(embedUrl)
+    } catch (e: Exception) {
+        BLog.e("reanime resolve: ${e.message}")
+        null
+    }
+}
 
-        val seed = Regex("""obfuscation_seed\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-        val wasmB64 = Regex("""w_payload\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-        if (seed == null || wasmB64 == null) { BLog.e("reanime: no seed/wasm"); null } else {
+private suspend fun doResolve(embedUrl: String): Resolved? {
+    val page = app.get(embedUrl, headers = embedHeaders()).text
+    val region = page.substringAfter("node_ids", "")
+    if (region.isBlank()) {
+        BLog.e("reanime resolve: no node_ids")
+        return null
+    }
 
-        val e = shaChain(seed)
-        val s2 = shaChain(e)
-        val kfB64 = Regex(""""?kf_${Regex.escape(e.substring(8, 16))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-        val ivfB64 = Regex(""""?ivf_${Regex.escape(e.substring(16, 24))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-        val token = Regex(""""?${Regex.escape(e.substring(48, 64))}_${Regex.escape(e.substring(56, 64))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-        val keyFrag2B64 = Regex(""""?${Regex.escape(s2.substring(0, 16))}_${Regex.escape(s2.substring(16, 24))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
-        if (kfB64 == null || ivfB64 == null || token == null || keyFrag2B64 == null) {
-            BLog.e("reanime: missing fields"); null
-        } else {
+    val seed = Regex("""obfuscation_seed\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+    val wasmB64 = Regex("""w_payload\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+    if (seed == null || wasmB64 == null) {
+        BLog.e("reanime: no seed/wasm")
+        return null
+    }
 
-        val tokenResp = app.get("$EMBED/api/m3u8/$token", headers = embedHeaders()).text
-        val vidField = shaHex(token + "vid").substring(0, 10)
-        val keyField = shaHex(token + "key").substring(0, 10)
-        val encVideo = Regex(""""$vidField"\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
-        val encKey = Regex(""""?$keyField"?\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
-        if (encVideo == null || encKey == null) { BLog.e("reanime: no video/key"); null } else {
+    val e = shaChain(seed)
+    val s2 = shaChain(e)
+    val kfB64 = Regex(""""?kf_${Regex.escape(e.substring(8, 16))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+    val ivfB64 = Regex(""""?ivf_${Regex.escape(e.substring(16, 24))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+    val token = Regex(""""?${Regex.escape(e.substring(48, 64))}_${Regex.escape(e.substring(56, 64))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+    val keyFrag2B64 = Regex(""""?${Regex.escape(s2.substring(0, 16))}_${Regex.escape(s2.substring(16, 24))}"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1)
+    if (kfB64 == null || ivfB64 == null || token == null || keyFrag2B64 == null) {
+        BLog.e("reanime: missing fields")
+        return null
+    }
 
-        val f1 = b64d(kfB64); val f2 = b64d(keyFrag2B64); val f3 = b64d(encKey)
-        val seedInt = seed.take(8).toLongOrNull(16)?.toInt()
-        if (seedInt == null || f1.isEmpty() || f2.size != f1.size || f3.size != f1.size) {
-            BLog.e("reanime: frag mismatch"); null
-        } else {
+    val tokenResp = app.get("$EMBED/api/m3u8/$token", headers = embedHeaders()).text
+    val vidField = shaHex(token + "vid").substring(0, 10)
+    val keyField = shaHex(token + "key").substring(0, 10)
+    val encVideo = Regex(""""$vidField"\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
+    val encKey = Regex(""""?$keyField"?\s*:\s*"([^"]+)"""").find(tokenResp)?.groupValues?.get(1)
+    if (encVideo == null || encKey == null) {
+        BLog.e("reanime: no video/key")
+        return null
+    }
 
-        val vm = Vm(Base64.decode(wasmB64, Base64.DEFAULT))
-        val k = f1.size
-        val slot = 1000
-        vm.load(slot, f1)
-        vm.load(slot + k, f2)
-        vm.load(slot + 2 * k, f3)
-        vm.call("_s", seedInt)
-        vm.call("_r", slot, slot + k, slot + 2 * k, slot + 3 * k, k)
-        val keySeed = vm.dump(slot + 3 * k, k)
-        if (keySeed.all { it == 0.toByte() }) { BLog.e("reanime: vm empty"); null } else {
+    val f1 = b64d(kfB64)
+    val f2 = b64d(keyFrag2B64)
+    val f3 = b64d(encKey)
+    val seedInt = seed.take(8).toLongOrNull(16)?.toInt()
+    if (seedInt == null || f1.isEmpty() || f2.size != f1.size || f3.size != f1.size) {
+        BLog.e("reanime: frag mismatch")
+        return null
+    }
 
-        val seedBytes = seed.toByteArray(Charsets.UTF_8)
-        val pbkdf2 = pbkdf2Sha256(keySeed, seedBytes, 1000, 32)
-        val xored = ByteArray(32) { (pbkdf2[it].toInt() xor seedBytes[it % seedBytes.size].toInt()).toByte() }
-        val aesKey = MessageDigest.getInstance("SHA-256").digest(xored)
-        val iv = b64d(ivfB64)
-        if (iv.size != 16) { BLog.e("reanime: bad iv"); null } else {
+    val vm = Vm(Base64.decode(wasmB64, Base64.DEFAULT))
+    val k = f1.size
+    val slot = 1000
+    vm.load(slot, f1)
+    vm.load(slot + k, f2)
+    vm.load(slot + 2 * k, f3)
+    vm.call("_s", seedInt)
+    vm.call("_r", slot, slot + k, slot + 2 * k, slot + 3 * k, k)
+    val keySeed = vm.dump(slot + 3 * k, k)
+    if (keySeed.all { it == 0.toByte() }) {
+        BLog.e("reanime: vm empty")
+        return null
+    }
 
-        val cipher = Cipher.getInstance("AES/CBC/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), IvParameterSpec(iv))
-        val padded = cipher.doFinal(b64d(encVideo))
-        val pad = padded.last().toInt() and 0xFF
-        val cut = if (pad in 1..16 && padded.size > pad) padded.size - pad else padded.size
-        val masterUrl = String(padded.copyOfRange(0, cut), Charsets.UTF_8).trim()
-        if (!masterUrl.startsWith("http")) { BLog.e("reanime: bad url"); null } else {
+    val seedBytes = seed.toByteArray(Charsets.UTF_8)
+    val pbkdf2 = pbkdf2Sha256(keySeed, seedBytes, 1000, 32)
+    val xored = ByteArray(32) { (pbkdf2[it].toInt() xor seedBytes[it % seedBytes.size].toInt()).toByte() }
+    val aesKey = MessageDigest.getInstance("SHA-256").digest(xored)
+    val iv = b64d(ivfB64)
+    if (iv.size != 16) {
+        BLog.e("reanime: bad iv")
+        return null
+    }
 
-        val pk = derivePk(vm.payload())
-        if (pk == null) { BLog.e("reanime: bad pk"); null } else {
+    val cipher = Cipher.getInstance("AES/CBC/NoPadding")
+    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), IvParameterSpec(iv))
+    val padded = cipher.doFinal(b64d(encVideo))
+    val pad = padded.last().toInt() and 0xFF
+    val cut = if (pad in 1..16 && padded.size > pad) padded.size - pad else padded.size
+    val masterUrl = String(padded.copyOfRange(0, cut), Charsets.UTF_8).trim()
+    if (!masterUrl.startsWith("http")) {
+        BLog.e("reanime: bad url")
+        return null
+    }
 
-        val masterRaw = app.get(masterUrl, headers = cdnHeaders()).text.trim()
-        val masterBody = decryptPlaylist(masterRaw, pk)
-        if (masterBody == null) { BLog.e("reanime: master decrypt"); null }
-        else Resolved(masterUrl, masterBody, pk, extractSubs(region))
-        }}}}}}}}}}
-    } catch (e: Exception) { BLog.e("reanime resolve: ${e.message}"); null }
+    val pk = derivePk(vm.payload())
+    if (pk == null) {
+        BLog.e("reanime: bad pk")
+        return null
+    }
 
+    val masterRaw = app.get(masterUrl, headers = cdnHeaders()).text.trim()
+    val masterBody = decryptPlaylist(masterRaw, pk)
+    if (masterBody == null) {
+        BLog.e("reanime: master decrypt")
+        return null
+    }
+
+    return Resolved(masterUrl, masterBody, pk, extractSubs(region))
+    }
     fun decryptPlaylist(body: String, pk: ByteArray): String? = try {
         val trimmed = body.trim()
         if (trimmed.startsWith("#EXTM3U")) trimmed else {
