@@ -96,7 +96,7 @@ private suspend fun resolveEmbed(
         additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
         script = ANIWAVES_CLICK_SCRIPT,
         useOkhttp = false,
-        timeout = 12_000L
+        timeout = 8_000L
     )
     return try {
         val r = app.get(embedUrl, referer = "https://aniwaves.ru/", interceptor = resolver)
